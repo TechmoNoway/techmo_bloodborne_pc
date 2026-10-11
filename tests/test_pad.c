@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include "../engine/runtime/runtime_pad.c"
+#include "windows_test_paths.h"
 
 static int capture;
 int bbgpu_overlay_captures_input(void) { return capture; }
@@ -22,14 +23,24 @@ static void inject(const char *path, const char *tokens) {
 }
 
 int main(void) {
+#ifdef _WIN32
+    char path[MAX_PATH];
+    int fd=test_temp_file(path);
+#else
     char path[]="/tmp/bbport-pad-test-XXXXXX";
     int fd=mkstemp(path);
+#endif
     assert(fd>=0);
     close(fd);
     setenv("BB_PAD_FILE",path,1);
     /* bbport.ini controls: buttons moved, a trigger as a button and a button as a trigger. */
+#ifdef _WIN32
+    char config[MAX_PATH];
+    int config_fd=test_temp_file(config);
+#else
     char config[]="/tmp/bbport-pad-config-XXXXXX";
     int config_fd=mkstemp(config);
+#endif
     assert(config_fd>=0);
     const char controls[]="upscaler=fsr3\npad.cross=b\npad.circle=a\npad.r2=rightshoulder\n"
                           "pad.r1=righttrigger\nkey.cross=X, Space\npad.bogus=a\n";

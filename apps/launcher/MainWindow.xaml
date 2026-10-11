@@ -178,6 +178,16 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
+                            <Border x:Name="LastSessionCard" Visibility="Collapsed" Style="{StaticResource CardStyle}" Margin="0,20,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="{local:Loc Key=Diagnostics.Last_session}" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock x:Name="LastSessionStatus" FontSize="18" TextWrapping="Wrap" Margin="0,8,0,0" AutomationProperties.LiveSetting="Polite" />
+                                    <TextBlock x:Name="LastSessionDetail" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0" />
+                                    <TextBlock x:Name="LastSessionPerformance" TextWrapping="Wrap" Margin="0,8,0,0" />
+                                    <TextBlock Text="{local:Loc Key=Diagnostics.Scope_hint}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,6,0,0" />
+                                    <Button Content="{local:Loc Key=Diagnostics.Open_report}" HorizontalAlignment="Left" Margin="0,12,0,0" Click="OpenLastSession_Click" />
+                                </StackPanel>
+                            </Border>
                             <Border Style="{StaticResource CardStyle}" Margin="0,24,0,0" Padding="18,16,8,8">
                                 <StackPanel><TextBlock Text="{local:Loc Key=Ui.Q_U_I_C_K_S_E_T_T_I_N_G_S}" Style="{StaticResource SectionTitle}" Margin="0,0,0,6" /><UniformGrid x:Name="QuickSettingsGrid" Columns="5">
                                         <Border Style="{StaticResource QuickCard}">
@@ -212,7 +222,7 @@
                                                 <ComboBox x:Name="QuickUpscaler" Margin="0,8,0,0" AutomationProperties.Name="{local:Loc Key=Ui.Upscaler}" SelectionChanged="QuickUpscaler_Changed">
                                                     <ComboBoxItem Content="DLSS" />
                                                     <ComboBoxItem Content="FSR 4.1.1" />
-                                                    <ComboBoxItem Content="FSR 4 v07" />
+                                                    <ComboBoxItem Content="{local:Loc Key=Ui.FSR_4_v07_legacy}" />
                                                     <ComboBoxItem Content="FSR 3.1" />
                                                     <ComboBoxItem Content="TAA" />
                                                     <ComboBoxItem Content="{local:Loc Key=Ui.Off}" />
@@ -539,6 +549,7 @@
                                     <CheckBox x:Name="DeveloperModeCheck" Content="{local:Loc Key=Ui.Developer_Mode}" />
                                     <CheckBox x:Name="DetailedLogsCheck" Content="{local:Loc Key=Ui.Detailed_logs}" />
                                     <CheckBox x:Name="FrameStatsCheck" Content="{local:Loc Key=Ui.Frame_statistics}" />
+                                    <CheckBox x:Name="GpuProfileCheck" Content="{local:Loc Key=Diagnostics.Gpu_profiling}" />
                                     <CheckBox x:Name="AudioStatsCheck" Content="{local:Loc Key=Ui.Audio_statistics}" />
                                     <CheckBox x:Name="FsrProfileCheck" Content="{local:Loc Key=Ui.FSR_4_profiling}" />
                                     <TextBlock TextWrapping="Wrap" Text="{local:Loc Key=Ui.Every_game_session_is_saved_automatically_to_the_logs_folder_These_switches_add_extra_diagnostic_output_a}" Foreground="#B57B7D" Margin="0,10,0,0" />

@@ -24,6 +24,17 @@ screenshots and diagnostics are grouped under `builds/_internal`; the entire
 Install MSYS2 at `C:\msys64`, or set `BB_MSYS2` to its location. Use the
 **CLANG64** shell, with Clang/libc++/lld rather than another MSYS2 toolchain.
 
+Alternatively, use the existing MSYS2 shell to prepare an isolated CLANG64
+toolchain and build from PowerShell:
+
+```powershell
+./tools/build-native.ps1 -Bootstrap -Test
+```
+
+Packages stay under `builds/_internal/toolchain`; system MSYS2 packages are not
+changed. Next time, use `./tools/build-native.ps1 -Test`. See the
+[diagnostics guide](DIAGNOSTICS.md) for session capture and baseline comparison.
+
 ```bash
 pacman -S --needed git curl mingw-w64-clang-x86_64-{clang,lld,libc++,cmake,ninja,pkgconf,python,sdl3,boost,fmt,glslang,spirv-cross,spirv-headers,vulkan-headers,vulkan-loader,vulkan-memory-allocator,xxhash,zydis,robin-map,ffmpeg,protobuf,nlohmann-json,openssl,miniupnpc}
 bash build.sh
@@ -36,6 +47,8 @@ retained FSR-Vulkan patches and produces:
 out/bb-probe.exe              Native runtime
 out/bb-gpu-capabilities.exe   GPU capability helper
 out/bb-engine-assets.exe      Local asset preparation helper
+out/bb-crash-reporter.exe     Out-of-process Windows minidump writer
+out/native-build.json        Compiler, source and binary provenance
 out/gpu/libbbgpu.a            Renderer static library
 ```
 
@@ -53,6 +66,29 @@ bash tools/fetch_fsr4_assets.sh
 
 DLSS needs a compatible NVIDIA RTX GPU. The Linux/Proton FSR 4.1.1 asset capture
 workflow is removed; the replay provider needs an existing asset set.
+
+To reuse the optional assets from a separate local installation on Windows:
+
+```powershell
+./tools/install-upscalers.ps1 -SourceDirectory C:\Games\BloodBorne
+```
+
+This copies `out/nvngx_dlss.dll` and the complete 189-file `fsr4_shaders` set
+into Techmo, leaving the source installation unchanged. It checks the NVIDIA
+signature, FSR shader manifest hashes and SPIR-V headers, preserves licenses,
+and records copied file hashes in `out/upscaler-assets.json`. Different existing
+destination files are preserved and cause an error. The DLSS license is fetched
+from NVIDIA's pinned SDK if the source does not include it.
+
+Select **DLSS** or **FSR 4 v07 (experimental)** in Graphics, then choose Quality
+and an output resolution. These are alternative Super Resolution paths; they
+do not add frame generation. FSR 4 v07 is the experimental INT8/DOT4 provider,
+separate from FSR 4.1.1. Installed files do not guarantee device compatibility:
+the renderer checks required Vulkan features or NGX when it starts. When the
+selected upscaler cannot run, inspect the session log for the reported reason.
+The existing `tools/fsr4_optimize.sh` generates corrected/faster v07 shaders
+under `fsr4_shaders/opt`; run it with the native toolchain before testing v07.
+Downloaded models and shaders remain local and are excluded from Git.
 
 ## Run
 

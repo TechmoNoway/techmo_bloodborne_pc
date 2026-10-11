@@ -7,6 +7,7 @@ if not defined BB_MSYS2 set "BB_MSYS2=C:\msys64"
 rem Packaged builds put an embeddable Python runtime under tools\python. Prefer it so a
 rem prebuilt Bloodborne PC package does not require MSYS2 on the player's machine.
 set "BB_PYTHON=%~dp0tools\python\python.exe"
+if not exist "%BB_PYTHON%" set "BB_PYTHON=%~dp0builds\_internal\toolchain\clang64\bin\python.exe"
 if not exist "%BB_PYTHON%" set "BB_PYTHON=%BB_MSYS2%\clang64\bin\python.exe"
 if not exist "%BB_PYTHON%" (
     if defined BB_LOG_FILE (

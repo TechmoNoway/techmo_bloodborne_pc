@@ -30,6 +30,13 @@ GpuProfiler::GpuProfiler(const Instance& instance, Scheduler& scheduler_)
         k.reserve(SliceQueries);
     }
     std::printf("GPU profile: on (timestamp period %.2f ns)\n", period_ns);
+    if (const char* path = std::getenv("BB_GPU_LOG"); path && *path) {
+        csv = std::fopen(path, "w");
+        if (csv) {
+            std::fprintf(csv, "sample,gpu_interval_ms,timestamp_count\n");
+            std::fflush(csv);
+        }
+    }
 }
 
 void GpuProfiler::WriteTimestamp(u64 key) {
@@ -86,6 +93,15 @@ void GpuProfiler::Collect(u32 which) {
         auto& total = totals[keys[which][i]];
         total.ms += ms;
         ++total.segments;
+    }
+    ++collected_frames;
+    if (csv && count >= 2) {
+        std::fprintf(csv, "%llu,%.6f,%u\n", static_cast<unsigned long long>(collected_frames),
+                     double(stamps.back() - stamps.front()) * period_ns / 1e6, count);
+        if (++csv_unflushed >= 60) {
+            std::fflush(csv);
+            csv_unflushed = 0;
+        }
     }
     ++frames;
 }

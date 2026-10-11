@@ -27,6 +27,11 @@ on every page, and smaller windows use a scrolling layout.
 - Render/output resolution, 30 / 60 / 90 FPS presets and available upscalers.
 - Mods, community patches and optional shadNet connection settings.
 - English or Vietnamese launcher UI, independent of the game's language.
+- Session exit reports, optional frame/GPU CSV recordings and native minidumps.
+
+For native builds and repeatable measurements, see the
+[diagnostics guide](docs/guides/DIAGNOSTICS.md). Recorded whole-session statistics
+include loading screens and menus; use the same route for comparisons.
 
 In **Controls**, click a keyboard or mouse slot and press the desired input.
 Esc cancels, **×** clears one slot, and **Save settings** keeps the changes.

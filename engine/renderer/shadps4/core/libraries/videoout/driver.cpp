@@ -385,11 +385,13 @@ void VideoOutDriver::Flip(const Request& req) {
     static const bool frame_stats = EmulatorSettingsImpl::Flag("BB_FRAME_STATS", false);
     if (frame_stats) {
         using Clock = std::chrono::steady_clock;
-        static Clock::time_point window_start = Clock::now(), last = window_start;
+        static Clock::time_point window_start = Clock::now(), last{};
         static u32 frames;
         static double worst_ms;
         const auto now = Clock::now();
-        const double frame_ms = std::chrono::duration<double, std::milli>(now - last).count();
+        // The first flip has no preceding interval. Record zero; analysis excludes it.
+        const double frame_ms = last == Clock::time_point{} ? 0.0 :
+            std::chrono::duration<double, std::milli>(now - last).count();
         worst_ms = std::max(worst_ms, frame_ms);
         static std::vector<double> intervals;
         intervals.push_back(frame_ms);

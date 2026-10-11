@@ -48,11 +48,13 @@ cmake -S engine/renderer -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -
     -DBB_LTO="${BB_LTO:-ON}" -DBB_PGO_DIR="$PWD/pgo" >/dev/null
 echo "GPU library: PGO $pgo, LTO ${BB_LTO:-ON}"
 # A failed GPU build must stop here to prevent silently using an older static library.
-if ! ninja -C out/gpu bbgpu bb-engine-assets > out/gpu-build.log 2>&1; then
+if ! ninja -C out/gpu -j "${BB_BUILD_JOBS:-2}" bbgpu bb-engine-assets > out/gpu-build.log 2>&1; then
     grep -v '^\[' out/gpu-build.log | tail -40 >&2
     echo 'GPU library build failed (full log: out/gpu-build.log)' >&2; exit 1
 fi
 cp -f out/gpu/bb-engine-assets.exe out/
+# The reporter is separate so DbgHelp does not run inside a faulting game process.
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. tools/crash_reporter.c -ldbghelp -o out/bb-crash-reporter.exe
 # The GPU static library and its transitive dependencies, in link order.
 mapfile -t gpu < out/gpu/bbgpu_link.txt
 runtime=(engine/runtime/runtime*.c engine/runtime/win32_*.c)
@@ -82,14 +84,6 @@ echo "Built $PWD/out/bb-probe.exe"
 "$CC" "${cstd[@]}" -O2 -Wall -Wextra -Werror "${includes[@]}" tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities.exe
 fi
 if [[ ${1:-} == --test ]]; then
-    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${includes[@]}" -I. -Iengine/runtime tests/test_pad.c "${libraries[@]}" -o out/pad-test.exe
-    out/pad-test.exe
-    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. -Iengine/runtime tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/runtime-test.exe
-    out/runtime-test.exe
-    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -Iengine/runtime tests/test_file_mods.c -o out/file-mods-test.exe
-    out/file-mods-test.exe
-    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. -Iengine/runtime tests/test_sema.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/sema-test.exe
-    out/sema-test.exe
-    "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. -Iengine/runtime tests/test_content.c engine/runtime/runtime_content.c -o out/content-test.exe
-    out/content-test.exe
+    bash tools/test-native.sh
 fi
+python tools/write_native_build_info.py

@@ -150,6 +150,8 @@ class ModTests(unittest.TestCase):
             return 7
         env = dict(BB_PREBUILT='1', BB_DATA_DIR=str(self.root), BB_GAME_DIR=str(self.game),
                    BB_MODS_DIR=str(self.moddir), BB_MODS_ENABLED='1', BB_CONFIG=str(self.root / 'bbport.ini'))
+        (self.root / 'out').mkdir(exist_ok=True)
+        (self.root / 'out/bb-probe.exe').write_bytes(b'synthetic runtime fixture')
         with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['run_windows.py']), \
              patch.object(run_windows, 'run', side_effect=prepare), \
              patch.object(run_windows, 'build') as build, \

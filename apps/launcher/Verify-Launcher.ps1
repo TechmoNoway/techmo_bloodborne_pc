@@ -324,6 +324,10 @@ static class Program
         Render(Path.Combine(output,"launcher-play-unconfigured.png"));
         VerifyCapture(output,root,sdlPath);
         Get<TextBox>("PathBox").Text=game; Call("RefreshStatus");
+        Check(!Get<Button>("PlayButton").IsEnabled,"Valid dump alone cannot launch a missing native runtime");
+        Directory.CreateDirectory(Path.Combine(root,"out"));
+        File.WriteAllText(Path.Combine(root,"out","bb-probe.exe"),"status fixture only");
+        Call("RefreshStatus");
         Check(Get<Button>("PlayButton").IsEnabled,"Valid fixture should enable Play");
         Check(Get<TextBlock>("GameVersionStatus").Text.Contains("1.09"),"1.09 detection");
         File.Move(Path.Combine(game,"eboot.bin"),Path.Combine(game,"eboot.hidden"));
@@ -340,15 +344,45 @@ static class Program
         File.WriteAllText(Path.Combine(game,"sce_sys","param.sfo"),"01.09");
         Directory.CreateDirectory(Path.Combine(root,"out"));
         File.WriteAllText(Path.Combine(root,"out","bb-probe.exe"),"status fixture only");
-        File.WriteAllText(Path.Combine(root,"out","nvngx_dlss.dll"),"status fixture only");
+        var dlssPath=Path.Combine(root,"out","nvngx_dlss.dll");
+        File.WriteAllText(dlssPath,"damaged model");
         Directory.CreateDirectory(Path.Combine(root,"fsr4_shaders")); Call("RefreshStatus");
         Check(Get<TextBlock>("RuntimeStatus").Text=="Ready","Runtime existence detection");
-        Check(Get<TextBlock>("DlssStatus").Text=="Available","DLSS existence detection");
-        Check(Get<TextBlock>("Fsr4Status").Text=="v07 available","FSR4 legacy detection");
+        Check(Get<TextBlock>("DlssStatus").Text=="Model DLL is invalid","Invalid DLSS is not installed");
+        Check(Get<TextBlock>("Fsr4Status").Text=="Assets incomplete or damaged","Empty FSR4 directory is not installed");
+        var pe=new byte[128];
+        using(var writer=new BinaryWriter(new MemoryStream(pe))) {
+            writer.Write((ushort)0x5A4D);writer.BaseStream.Position=0x3C;writer.Write((uint)64);
+            writer.BaseStream.Position=64;writer.Write((uint)0x4550);writer.Write((ushort)0x8664);
+            writer.BaseStream.Position=86;writer.Write((ushort)0x2000);writer.Write((ushort)0x20B);
+        }
+        File.WriteAllBytes(dlssPath,pe);
+        var assetFolder=Path.Combine(root,"fsr4_shaders");
+        var spv=new byte[20];BitConverter.GetBytes(0x07230203u).CopyTo(spv,0);
+        foreach(var name in new[]{"rcas","spd_auto_exposure"})File.WriteAllBytes(Path.Combine(assetFolder,name+".spv"),spv);
+        foreach(var model in new[]{"native","quality","balanced","performance","ultraperf","drs"}) {
+            var prefix=Path.Combine(assetFolder,"fsr4_model_v07_i8_"+model);
+            foreach(var suffix in new[]{"initializers","pre_weights"})File.WriteAllBytes(prefix+"_"+suffix+".bin",new byte[8]);
+            File.WriteAllText(prefix+"_shader_manifest.json","{\"artifacts\":{}}");
+            foreach(var tier in new[]{"1080","2160"}) {
+                foreach(var name in new[]{"pre","post"})File.WriteAllBytes(prefix+"_"+tier+"_"+name+".spv",spv);
+                for(int pass=1;pass<=12;pass++)File.WriteAllBytes(prefix+"_"+tier+"_pass"+pass+".spv",spv);
+            }
+        }
+        Call("RefreshStatus");
+        Check(Get<TextBlock>("DlssStatus").Text=="Model installed · driver checked at launch","x64 DLSS model detected");
+        Check(Get<TextBlock>("Fsr4Status").Text=="v07 installed · experimental","Complete FSR4 set detected");
+        var damagedPass=Path.Combine(assetFolder,"fsr4_model_v07_i8_quality_2160_pass12.spv");
+        File.WriteAllBytes(damagedPass,new byte[20]);Call("RefreshStatus");
+        Check(Get<TextBlock>("Fsr4Status").Text=="Assets incomplete or damaged","Damaged shader header rejected");
+        File.WriteAllBytes(damagedPass,spv);Call("RefreshStatus");
+        Select("UiLanguageCombo","vi");Pump();
+        Check(Get<TextBlock>("Fsr4Status").Text=="Đã có v07 · thử nghiệm","Installed FSR4 status translates live");
+        Select("UiLanguageCombo","en");
         Directory.CreateDirectory(Path.Combine(root,"fsr4_411")); Call("RefreshStatus");
         Check(Get<TextBlock>("Fsr4Status").Text=="4.1.1 available","FSR4 4.1.1 detection");
         File.Delete(Path.Combine(root,"out","bb-probe.exe")); File.Delete(Path.Combine(root,"out","nvngx_dlss.dll"));
-        Directory.Delete(Path.Combine(root,"fsr4_shaders")); Directory.Delete(Path.Combine(root,"fsr4_411"));
+        Directory.Delete(Path.Combine(root,"fsr4_shaders"),true); Directory.Delete(Path.Combine(root,"fsr4_411"));
         Get<TextBox>("PathBox").Text=Path.Combine(root,"bad"); Call("RefreshStatus");
         Check(!Get<Button>("PlayButton").IsEnabled,"Invalid path must disable Play");
         Get<TextBox>("PathBox").Text=game; Call("RefreshStatus");
@@ -368,7 +402,7 @@ static class Program
         Select("UpscalerCombo","fsr411"); Select("PresetCombo","3"); Select("FpsCombo","90");
         Select("PresentCombo","FifoRelaxed"); Select("LiveResolutionCombo","auto"); Select("ModelLodCombo","-2");
         Get<ComboBox>("ResolutionCombo").SelectedIndex=2; Get<ComboBox>("ControllerCombo").SelectedIndex=2;
-        foreach(var name in new[]{"CameraControlsCheck","ChangeAppearanceCheck","SharpenCheck","ShowFpsCheck","SsrCheck","SkipIntroCheck","DeveloperModeCheck","DetailedLogsCheck","FrameStatsCheck","AudioStatsCheck","FsrProfileCheck"}) Get<CheckBox>(name).IsChecked=true;
+        foreach(var name in new[]{"CameraControlsCheck","ChangeAppearanceCheck","SharpenCheck","ShowFpsCheck","SsrCheck","SkipIntroCheck","DeveloperModeCheck","DetailedLogsCheck","FrameStatsCheck","GpuProfileCheck","AudioStatsCheck","FsrProfileCheck"}) Get<CheckBox>(name).IsChecked=true;
         foreach(var name in new[]{"ChromaticCheck","DofCheck","MotionBlurCheck","SsaoCheck","GameAaCheck","ShadowsCheck","ModsEnabledCheck"}) Get<CheckBox>(name).IsChecked=false;
         Check(Get<DataGrid>("KeyBindingsGrid").Items.Count==29,"All supported actions in launcher");
         Get<Slider>("MouseSensitivitySlider").Value=8;
@@ -423,6 +457,9 @@ static class Program
             Check(!json.RootElement.GetProperty("ModsEnabled").GetBoolean(),"JSON mods");
         }
         Check(File.ReadAllText(Path.Combine(root,"out","game_dir.txt"))==game,"Remembered path");
+        Check(!Get<Button>("PlayButton").IsEnabled,"Missing native runtime disables Play even with a valid dump");
+        File.WriteAllText(Path.Combine(root,"out","bb-probe.exe"),"synthetic launch fixture only");
+        Call("RefreshStatusCore",false);
         Call("Play_Click", Get<Button>("PlayButton"),new RoutedEventArgs());
         Call("Play_Click", Get<Button>("PlayButton"),new RoutedEventArgs());
         var envPath=Path.Combine(root,"launch-env.txt");
@@ -435,6 +472,45 @@ static class Program
         for(int i=0;i<100 && !window.IsVisible;i++) { Thread.Sleep(50); Pump(); }
         Check(window.IsVisible,"Launcher returns after the synthetic game session exits");
         Check(Get<Button>("PlayButton").IsEnabled,"Play is ready again after the game exits");
+        string sessionDir=env.Split("\r\n").Single(line=>line.StartsWith("BB_SESSION_DIR=")).Substring("BB_SESSION_DIR=".Length);
+        Check(Path.GetDirectoryName(env.Split("\r\n").Single(line=>line.StartsWith("BB_LOG_FILE=")).Substring("BB_LOG_FILE=".Length))==sessionDir,"Each launch log belongs to its unique session directory");
+        Check(env.Split("\r\n").Contains("BB_GPU_PROFILE=1"),"GPU profiler switch reaches runtime");
+        Check(Get<Border>("LastSessionCard").Visibility==Visibility.Visible,"Session outcome shown on Home");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x0000008B\",\"outcome\":{\"category\":\"crash\",\"reason\":\"access_violation\"},\"performance\":{\"available\":true,\"average_fps\":59.5,\"one_percent_low_fps\":44.1,\"p99_frame_ms\":22.68}}");
+        Call("ShowSessionReport",sessionDir,139);Pump();
+        Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne stopped unexpectedly","Native crash is not reported as a normal close");
+        Check(Get<TextBlock>("LastSessionDetail").Text.Contains("Memory access violation") && Get<TextBlock>("LastSessionDetail").Text.Contains("0x0000008B"),"Crash shows evidence and exit code");
+        Check(Get<TextBlock>("LastSessionPerformance").Text.Contains("59.5") && Get<TextBlock>("LastSessionPerformance").Text.Contains("44.1"),"Measured FPS and 1% low displayed");
+        Select("UiLanguageCombo","vi");Pump();
+        Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne dừng bất thường" && Get<TextBlock>("LastSessionDetail").Text.Contains("Lỗi truy cập bộ nhớ"),"Existing crash result translates to Vietnamese");
+        ClickNav("Home");Render(Path.Combine(output,"session-crash-vi.png"));
+        Select("UiLanguageCombo","en");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000001\",\"outcome\":{\"category\":\"startup_error\",\"reason\":\"preparation_failed\"}}");
+        Call("ShowSessionReport",sessionDir,1);Pump();
+        Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne could not start" && Get<TextBlock>("LastSessionDetail").Text.Contains("preparation failed"),"Preparation failure is distinguished from a native crash");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"running\"}");
+        Call("ShowSessionReport",sessionDir,0);Pump();
+        Check(Get<TextBlock>("LastSessionDetail").Text.Contains("before its report was completed"),"Incomplete report is not silently classified as a successful session");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"truncated");
+        Call("ShowSessionReport",sessionDir,139);Pump();
+        Check(Get<TextBlock>("LastSessionPerformance").Text.Contains("could not be read"),"Truncated crash report has a usable fallback");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000000\",\"outcome\":{\"category\":\"normal\",\"reason\":\"normal_exit\"}}");
+        Call("ShowSessionReport",sessionDir,0);Pump();
+        Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne closed","A successful runtime exit retains the normal close message");
+        File.WriteAllText(Path.Combine(root,"run.bat"),"@echo off\r\nset BB_ > launch-env.txt\r\n> \"%BB_SESSION_DIR%\\session.json\" echo {\"status\":\"finished\",\"exit_code_hex\":\"0x0000008B\",\"outcome\":{\"category\":\"crash\",\"reason\":\"access_violation\"}}\r\nping 127.0.0.1 -n 2 > nul\r\nexit /b 139\r\n");
+        Get<CheckBox>("DeveloperModeCheck").IsChecked=false;
+        Environment.SetEnvironmentVariable("BB_GPU_PROFILE","1");
+        Get<CheckBox>("GpuProfileCheck").IsChecked=false;
+        Call("Play_Click", Get<Button>("PlayButton"),new RoutedEventArgs());
+        for(int i=0;i<120 && !window.IsVisible;i++) { Thread.Sleep(50); Pump(); }
+        Check(window.IsVisible && Get<Button>("PlayButton").IsEnabled,"Launcher recovers after a real synthetic nonzero process exit");
+        Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne stopped unexpectedly" && Get<TextBlock>("LastSessionDetail").Text.Contains("Memory access violation"),"Exited handler reads the native outcome and shell exit code");
+        string diagnosticEnv=File.ReadAllText(envPath);
+        Check(diagnosticEnv.Split("\r\n").Contains("BB_FRAME_STATS=1"),"Frame recording works without Developer Mode");
+        Check(!diagnosticEnv.Split("\r\n").Contains("BB_GPU_PROFILE=1"),"Disabled GPU profiling overrides an inherited profiler switch");
+        Environment.SetEnvironmentVariable("BB_GPU_PROFILE",null);
+        Check(!diagnosticEnv.Contains("BB_SESSION_DIR="+sessionDir+"\r\n"),"Consecutive sessions have different report directories");
+        Call("ShowSessionReport",sessionDir,0);Get<ScrollViewer>("HomePage").ScrollToTop();
         Render(Path.Combine(output,"launcher-play.png"));
         foreach(var page in new[]{"General","Graphics","Performance","Controller","Online","Mods","Advanced"}) {
             ClickNav(page); Pump();

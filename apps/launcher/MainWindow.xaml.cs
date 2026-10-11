@@ -62,6 +62,7 @@ public partial class MainWindow : Window
         public bool DeveloperMode { get; set; }
         public bool DetailedLogs { get; set; }
         public bool FrameStats { get; set; }
+        public bool GpuProfile { get; set; }
         public bool AudioStats { get; set; }
         public bool FsrProfile { get; set; }
         public bool OnlineEnabled { get; set; }
@@ -96,6 +97,7 @@ public partial class MainWindow : Window
         InitializePresentation();
         LoadHeroImage();
         RefreshStatus();
+        LoadLatestSession();
     }
 
     static string FindProjectRoot()
@@ -254,6 +256,7 @@ public partial class MainWindow : Window
         DeveloperModeCheck.IsChecked = state.DeveloperMode;
         DetailedLogsCheck.IsChecked = state.DetailedLogs;
         FrameStatsCheck.IsChecked = state.FrameStats;
+        GpuProfileCheck.IsChecked = state.GpuProfile;
         AudioStatsCheck.IsChecked = state.AudioStats;
         FsrProfileCheck.IsChecked = state.FsrProfile;
         syncing = false;
@@ -299,6 +302,7 @@ public partial class MainWindow : Window
         state.DeveloperMode = DeveloperModeCheck.IsChecked == true;
         state.DetailedLogs = DetailedLogsCheck.IsChecked == true;
         state.FrameStats = FrameStatsCheck.IsChecked == true;
+        state.GpuProfile = GpuProfileCheck.IsChecked == true;
         state.AudioStats = AudioStatsCheck.IsChecked == true;
         state.FsrProfile = FsrProfileCheck.IsChecked == true;
         CollectInputUi();
@@ -399,21 +403,24 @@ public partial class MainWindow : Window
             new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(117, 207, 121)) :
             new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(210, 107, 112));
         L10n.SetText(PathValidationText, valid ? "Game dump detected · {0}" : "Choose the folder containing eboot.bin and sce_sys.", valid ? new object[] { version } : Array.Empty<object>());
-        PlayButton.IsEnabled = valid;
-        L10n.SetText(PlayHint, valid ? "Ready. Settings are saved automatically when Play is pressed." : "Select a valid Bloodborne dump before playing.");
-
         string probe = Path.Combine(root, "out", "bb-probe.exe");
+        bool nativeReady = File.Exists(probe);
+        PlayButton.IsEnabled = valid && nativeReady && !gameRunning;
+        L10n.SetText(PlayHint, !valid ? "Select a valid Bloodborne dump before playing." : !nativeReady ?
+            "Build the native runtime before playing." : "Ready. Settings are saved automatically when Play is pressed.");
         L10n.SetText(RuntimeStatus, File.Exists(probe) ? "Ready" : "Not built");
         RuntimeStatus.Foreground = File.Exists(probe) ? Green() : Red();
 
         string dlss = Path.Combine(root, "out", "nvngx_dlss.dll");
-        if (!File.Exists(dlss)) dlss = Path.Combine(root, "nvngx_dlss.dll");
-        L10n.SetText(DlssStatus, File.Exists(dlss) ? "Available" : "Model DLL not installed");
-        DlssStatus.Foreground = File.Exists(dlss) ? Green() : Muted();
+        bool dlssReady = UpscalerAssets.DlssInstalled(dlss);
+        L10n.SetText(DlssStatus, dlssReady ? "Model installed · driver checked at launch" :
+            File.Exists(dlss) ? "Model DLL is invalid" : "Model DLL not installed");
+        DlssStatus.Foreground = dlssReady ? Green() : Muted();
 
         bool fsr411 = Directory.Exists(Path.Combine(root, "fsr4_411"));
-        bool fsr4 = Directory.Exists(Path.Combine(root, "fsr4_shaders"));
-        L10n.SetText(Fsr4Status, fsr411 ? "4.1.1 available" : fsr4 ? "v07 available" : "Assets not installed");
+        bool fsr4 = UpscalerAssets.Fsr4Installed(Path.Combine(root, "fsr4_shaders"));
+        L10n.SetText(Fsr4Status, fsr411 ? "4.1.1 available" : fsr4 ? "v07 installed · experimental" :
+            Directory.Exists(Path.Combine(root, "fsr4_shaders")) ? "Assets incomplete or damaged" : "Assets not installed");
         Fsr4Status.Foreground = (fsr411 || fsr4) ? Green() : Muted();
 
         if (detectGpu) DetectGpu();
@@ -511,6 +518,12 @@ public partial class MainWindow : Window
     void Play_Click(object sender, RoutedEventArgs e)
     {
         if(gameRunning) return;
+        if (!File.Exists(Path.Combine(root, "out", "bb-probe.exe")))
+        {
+            L10n.SetText(FooterMessage, "Build the native runtime before playing.");
+            RefreshStatusCore(detectGpu: false);
+            return;
+        }
         if (!SaveSettings()) return;
         if (!ValidateOnlineForLaunch()) return;
         if (!File.Exists(Path.Combine(state.GamePath, "eboot.bin")))
@@ -528,7 +541,9 @@ public partial class MainWindow : Window
         {
             string logsDir = Path.Combine(root, "logs");
             Directory.CreateDirectory(logsDir);
-            string logPath = Path.Combine(logsDir, $"techmo-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.log");
+            string sessionDir = Path.Combine(logsDir, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(sessionDir);
+            string logPath = Path.Combine(sessionDir, "session.log");
 
             var psi = new ProcessStartInfo("cmd.exe")
             {
@@ -549,6 +564,7 @@ public partial class MainWindow : Window
             psi.Environment["BB_GAMEPAD_INDEX"] = state.GamepadIndex.ToString();
             psi.Environment["BB_MODS_ENABLED"] = state.ModsEnabled ? "1" : "0";
             psi.Environment["BB_LOG_FILE"] = logPath;
+            psi.Environment["BB_SESSION_DIR"] = sessionDir;
             psi.Environment["PYTHONUNBUFFERED"] = "1";
             if (!string.IsNullOrEmpty(state.PresentMode)) psi.Environment["BB_PRESENT_MODE"] = state.PresentMode;
             if (state.DeveloperMode && state.DetailedLogs)
@@ -556,7 +572,11 @@ public partial class MainWindow : Window
                 psi.Environment["BB_DLSS_LOG"] = "1";
                 psi.Environment["BB_DIRECT_IMAGE_BARRIERS"] = "1";
             }
-            if (state.DeveloperMode && state.FrameStats) psi.Environment["BB_FRAME_STATS"] = "1";
+            // Recording does not require switches which change renderer behavior.
+            if (state.FrameStats) psi.Environment["BB_FRAME_STATS"] = "1";
+            else psi.Environment.Remove("BB_FRAME_STATS");
+            if (state.GpuProfile) psi.Environment["BB_GPU_PROFILE"] = "1";
+            else psi.Environment.Remove("BB_GPU_PROFILE");
             if (state.DeveloperMode && state.AudioStats) psi.Environment["BB_AUDIO_STATS"] = "1";
             if (state.DeveloperMode && state.FsrProfile) psi.Environment["BB_FSR4_PROFILE"] = "1";
             ConfigureOnlineLaunch(psi);
@@ -567,6 +587,7 @@ public partial class MainWindow : Window
             };
             gameProcess.Exited += (_, _) =>
             {
+                int exitCode = gameProcess.ExitCode;
                 Dispatcher.BeginInvoke(() =>
                 {
                     gameRunning=false;
@@ -576,7 +597,12 @@ public partial class MainWindow : Window
                     ApplyStateToUi();
                     RefreshStatusCore(detectGpu: false);
                     Activate();
-                    L10n.SetText(FooterMessage, "Bloodborne closed");
+                    ShowSessionReport(sessionDir, exitCode);
+                    if (exitCode != 0)
+                    {
+                        Nav_Click(NavHome, new RoutedEventArgs());
+                        LastSessionCard.BringIntoView();
+                    }
                     gameProcess.Dispose();
                 });
             };

@@ -81,6 +81,9 @@ private:
     std::unordered_map<u64, Total> totals;
     u64 frames = 0;
     u64 current = 0;
+    FILE* csv = nullptr;
+    u32 csv_unflushed = 0;
+    u64 collected_frames = 0;
     std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
 };
 

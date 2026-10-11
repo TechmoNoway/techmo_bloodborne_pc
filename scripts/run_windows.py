@@ -17,12 +17,20 @@ import subprocess
 import sys
 import struct
 import zlib
+import traceback
 from mods import remove_overlay
+from session_diagnostics import Session
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / 'scripts'
 PYTHON = sys.executable
 LOG_STREAM = None
+SESSION = None
+
+
+def phase(name):
+    if SESSION is not None:
+        SESSION.set_phase(name)
 
 
 def init_session_log():
@@ -75,7 +83,10 @@ def build():
     if not bash.is_file():
         sys.exit(f'MSYS2 not found at {msys_root()} (set BB_MSYS2, or BB_PREBUILT=1 with a built out/)')
     env = dict(os.environ, MSYSTEM='CLANG64', CHERE_INVOKING='1')
-    run([bash, '-lc', 'bash build.sh'], env=env)
+    command = ('local_bin="$PWD/builds/_internal/toolchain/clang64/bin"; '
+               'if [[ -f "$local_bin/clang.exe" ]]; then '
+               'export PATH="$local_bin:/usr/bin:/c/Program Files/Git/cmd:$PATH"; fi; bash build.sh')
+    run([bash, '-lc', command], env=env)
 
 
 def settings_value(config, key):
@@ -103,6 +114,7 @@ def configure_frame_rate(env):
 
 
 def main():
+    phase('validation')
     arguments = sys.argv[1:]
     game = os.environ.get('BB_GAME_DIR')
     if arguments[:1] == ['--game-dir'] and len(arguments) > 1:
@@ -133,6 +145,7 @@ def main():
     # The in-game menu's "Apply and restart" runs this launcher again (probe.c runtime_restart).
     os.environ['BB_RESTART_COMMAND'] = subprocess.list2cmdline([PYTHON, str(Path(__file__).resolve()), *sys.argv[1:]])
 
+    phase('mods')
     merged = Path(run([PYTHON, SCRIPTS / 'mods.py', original, '--out', out,
                        '--mods-dir', os.environ.get('BB_MODS_DIR', data / 'mods'),
                        '--config', os.environ.get('BB_MODS_CONFIG', data / 'mods.json'),
@@ -141,9 +154,11 @@ def main():
     try:
         for script, extra in (('prepare.py', []), ('link_libc.py', []), ('link_modules.py', []),
                               ('content_profile.py', ['--sku', os.environ.get('BB_CONTENT_SKU', 'full')])):
+            phase(script.removesuffix('.py'))
             run([PYTHON, SCRIPTS / script, merged, '--out', out, *extra])
         prebuilt = os.environ.get('BB_PREBUILT') == '1'
         if not prebuilt:
+            phase('build')
             build()
         # Engine features are prepared locally and only mounted after runtime byte checks.
         for key in ('BB_DREAM_MIRROR_ASSET', 'BB_ENGINE_IMAGE_SHA256', 'BB_PC_MENU_ASSETS', 'BB_REBIRTH_ASSET'):
@@ -195,20 +210,27 @@ def main():
             os.environ.setdefault('BB_DMEM_MB', '9152')
             print(f'Output {scaled_output}: scene {scaled_render}, direct memory {os.environ["BB_DMEM_MB"]} MiB '
                   '(live_resolution=1: live changes)')
+        phase('patches')
         run([PYTHON, SCRIPTS / 'patches.py', '--out', out, '--fps', fps, '--extra', os.environ.get('BB_PATCHES', ''),
              '--settings', config, '--game-dir', merged, '--render-res', os.environ.get('BB_RENDER_RES', ''),
              '--output-res', os.environ.get('BB_OUTPUT_RES', ''),
              '--patches-dir', os.environ.get('BB_PATCHES_DIR', data / 'patches'),
              '--patches-config', os.environ.get('BB_PATCHES_CONFIG', data / 'patches.json')])
         probe = ROOT / os.environ.get('BB_PROBE', out / 'bb-probe.exe')
+        phase('native_startup')
+        if not probe.is_file():
+            sys.exit(f'Native runtime not found: {probe}. Build Techmo with tools/build-native.ps1 first.')
         command = [probe, out / 'boot-linked.bin', '--content-profile', out / 'content.bin',
                    '--patches', out / 'patches.bin', '--app0', merged,
                    '--user', os.environ.get('BB_USER_DIR', data / 'user'),
                    '--timeout', os.environ.get('BB_TIMEOUT', '0'), *arguments]
         # MSYS2's DLLs (libc++, SDL3, FFmpeg, ...). System32 is searched before PATH, so the
         # Vulkan loader stays the one installed with the GPU driver.
-        os.environ['PATH'] = os.pathsep.join([str(msys_root() / 'clang64/bin'), os.environ.get('PATH', '')])
+        local_bin = ROOT / 'builds/_internal/toolchain/clang64/bin'
+        os.environ['PATH'] = os.pathsep.join([str(probe.parent), str(local_bin),
+                                            str(msys_root() / 'clang64/bin'), os.environ.get('PATH', '')])
         print('Starting:', ' '.join(shlex.quote(str(c)) for c in command), flush=True)
+        phase('runtime')
         try:
             status = subprocess.call(
                 [str(c) for c in command],
@@ -225,6 +247,30 @@ def main():
             remove_overlay(overlay)
 
 
-if __name__ == '__main__':
+def entry():
+    global SESSION
+    SESSION = Session(Path(os.environ.get('BB_DATA_DIR', ROOT)), os.environ)
     init_session_log()
-    sys.exit(main())
+    code = 1
+    try:
+        code = main()
+    except SystemExit as error:
+        code = error.code if isinstance(error.code, int) else 1
+        if error.code and not isinstance(error.code, int):
+            print(error.code, file=sys.stderr, flush=True)
+    except KeyboardInterrupt:
+        code = 130
+    except Exception:
+        traceback.print_exc()
+    finally:
+        if LOG_STREAM:
+            LOG_STREAM.flush()
+        try:
+            SESSION.finish(code)
+        except (OSError, ValueError) as error:
+            print(f'Could not finish session report: {error}', file=sys.stderr, flush=True)
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(entry())

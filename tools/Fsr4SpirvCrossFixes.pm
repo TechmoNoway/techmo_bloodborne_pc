@@ -10,6 +10,8 @@ use warnings;
 # before main.
 sub signed_unpack {
     my ($src) = @_;
+    # Native Windows spirv-cross emits CRLF; the rewrite patterns use LF.
+    $src =~ s/\r\n/\n/g;
     my $n = ($src =~ s/\bunpack8\(/bbUnpackS8(/g);
     die "expected signed int8 unpacks\n" unless $n;
     my $helper = <<'GLSL';

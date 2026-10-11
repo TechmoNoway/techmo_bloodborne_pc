@@ -18,6 +18,7 @@
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <wchar.h>
+#include "win32_diagnostics.h"
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -237,6 +238,7 @@ static __attribute__((noreturn)) void terminate(unsigned code) {
 static void report_exception(EXCEPTION_POINTERS *e) {
     static volatile LONG reporting;
     if (InterlockedExchange(&reporting, 1)) { Sleep(INFINITE); }
+    bb_diagnostics_fault(e, guest_address((uintptr_t)e->ContextRecord->Rip));
     EXCEPTION_RECORD *r = e->ExceptionRecord;
     CONTEXT *c = e->ContextRecord;
     char where[512];
@@ -668,6 +670,7 @@ static int main_argc;
 static char **main_argv;
 static unsigned __stdcall loader_thread(void *unused) { (void)unused; return (unsigned)loader_main(main_argc, main_argv); }
 int main(int argc, char **argv) {
+    bb_diagnostics_init();
     timeBeginPeriod(1); /* 1 ms waits for timed locks and sleeps outside runtime_sleep_ns */
     /* No EcoQoS: Windows 11 otherwise moves the threads of an unfocused window to efficiency
      * cores (hybrid CPUs), and the GPU command thread sets the frame rate. */

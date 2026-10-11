@@ -2,6 +2,8 @@
 from paths import ROOT
 from pathlib import Path
 import struct
+import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -115,8 +117,28 @@ class LoaderTests(unittest.TestCase):
 
     def test_illegal_instruction_reports_guest_offset(self):
         r = self.run_image(package(b'\x0f\x0b'))
-        self.assertEqual(r.returncode, 132)
-        self.assertIn('at guest offset 0x0,', r.stderr)
+        if os.name == 'nt':
+            self.assertEqual(r.returncode, 139)
+            self.assertIn('Guest fault 0xc000001d at guest+0x0', r.stderr)
+        else:
+            self.assertEqual(r.returncode, 132)
+            self.assertIn('at guest offset 0x0,', r.stderr)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows external minidump reporter')
+    def test_guest_exception_is_captured_by_real_loader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            boot = directory / 'boot.bin'
+            boot.write_bytes(package(b'\x0f\x0b'))
+            result = subprocess.run([str(EXE.resolve()), str(boot), '--cpu-only'],
+                                    env=dict(os.environ, BB_SESSION_DIR=str(directory)),
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 139, result.stderr)
+            fault = json.loads((directory / 'fault.json').read_text())
+            self.assertEqual(fault['exception_code'], '0xc000001d')
+            self.assertEqual(fault['origin'], 'guest')
+            self.assertTrue(json.loads((directory / 'minidump.json').read_text())['success'])
+            self.assertEqual((directory / 'crash.dmp').read_bytes()[:4], b'MDMP')
 
     def test_runtime_returns_from_verified_init_env(self):
         # Align stack, call _init_env through +32, then tail-jump to unknown +40.

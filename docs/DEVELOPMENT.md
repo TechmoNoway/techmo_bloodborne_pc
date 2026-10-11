@@ -167,3 +167,24 @@ cancel/focus behavior, persistence, preset switching, keypad plus and 640×480
 Vietnamese dialogs. A full Techmo engine build and real game testing remain
 pending. Existing native binaries must be rebuilt to understand the new syntax;
 the original installation has not been modified.
+
+## Native baseline and diagnostics
+
+The local Windows native engine has now been compiled with the isolated
+CLANG64 toolchain under `builds/_internal/toolchain`. Native executables and
+their DLL import closure are in `out/`; `native-build.json` identifies the
+compiler, dependencies and exact binaries. Real game stability and performance
+on the target GPUs still need in-game measurements.
+
+Sessions now have separate logs, outcome reports and optional frame/GPU CSVs.
+The launcher reads the native outcome after process exit, distinguishes startup
+errors from crashes and offers a report-folder button in English/Vietnamese.
+Missing native binaries disable Play. A prestarted external crash reporter writes
+minidumps for fatal native exceptions; its failure status is also recorded.
+
+The current WPF verifier passes 503 assertions. The full Python suite passes 114
+tests with no skips using the compiled native binaries. Native runtime fixtures
+and 13 renderer regression targets pass; Vulkan submission/readback passes on
+the local RTX 4060 Laptop GPU. These results supersede the older native-build
+pending notes above. See [the diagnostics guide](guides/DIAGNOSTICS.md) for
+recording instructions, definitions and limits of the performance measurements.
