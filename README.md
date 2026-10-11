@@ -18,12 +18,6 @@ The **Hunter’s Desk** interface pairs game artwork with launch controls, quick
 settings and expandable system details. The language selector stays available
 on every page, and smaller windows use a scrolling layout.
 
-This is an independent development fork of
-[DarkIzuku/bloodborne_pc](https://github.com/DarkIzuku/bloodborne_pc).
-It builds on that project's runtime and renderer, with its own launcher identity,
-bilingual UI and project organization. Upstream authors and libraries are credited
-in [NOTICE.md](NOTICE.md) and [DEPENDENCIES.md](DEPENDENCIES.md).
-
 ![Techmo Bloodborne launcher](docs/assets/launcher.png)
 
 ## What you can configure
