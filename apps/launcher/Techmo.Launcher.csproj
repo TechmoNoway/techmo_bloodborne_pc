@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Techmo.Launcher</AssemblyName>
+    <Product>Techmo Bloodborne</Product>
+    <Title>Techmo Bloodborne Launcher</Title>
+    <Description>Windows launcher for the Techmo Bloodborne development fork.</Description>
+    <RootNamespace>BloodborneLauncher</RootNamespace>
+    <ApplicationIcon>Assets/bloodborne.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/*.png" />
+    <Resource Include="Assets/bloodborne.ico" />
+    <EmbeddedResource Include="Localization/*.json" />
+  </ItemGroup>
+</Project>
