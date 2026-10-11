@@ -6,6 +6,7 @@
 #include <string>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include "bbport_toggles.h"
 
 #include <condition_variable>
@@ -23,6 +24,7 @@
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_view.h"
+#include "video_core/texture_cache/memory_pressure.h"
 #include "video_core/texture_cache/sampler.h"
 #include "video_core/texture_cache/tile_manager.h"
 
@@ -43,7 +45,6 @@ class TextureCache {
     // Default values for garbage collection
     static constexpr s64 DEFAULT_PRESSURE_GC_MEMORY = 1_GB + 512_MB;
     static constexpr s64 DEFAULT_CRITICAL_GC_MEMORY = 3_GB;
-    static constexpr s64 TARGET_GC_THRESHOLD = 8_GB;
 
     using ImageIds = boost::container::small_vector<ImageId, 16>;
 
@@ -404,6 +405,7 @@ private:
 
     void GarbageCollectImages();
     void GarbageCollectSamplers();
+    void WriteMemorySample();
 
 private:
     const Vulkan::Instance& instance;
@@ -420,6 +422,14 @@ private:
     std::unordered_set<ImageId> download_images;
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0; ///< bbport: pressure report
+    u64 gc_total_evictions = 0, gc_total_downloads = 0;
+    MemoryPressure memory_pressure;
+    u64 driver_memory_budget = 0;
+    u64 gc_memory_budget = 0;
+    std::atomic<u64> pending_image_bytes{0};
+    std::chrono::steady_clock::time_point memory_sample_time{};
+    std::chrono::steady_clock::time_point memory_log_start = std::chrono::steady_clock::now();
+    FILE* memory_log = nullptr;
     std::chrono::steady_clock::time_point gc_report_time{};
     /// bbport: gc_tick at each of the last 64 seconds (GarbageCollectImages).
     std::array<u64, 64> gc_tick_at_second{};

@@ -515,6 +515,12 @@ public:
     /// (VK_EXT_memory_budget: what this process can use now, other processes included).
     [[nodiscard]] u64 GetDeviceMemoryBudgetNow() const;
 
+    struct DeviceMemorySnapshot {
+        u64 usage{}, budget{};
+    };
+    /// Usage and budget from the same driver query, using the same selected heaps.
+    [[nodiscard]] DeviceMemorySnapshot GetDeviceMemorySnapshot() const;
+
     /// Returns the total memory budget available to the device.
     [[nodiscard]] u64 GetTotalMemoryBudget() const {
         return total_memory_budget;

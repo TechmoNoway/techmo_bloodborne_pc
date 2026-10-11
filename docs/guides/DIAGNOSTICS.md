@@ -35,6 +35,7 @@ Every launch gets a separate `logs/<timestamp>-<id>/` directory:
 | `summary.txt` | Short result and references to supporting files |
 | `frames.csv` | VideoOut flip intervals, Stage A thread CPU time, waits, uploads and compile counts |
 | `gpu.csv` | GPU timestamp intervals when GPU profiling is enabled |
+| `vram.csv` | Driver memory estimates and cache counters when frame statistics are enabled |
 | `fault.json` | Native exception code, instruction address, thread and access operation |
 | `crash.dmp` | Windows minidump for captured fatal native exceptions |
 | `minidump.json` | Whether the external dump writer succeeded, with its Windows error code |
@@ -98,7 +99,58 @@ work still includes barriers and transfers. Older captures remain readable.
 Session environment snapshots include Vulkan recording thread/segment settings,
 async submission, direct segments and the FSR 4 shader variant setting.
 
-## First renderer/runtime optimization pass
+## VRAM cache management
+
+Texture GC now reads usage and budget together through `VK_EXT_memory_budget` on
+discrete and integrated GPUs, at most once every 250 ms. It starts idle-image
+cleanup at the smaller of 512 MiB and 70% of the current budget, enters pressure at 85% and critical pressure
+at 95%. Recovery marks are 80% and 90%, respectively, to avoid repeatedly crossing
+one threshold. A temporarily zero budget retains the previous valid policy.
+An unavailable budget query skips evictions for that pass. These are cache
+thresholds, not hard allocation caps or guarantees against OOM.
+The existing 20-second idle-image retention remains in effect below pressure;
+GPU-written images still require the existing safe write-back checks, and Vulkan
+destruction is deferred until the scheduler timeline completes.
+
+Each pass is bounded; guest texture sizes no longer get added/subtracted from a
+driver heap measurement. The batch uses host image allocation sizes to estimate
+reclamation, then the next query observes actual usage. Shared allocator blocks
+may retain slack even after an image is released. Budget/usage semantics are
+documented by [Khronos](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_memory_budget.html).
+
+With **Record frame statistics** enabled, a session also writes `vram.csv` at
+most four times per second. The report's `memory` object and `summary.txt` contain
+the peak driver usage estimate, minimum budget, budget fraction and pressure
+sample counts. The CSV includes tracked Vulkan image bytes (scene targets and
+other images, not just game textures), guest buffer allocated/unused bytes,
+pending GPU-deferred image destruction and cumulative GC evictions/write-backs.
+The driver sample is taken before that pass's evictions; the other counters are
+read at the end of the pass. These categories overlap and cannot be added to the
+driver estimate. Upscaler internal allocations and allocator slack are not
+individually attributed. Samples can miss short peaks and remain backward
+compatible with sessions that have no `vram.csv`.
+
+For a real A/B comparison, use the same resolution, upscaler, patches and route;
+visit several areas and return to the start. Compare peak usage **and** frame-time
+p95/p99 and 1% lows. A lower VRAM number with frequent re-uploads or write-backs
+can be a performance regression. `BB_GC_BUDGET_MB` is an optional cache-policy
+override for controlled pressure testing; it does not reserve VRAM or cap driver
+allocations. Session reports record it and the existing idle/dedicated-allocation
+overrides.
+
+`memory-pressure-test` runs without a GPU and exercises 0.5/1/4/6/8 GiB budgets,
+shrinking budgets, exact transition boundaries, unavailable budgets and overflow.
+`memory-residency-test` uses real headless Vulkan images to check memory accounting
+and deferred release only after submitted work completes. It does not launch
+Bloodborne or establish in-game VRAM savings:
+
+```sh
+ninja -C out/gpu memory-pressure-test memory-residency-test
+out/gpu/memory-pressure-test.exe
+out/gpu/memory-residency-test.exe
+```
+
+## Runtime clock measurements
 
 The Windows runtime caches QPC frequency through a thread-safe initializer. When
 the frequency divides one billion exactly, integer multiplication converts ticks

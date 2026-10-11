@@ -137,22 +137,15 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
         return;
     }
 
-    const s64 device_local_memory = static_cast<s64>(instance.GetTotalMemoryBudget());
-    const s64 min_spacing_expected = device_local_memory - 1_GB;
-    const s64 min_spacing_critical = device_local_memory - 512_MB;
-    const s64 mem_threshold = std::min<s64>(device_local_memory, TARGET_GC_THRESHOLD);
-    const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
-    const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
-    pressure_gc_memory = static_cast<u64>(
-        std::max<u64>(std::min(device_local_memory - min_vacancy_expected, min_spacing_expected),
-                      DEFAULT_PRESSURE_GC_MEMORY));
-    critical_gc_memory = static_cast<u64>(
-        std::max<u64>(std::min(device_local_memory - min_vacancy_critical, min_spacing_critical),
-                      DEFAULT_CRITICAL_GC_MEMORY));
-    trigger_gc_memory = static_cast<u64>((device_local_memory - mem_threshold) / 2);
+    memory_pressure.Update(0, instance.GetTotalMemoryBudget());
+    trigger_gc_memory = memory_pressure.marks.trigger;
+    pressure_gc_memory = memory_pressure.marks.pressure;
+    critical_gc_memory = memory_pressure.marks.critical;
 }
 
-TextureCache::~TextureCache() = default;
+TextureCache::~TextureCache() {
+    if (memory_log) std::fclose(memory_log);
+}
 
 std::string TextureCache::DescribeImagesIn(VAddr addr, u64 size) {
     std::unique_lock lock{mutex, std::try_to_lock}; // the caller may hold it already
@@ -1014,7 +1007,9 @@ void TextureCache::RegisterImage(ImageId image_id) {
                "Trying to register an already registered image");
     image.flags |= ImageFlagBits::Registered;
     ++registry_generation;
-    total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    if (!instance.CanReportMemoryUsage()) {
+        total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    }
     BbStats::live_image_bytes.fetch_add(Common::AlignUp(image.info.guest_size, 1024),
                                         std::memory_order_relaxed);
     BbStats::live_images.fetch_add(1, std::memory_order_relaxed);
@@ -1031,7 +1026,9 @@ void TextureCache::UnregisterImage(ImageId image_id) {
     image.flags &= ~ImageFlagBits::Registered;
     ++registry_generation;
     lru_cache.Free(image.lru_id);
-    total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    if (!instance.CanReportMemoryUsage()) {
+        total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    }
     BbStats::live_image_bytes.fetch_sub(Common::AlignUp(image.info.guest_size, 1024),
                                         std::memory_order_relaxed);
     BbStats::live_images.fetch_sub(1, std::memory_order_relaxed);
@@ -1160,25 +1157,35 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
 }
 
 void TextureCache::GarbageCollectImages() {
+    const auto sample_now = std::chrono::steady_clock::now();
+    // Submissions can arrive hundreds of times a second. Bound the driver queries and
+    // eviction batches, allowing GPU-deferred destruction to retire between passes.
+    if (memory_sample_time != std::chrono::steady_clock::time_point{} &&
+        sample_now - memory_sample_time < std::chrono::milliseconds(250)) {
+        return;
+    }
+    memory_sample_time = sample_now;
+    SCOPE_EXIT { WriteMemorySample(); };
     if (instance.CanReportMemoryUsage()) {
-        total_used_memory = instance.GetDeviceMemoryUsage();
-        // bbport: on integrated GPUs (Steam Deck) the usage covers system-memory heaps holding
-        // much more than images (buffers backing guest memory), and the startup budget left
-        // ~1 GB after its 8 GB system reserve: usage stayed above the critical mark, so the
-        // collector evicted images used two or three frames ago on every submission and wrote
-        // GPU-written ones back. Compare with the driver's current budget instead.
-        // BB_GC_BUDGET_MB=N: this rule with a fixed budget on any GPU (tests on a desktop).
+        const auto snapshot = instance.GetDeviceMemorySnapshot();
+        total_used_memory = snapshot.usage;
+        driver_memory_budget = snapshot.budget;
+        if (!snapshot.budget) {
+            // Keep the last valid thresholds, but don't evict based on an unavailable query.
+            return;
+        }
+        // Use the current budget on discrete GPUs too. The override is for reproducible
+        // pressure tests; it changes cache policy, never the driver's allocation limit.
         static const u64 forced_budget = [] {
             const char* env = std::getenv("BB_GC_BUDGET_MB");
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
-        if (instance.IsIntegrated() || forced_budget) {
-            const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
-            if (budget != 0) {
-                trigger_gc_memory = budget / 10 * 7;
-                pressure_gc_memory = budget / 100 * 85;
-                critical_gc_memory = budget / 100 * 95;
-            }
+        gc_memory_budget = forced_budget ? forced_budget : snapshot.budget;
+        memory_pressure.Update(total_used_memory, gc_memory_budget);
+        if (gc_memory_budget) {
+            trigger_gc_memory = memory_pressure.marks.trigger;
+            pressure_gc_memory = memory_pressure.marks.pressure;
+            critical_gc_memory = memory_pressure.marks.critical;
         }
     }
     BbStats::gc_used_bytes.store(total_used_memory, std::memory_order_relaxed);
@@ -1200,7 +1207,8 @@ void TextureCache::GarbageCollectImages() {
         return;
     }
 
-    if (total_used_memory < trigger_gc_memory) {
+    if (total_used_memory < trigger_gc_memory &&
+        memory_pressure.level == MemoryPressure::Level::Normal) {
         return;
     }
     static const u64 idle_seconds = [] {
@@ -1216,10 +1224,22 @@ void TextureCache::GarbageCollectImages() {
     u64 below_tick = 0;
     size_t num_deletions = 0;
     u32 visited = 0;
+    // Batch-local estimate only: unregistering guest bytes is not a measurement of
+    // freed VRAM. Host images may have different sizes, and destruction is deferred.
+    u64 projected_usage = total_used_memory;
+    const u64 pressure_target = instance.CanReportMemoryUsage()
+                                   ? memory_pressure.marks.pressure_exit : pressure_gc_memory;
+    const u64 critical_target = instance.CanReportMemoryUsage()
+                                   ? memory_pressure.marks.critical_exit : critical_gc_memory;
 
     const auto configure = [&](bool allow_aggressive) {
-        pressured = total_used_memory >= pressure_gc_memory;
-        aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
+        pressured = instance.CanReportMemoryUsage()
+                        ? memory_pressure.level != MemoryPressure::Level::Normal
+                        : total_used_memory >= pressure_gc_memory;
+        aggresive = allow_aggressive &&
+                    (instance.CanReportMemoryUsage()
+                         ? memory_pressure.level == MemoryPressure::Level::Critical
+                         : total_used_memory >= critical_gc_memory);
         const u64 ticks_to_destroy = std::min<u64>(aggresive ? 160 : pressured ? 80 : 16, gc_tick);
         below_tick = gc_tick - ticks_to_destroy;
         if (!pressured && !aggresive) {
@@ -1252,18 +1272,25 @@ void TextureCache::GarbageCollectImages() {
             // had meanwhile stored there (e.g. its heap after unloading an area).
             DownloadImageMemory(image_id, true);
             ++gc_downloads;
+            ++gc_total_downloads;
         }
         ++gc_evictions;
+        ++gc_total_evictions;
         BbStats::gc_freed_images.fetch_add(1, std::memory_order_relaxed);
+        u64 host_bytes = 0;
+        for (const auto& backing : image.backing_images) host_bytes += backing.image.size_bytes;
         FreeImage(image_id);
+        projected_usage = instance.CanReportMemoryUsage()
+                              ? projected_usage - std::min(projected_usage, host_bytes)
+                              : total_used_memory;
 
-        if (total_used_memory < critical_gc_memory) {
+        if (projected_usage < critical_target) {
             if (aggresive) {
                 num_deletions >>= 2;
                 aggresive = false;
                 return false;
             }
-            if (pressured && total_used_memory < pressure_gc_memory) {
+            if (pressured && projected_usage < pressure_target) {
                 num_deletions >>= 1;
                 pressured = false;
             }
@@ -1274,7 +1301,10 @@ void TextureCache::GarbageCollectImages() {
     configure(false);
     lru_cache.ForEachItemBelow(below_tick, clean_up);
 
-    if (total_used_memory >= critical_gc_memory) {
+    if (projected_usage >= critical_target &&
+        (instance.CanReportMemoryUsage()
+             ? memory_pressure.level == MemoryPressure::Level::Critical
+             : total_used_memory >= critical_gc_memory)) {
         configure(true);
         lru_cache.ForEachItemBelow(below_tick, clean_up);
     }
@@ -1292,6 +1322,35 @@ void TextureCache::GarbageCollectImages() {
             gc_evictions = gc_downloads = 0;
         }
     }
+}
+
+void TextureCache::WriteMemorySample() {
+    // Optional low-frequency capture, independent of per-frame/GPU query sampling.
+    if (!memory_log) {
+        const char* path = std::getenv("BB_VRAM_LOG");
+        if (!path || !*path) return;
+        memory_log = std::fopen(path, "w");
+        if (!memory_log) return;
+        std::fprintf(memory_log, "t_s,driver_available,device_usage_bytes,device_budget_bytes,"
+                                "gc_budget_bytes,tracked_image_bytes,guest_buffer_allocated_bytes,"
+                                "guest_buffer_unused_bytes,pending_image_bytes,gc_evicted_images,"
+                                "gc_written_back_images,gc_pressure,gc_critical\n");
+    }
+    std::fprintf(memory_log, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u\n",
+                 std::chrono::duration<double>(memory_sample_time - memory_log_start).count(),
+                 unsigned(instance.CanReportMemoryUsage()),
+                 static_cast<unsigned long long>(total_used_memory),
+                 static_cast<unsigned long long>(driver_memory_budget),
+                 static_cast<unsigned long long>(gc_memory_budget),
+                 static_cast<unsigned long long>(BbStats::vk_image_bytes.load()),
+                 static_cast<unsigned long long>(BbStats::residency_alloc_bytes.load()),
+                 static_cast<unsigned long long>(BbStats::residency_unused_bytes.load()),
+                 static_cast<unsigned long long>(pending_image_bytes.load()),
+                 static_cast<unsigned long long>(gc_total_evictions),
+                 static_cast<unsigned long long>(gc_total_downloads),
+                 unsigned(memory_pressure.level != MemoryPressure::Level::Normal),
+                 unsigned(memory_pressure.level == MemoryPressure::Level::Critical));
+    std::fflush(memory_log);
 }
 
 void TextureCache::GarbageCollectSamplers() {
@@ -1376,7 +1435,10 @@ void TextureCache::DeleteImage(ImageId image_id) {
     }
 
     // Reclaim image and any image views it references.
-    scheduler.DeferOperation([this, image_id] {
+    u64 allocated_bytes = 0;
+    for (const auto& backing : image.backing_images) allocated_bytes += backing.image.size_bytes;
+    pending_image_bytes.fetch_add(allocated_bytes, std::memory_order_relaxed);
+    scheduler.DeferOperation([this, image_id, allocated_bytes] {
         Image& image = slot_images[image_id];
         for (auto& backing : image.backing_images) {
             for (const ImageViewId image_view_id : backing.image_view_ids) {
@@ -1384,6 +1446,7 @@ void TextureCache::DeleteImage(ImageId image_id) {
             }
         }
         slot_images.erase(image_id);
+        pending_image_bytes.fetch_sub(allocated_bytes, std::memory_order_relaxed);
     });
 }
 

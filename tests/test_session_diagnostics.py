@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from session_diagnostics import Session, classify_exit, frame_summary, gpu_summary
+from session_diagnostics import Session, classify_exit, frame_summary, gpu_summary, memory_summary
 import run_windows
 
 
@@ -81,6 +81,7 @@ class SessionDiagnosticsTests(unittest.TestCase):
                'BB_ONLINE_PASSWORD': 'secret', 'BB_FPS': '60'}
         session = Session(self.root, env)
         self.assertEqual(Path(env['BB_FRAME_LOG']).name, 'frames.csv')
+        self.assertEqual(Path(env['BB_VRAM_LOG']).name, 'vram.csv')
         self.assertEqual(Path(env['BB_GPU_LOG']).name, 'gpu.csv')
         session.set_phase('runtime')
         Path(env['BB_LOG_FILE']).write_text('Host fault 0xc0000005 at synthetic\n')
@@ -99,8 +100,66 @@ class SessionDiagnosticsTests(unittest.TestCase):
         session = Session(self.root, env)
         self.assertNotIn('BB_FRAME_LOG', env)
         self.assertNotIn('BB_GPU_LOG', env)
+        self.assertNotIn('BB_VRAM_LOG', env)
         session.finish(1)
         self.assertEqual(session.report['outcome']['stage'], 'startup')
+
+    def write_memory(self, rows):
+        path = self.root / 'vram.csv'
+        with path.open('w', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['t_s', 'driver_available', 'device_usage_bytes', 'device_budget_bytes',
+                             'gc_budget_bytes', 'tracked_image_bytes', 'guest_buffer_allocated_bytes',
+                             'guest_buffer_unused_bytes', 'pending_image_bytes', 'gc_evicted_images',
+                             'gc_written_back_images', 'gc_pressure', 'gc_critical'])
+            writer.writerows(rows)
+        return path
+
+    def test_memory_report_tracks_shrinking_budget_and_overlapping_categories(self):
+        path = self.write_memory([
+            [0, 1, 3000, 4000, 4000, 1500, 1200, 300, 100, 0, 0, 0, 0],
+            [.25, 1, 3100, 3200, 3200, 1400, 1200, 400, 200, 7, 2, 1, 1],
+            [.5, 1, 2800, 4000, 4000, 1000, 1000, 300, 0, 9, 2, 0, 0]])
+        report = memory_summary(path)
+        self.assertEqual(report['samples'], 3)
+        self.assertEqual(report['peak_device_usage_bytes'], 3100)
+        self.assertEqual(report['minimum_device_budget_bytes'], 3200)
+        self.assertAlmostEqual(report['peak_budget_fraction'], 3100 / 3200)
+        self.assertEqual(report['gc_evicted_images'], 9)
+        self.assertEqual(report['gc_written_back_images'], 2)
+        self.assertEqual(report['peak_pending_image_bytes'], 200)
+        self.assertEqual(report['pressure_samples'], 1)
+        self.assertEqual(report['critical_samples'], 1)
+        self.assertIn('overlap', report['note'])
+        self.assertNotIn('total_category_bytes', report)
+
+    def test_memory_report_ignores_unsupported_invalid_and_truncated_samples(self):
+        good = [0, 1, 3000, 4000, 4000, 1500, 1200, 300, 100, 0, 0, 0, 0]
+        rows = [good]
+        for column, value in ((0, 'NaN'), (1, 0), (2, -1), (3, 0), (4, 'bad'), (11, 2)):
+            bad = good.copy()
+            bad[column] = value
+            rows.append(bad)
+        rows.append([.25, 1, 3000])
+        report = memory_summary(self.write_memory(rows))
+        self.assertEqual(report['samples'], 1)
+        self.assertEqual(report['skipped_rows'], 7)
+        self.assertFalse(memory_summary(self.root / 'missing.csv')['available'])
+        self.assertFalse(memory_summary(self.write_memory([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]))['available'])
+
+    def test_session_memory_capture_survives_restart_and_records_cache_overrides(self):
+        env = {'BB_FRAME_STATS': '1', 'BB_GC_BUDGET_MB': '3072', 'BB_VRAM_IDLE_SECONDS': '60'}
+        original = Session(self.root, env)
+        capture = self.write_memory([[0, 1, 3000, 4000, 3072, 1500, 1200, 300, 0, 2, 0, 1, 0]])
+        Path(env['BB_VRAM_LOG']).write_bytes(capture.read_bytes())
+        original.finish(0)
+        self.assertTrue(original.report['memory']['available'])
+        self.assertEqual(original.report['environment']['BB_GC_BUDGET_MB'], '3072')
+        self.assertIn('VRAM driver estimate peak', (original.directory / 'summary.txt').read_text())
+        before = Path(env['BB_VRAM_LOG']).read_bytes()
+        restarted = Session(self.root, env)
+        self.assertEqual(Path(env['BB_VRAM_LOG']).parent, restarted.directory)
+        self.assertEqual((original.directory / 'vram.csv').read_bytes(), before)
 
     def test_independent_gpu_samples_are_not_cpu_times(self):
         path = self.root / 'gpu.csv'

@@ -15,14 +15,19 @@
 int main() {
     using namespace Vulkan;
     Instance instance(0, false);
-    // Calls emitted by this executable use a local dispatcher. libbbgpu.so initializes
-    // its own default dispatcher while constructing Instance.
+    // Use explicit device entry points, without emitting Vulkan-Hpp init() inline
+    // definitions that differ from vk_platform.cpp's platform macros in a static link.
     static vk::detail::DynamicLoader loader;
     vk::detail::DispatchLoaderDynamic dispatch;
-    dispatch.init(
-        loader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr"));
-    dispatch.init(instance.GetInstance());
-    dispatch.init(instance.GetDevice());
+    const auto get_instance_proc = loader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+    const auto get_device_proc = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+        get_instance_proc(static_cast<VkInstance>(instance.GetInstance()), "vkGetDeviceProcAddr"));
+    const auto device = static_cast<VkDevice>(instance.GetDevice());
+    dispatch.vkCmdPipelineBarrier2 = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(get_device_proc(device, "vkCmdPipelineBarrier2"));
+    dispatch.vkCmdCopyImageToBuffer = reinterpret_cast<PFN_vkCmdCopyImageToBuffer>(get_device_proc(device, "vkCmdCopyImageToBuffer"));
+    dispatch.vkCmdClearDepthStencilImage = reinterpret_cast<PFN_vkCmdClearDepthStencilImage>(get_device_proc(device, "vkCmdClearDepthStencilImage"));
+    dispatch.vkCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRendering>(get_device_proc(device, "vkCmdBeginRendering"));
+    dispatch.vkCmdEndRendering = reinterpret_cast<PFN_vkCmdEndRendering>(get_device_proc(device, "vkCmdEndRendering"));
     Scheduler scheduler(instance);
     Runtime runtime(instance, scheduler);
     Common::SlotVector<VideoCore::ImageView> views;

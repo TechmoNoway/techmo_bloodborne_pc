@@ -24,6 +24,8 @@ SAFE_ENV = {
     'BB_PRESENT_MODE', 'BB_LIVE_RES', 'BB_TIMEOUT',
     'BB_VK_RECORD_THREADS', 'BB_VK_RECORD_THREAD', 'BB_VK_SEGMENT_KB',
     'BB_ASYNC_SUBMIT', 'BB_DIRECT_SEGMENT', 'BB_FSR4_OPT',
+    'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
+    'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM',
 }
 
 
@@ -132,6 +134,54 @@ def gpu_summary(path):
     return report
 
 
+def memory_summary(path):
+    """Low-frequency driver estimates, not texture totals or OS-wide GPU usage."""
+    rows, skipped = [], 0
+    try:
+        with Path(path).open(encoding='utf-8') as stream:
+            for row in csv.DictReader(stream):
+                try:
+                    if int(row['driver_available']) != 1:
+                        skipped += 1
+                        continue
+                    t = float(row['t_s'])
+                    if not math.isfinite(t) or t < 0:
+                        raise ValueError('invalid timestamp')
+                    values = {key: int(row[key]) for key in (
+                        'device_usage_bytes', 'device_budget_bytes', 'gc_budget_bytes',
+                        'tracked_image_bytes', 'guest_buffer_allocated_bytes',
+                        'guest_buffer_unused_bytes', 'pending_image_bytes',
+                        'gc_evicted_images', 'gc_written_back_images', 'gc_pressure', 'gc_critical')}
+                    if any(value < 0 for value in values.values()) or values['device_budget_bytes'] == 0:
+                        raise ValueError('invalid memory sample')
+                    if values['gc_pressure'] not in (0, 1) or values['gc_critical'] not in (0, 1):
+                        raise ValueError('invalid pressure flags')
+                    rows.append(values)
+                except (KeyError, ValueError, TypeError):
+                    skipped += 1
+    except OSError:
+        return {'available': False}
+    if not rows:
+        return {'available': False, 'samples': 0, 'skipped_rows': skipped}
+    result = {
+        'available': True, 'samples': len(rows), 'skipped_rows': skipped,
+        'measurement': 'VK_EXT_memory_budget process heap estimate; sampled at most 4 Hz',
+        'peak_device_usage_bytes': max(row['device_usage_bytes'] for row in rows),
+        'mean_device_usage_bytes': statistics.mean(row['device_usage_bytes'] for row in rows),
+        'minimum_device_budget_bytes': min(row['device_budget_bytes'] for row in rows),
+        'peak_budget_fraction': max(row['device_usage_bytes'] / row['device_budget_bytes'] for row in rows),
+        'pressure_samples': sum(row['gc_pressure'] for row in rows),
+        'critical_samples': sum(row['gc_critical'] for row in rows),
+        'gc_evicted_images': max(row['gc_evicted_images'] for row in rows),
+        'gc_written_back_images': max(row['gc_written_back_images'] for row in rows),
+        'note': 'Independent low-frequency samples can miss peaks. Tracked images, guest buffers and pending frees overlap; do not add them to driver usage. Shared VMA block slack, upscaler internals and driver allocations are not individually attributed.',
+    }
+    for name in ('tracked_image_bytes', 'guest_buffer_allocated_bytes', 'guest_buffer_unused_bytes',
+                 'pending_image_bytes'):
+        result['peak_' + name] = max(row[name] for row in rows)
+    return result
+
+
 def classify_exit(code, phase, fault=None, log_tail=''):
     fault = fault or {}
     exception = str(fault.get('exception_code', '')).lower()
@@ -179,6 +229,7 @@ class Session:
         env.setdefault('BB_LOG_FILE', str(self.directory / 'session.log'))
         if env.get('BB_FRAME_STATS') == '1':
             env['BB_FRAME_LOG'] = str(self.directory / 'frames.csv')
+            env['BB_VRAM_LOG'] = str(self.directory / 'vram.csv')
         if env.get('BB_GPU_PROFILE') == '1':
             env['BB_GPU_LOG'] = str(self.directory / 'gpu.csv')
         self.report = {'schema_version': 1, 'started_utc': datetime.now(timezone.utc).isoformat(),
@@ -216,7 +267,8 @@ class Session:
                            exit_code=code, exit_code_hex=f'0x{code & 0xffffffff:08X}',
                            outcome=classify_exit(code, self.report['stage'], fault, tail),
                            performance=frame_summary(self.directory / 'frames.csv'),
-                           gpu_performance=gpu_summary(self.directory / 'gpu.csv'), native_fault=fault)
+                           gpu_performance=gpu_summary(self.directory / 'gpu.csv'),
+                           memory=memory_summary(self.directory / 'vram.csv'), native_fault=fault)
         self.report['minidump'] = read_json(self.directory / 'minidump.json')
         self.report['artifacts'] = [path.name for path in self.directory.iterdir() if path.is_file() and not path.name.endswith('.tmp')]
         write_json(self.directory / 'session.json', self.report)
@@ -228,6 +280,10 @@ class Session:
             text += [f"Average: {performance['average_fps']:.2f} FPS; 1% low: {performance['one_percent_low_fps']:.2f} FPS",
                      f"Frame time p95/p99: {performance['p95_frame_ms']:.2f}/{performance['p99_frame_ms']:.2f} ms",
                      f"Scope: {performance['scope']}"]
+        memory = self.report['memory']
+        if memory.get('available'):
+            text += [f"VRAM driver estimate peak: {memory['peak_device_usage_bytes'] / (1024**2):.1f} MiB; minimum budget: {memory['minimum_device_budget_bytes'] / (1024**2):.1f} MiB",
+                     f"Cache pressure samples: {memory['pressure_samples']}; critical: {memory['critical_samples']}"]
         text += ['Evidence and settings: session.json', 'Runtime/preparation log: session.log',
                  'Crash signatures identify the failure, not necessarily its underlying cause.']
         (self.directory / 'summary.txt').write_text('\n'.join(text) + '\n', encoding='utf-8')
