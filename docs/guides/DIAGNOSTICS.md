@@ -81,6 +81,54 @@ are not paired one-to-one with flip CSV rows. Use Nsight for a complete CPU/GPU
 timeline before attributing a bottleneck. A small CSV tail can be lost on crash
 (up to 120 flip rows and 60 GPU rows are buffered between flushes).
 
+GPU queries now collect without waiting on the CPU. If a four-frame query slice
+is still in flight, it remains intact and profiling skips that frame. The slice
+is reset only after its owning scheduler submission completes. `skipped_frames`
+in `gpu.csv` is a cumulative counter at the time of the sample; the report keeps
+the latest observed value. Heavy frames can be missed, so GPU averages from a
+capture with skips should not be treated as an unbiased workload average.
+See the Vulkan rules for [query results](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetQueryPoolResults.html)
+and [host query reset](https://docs.vulkan.org/refpages/latest/refpages/source/vkResetQueryPool.html).
+
+New GPU captures also separate `labelled_work_ms` and
+`between_submissions_ms`. Their sum is the recorded interval. The second field
+tracks the scheduler's existing gap label, which can include frame pacing and
+waiting for CPU work. Neither field is a hardware utilization counter; labelled
+work still includes barriers and transfers. Older captures remain readable.
+Session environment snapshots include Vulkan recording thread/segment settings,
+async submission, direct segments and the FSR 4 shader variant setting.
+
+## First renderer/runtime optimization pass
+
+The Windows runtime caches QPC frequency through a thread-safe initializer. When
+the frequency divides one billion exactly, integer multiplication converts ticks
+to nanoseconds; other frequencies retain the quotient/remainder conversion.
+The final sleep spin compares QPC ticks to a deadline rounded up once, preserving
+the no-early-wake behavior. QPC frequency is fixed for the system boot, as covered
+by [Microsoft's timing guidance](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps).
+
+`tests/test_host_clock.c` checks concurrent clock reads, conversion against native
+QPC and sleep deadlines. `gpu-profiler-test` uses real headless Vulkan queries,
+deliberately withholds submissions, and checks that pending slices are preserved
+and later reused. Build the latter with `ninja -C out/gpu gpu-profiler-test` in the
+native shell, then run `out/gpu/gpu-profiler-test.exe` with an optional CSV path.
+It requires a Vulkan-capable GPU and is not part of GPU-less hosted CI.
+`tools/bench-runtime-clock.c` measures clock-call cost only. Clock throughput and
+synthetic query tests do not establish a Bloodborne FPS gain.
+
+Compare the rebuilt native runtime against a saved baseline on the same warmed
+route, with the same 60 FPS patch, output, upscaler and effects. Also keep a run
+with GPU recording off to assess profiler overhead. Record average FPS, 1% low,
+p99 and visible artifacts/crashes. Do not change thread counts, barriers and
+shader settings together; each needs a separate comparison.
+
+The repository contains the host runtime/renderer source. A PS4 game dump holds
+the game's executable and assets, not the game's C++ source. The loaded image
+check in `scripts/game_check.py` currently targets CUSA03173 v1.09; patches and
+runtime hooks depend on that executable layout. Texture/mesh mods can change
+memory and upload costs even when the executable stays identical. Keep the
+original game dump and list enabled mods when comparing performance.
+
 ## Validate without the game
 
 `bb-probe.exe --vulkan-only` submits a tiny buffer fill and reads it back; it

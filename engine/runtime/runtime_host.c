@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #ifdef _WIN32
 #include <process.h>
+#include <stdatomic.h>
 
 /* RuntimeRecoverBuf: rbx rbp rdi rsi r12-r15, rsp after the return, return address, xmm6-xmm15,
  * MXCSR, x87 control word. */
@@ -58,15 +59,32 @@ int host_thread_join(HostThread thread) {
 }
 void host_thread_detach(HostThread thread) { CloseHandle(thread); }
 
+static INIT_ONCE qpc_once = INIT_ONCE_STATIC_INIT;
+static atomic_int qpc_ready;
+static uint64_t qpc_hz, qpc_ns_per_tick;
+static BOOL CALLBACK initialize_qpc(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+    (void)once; (void)parameter; (void)context;
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    qpc_hz = (uint64_t)frequency.QuadPart;
+    /* Common Windows QPC frequencies divide a second exactly: retain integer precision
+     * while removing two divisions from each clock read. Other frequencies use the
+     * original quotient/remainder conversion. Frequency is fixed for the system boot. */
+    qpc_ns_per_tick = UINT64_C(1000000000) % qpc_hz == 0 ? UINT64_C(1000000000) / qpc_hz : 0;
+    return TRUE;
+}
 static uint64_t qpc_frequency(void) {
-    static uint64_t frequency;
-    if (!frequency) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); frequency = (uint64_t)f.QuadPart; }
-    return frequency;
+    if (!atomic_load_explicit(&qpc_ready, memory_order_acquire)) {
+        InitOnceExecuteOnce(&qpc_once, initialize_qpc, NULL, NULL);
+        atomic_store_explicit(&qpc_ready, 1, memory_order_release);
+    }
+    return qpc_hz;
 }
 uint64_t host_monotonic_ns(void) {
     LARGE_INTEGER c;
     QueryPerformanceCounter(&c);
     uint64_t f = qpc_frequency(), n = (uint64_t)c.QuadPart;
+    if (qpc_ns_per_tick) return n * qpc_ns_per_tick;
     return n / f * 1000000000u + n % f * 1000000000u / f;
 }
 uint64_t host_realtime_ns(void) {
@@ -94,7 +112,15 @@ void host_sleep_until_ns(uint64_t deadline) {
         else
             Sleep((DWORD)((deadline - now) / 1000000));
     }
-    while (host_monotonic_ns() < deadline) YieldProcessor();
+    /* Convert once, rounding up so a sub-tick deadline never returns early. Keep the
+     * final spin in QPC ticks instead of converting every iteration to nanoseconds. */
+    uint64_t target = (uint64_t)(((__uint128_t)deadline * qpc_frequency() + 999999999) / 1000000000);
+    LARGE_INTEGER counter;
+    do {
+        QueryPerformanceCounter(&counter);
+        if ((uint64_t)counter.QuadPart >= target) break;
+        YieldProcessor();
+    } while (1);
 }
 void host_sleep_ns(uint64_t ns) {
     if (!ns) { SwitchToThread(); return; }

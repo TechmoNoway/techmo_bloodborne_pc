@@ -2,7 +2,8 @@
 // bbport: BB_GPU_PROFILE=1 — GPU time per render pass, dispatch and upscaler run. A timestamp is
 // written where each of them starts (and at the frame end); the time to the next timestamp is
 // charged to its label, barriers and copies recorded in between included. Results are read four
-// frames later and printed every 5 s: GPU ms per frame by label.
+// frames later without blocking and printed every 5 s: GPU ms per frame by label.
+// Busy slices are preserved; sampling skips frames until their GPU work completes.
 
 #pragma once
 
@@ -28,6 +29,10 @@ public:
         return instance_ptr;
     }
     static void Init(const Instance& instance, Scheduler& scheduler);
+    /// After all producer recording has stopped, release the query pool and flush its log.
+    static void Shutdown();
+    [[nodiscard]] u64 CollectedFrames() const noexcept { return collected_frames; }
+    [[nodiscard]] u64 SkippedFrames() const noexcept { return skipped_frames; }
 
     /// Starts a segment labelled `key`; `describe` names it the first time the key is seen.
     template <typename Describe>
@@ -57,8 +62,9 @@ public:
 
 private:
     GpuProfiler(const Instance& instance, Scheduler& scheduler);
+    ~GpuProfiler();
     void WriteTimestamp(u64 key);
-    void Collect(u32 slice);
+    bool Collect(u32 slice);
     void Print();
 
     static constexpr u32 NumSlices = 4;
@@ -73,6 +79,8 @@ private:
     std::array<std::vector<u64>, NumSlices> keys; ///< label of each timestamp but the last
     std::array<u32, NumSlices> used{};
     std::array<bool, NumSlices> pending{};
+    std::array<u64, NumSlices> completion_ticks{};
+    bool recording = true;
     std::unordered_map<u64, std::string> described;
     struct Total {
         double ms = 0;
@@ -84,6 +92,7 @@ private:
     FILE* csv = nullptr;
     u32 csv_unflushed = 0;
     u64 collected_frames = 0;
+    u64 skipped_frames = 0;
     std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
 };
 

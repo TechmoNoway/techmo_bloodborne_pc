@@ -62,6 +62,18 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(classify_exit(0xc0000135, 'runtime')['reason'], 'missing_dependency')
         self.assertEqual(classify_exit(0xc000007b, 'runtime')['reason'], 'invalid_binary')
 
+    def test_nonblocking_gpu_capture_records_partitions_and_skips(self):
+        path = self.root / 'gpu.csv'
+        path.write_text('sample,gpu_interval_ms,timestamp_count,skipped_frames,labelled_work_ms,between_submissions_ms\n'
+                        '1,10,5,2,4,6\n2,12,7,5,5,7\n3,9,4,bad,NaN,9\n4,8,4,-1,20,1\n')
+        report = gpu_summary(path)
+        self.assertEqual(report['samples'], 4)
+        self.assertEqual(report['mean_labelled_work_ms'], 4.5)
+        self.assertEqual(report['mean_between_submissions_ms'], 6.5)
+        self.assertEqual(report['partition_samples'], 2)
+        self.assertEqual(report['skipped_frames'], 5)
+        self.assertIn('bias', report['note'])
+
     def test_session_records_safe_settings_and_finishes_atomically(self):
         config = self.root / 'bbport.ini'
         config.write_text('upscaler=fsr3\noutput_res=1920x1080\nonline_password=secret\nonline_token=secret\n')

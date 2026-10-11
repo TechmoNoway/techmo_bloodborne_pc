@@ -22,6 +22,8 @@ SAFE_ENV = {
     'BB_FPS', 'BB_FPS_LIMIT', 'BB_VBLANK_HZ', 'BB_RENDER_RES', 'BB_OUTPUT_RES',
     'BB_DMEM_MB', 'BB_FRAME_STATS', 'BB_GPU_PROFILE', 'BB_MODS_ENABLED',
     'BB_PRESENT_MODE', 'BB_LIVE_RES', 'BB_TIMEOUT',
+    'BB_VK_RECORD_THREADS', 'BB_VK_RECORD_THREAD', 'BB_VK_SEGMENT_KB',
+    'BB_ASYNC_SUBMIT', 'BB_DIRECT_SEGMENT', 'BB_FSR4_OPT',
 }
 
 
@@ -91,6 +93,7 @@ def frame_summary(path, start=0, end=None):
 
 def gpu_summary(path):
     values = []
+    labelled_work, between_submissions, skipped = [], [], []
     try:
         with Path(path).open(encoding='utf-8') as stream:
             for row in csv.DictReader(stream):
@@ -98,14 +101,35 @@ def gpu_summary(path):
                     ms = float(row['gpu_interval_ms'])
                     if math.isfinite(ms) and ms >= 0:
                         values.append(ms)
+                        # Optional columns: preserve compatibility with older captures.
+                        try:
+                            work, gap = float(row['labelled_work_ms']), float(row['between_submissions_ms'])
+                            if all(math.isfinite(v) and v >= 0 for v in (work, gap)) and abs(work + gap - ms) <= .001:
+                                labelled_work.append(work)
+                                between_submissions.append(gap)
+                        except (KeyError, ValueError, TypeError):
+                            pass
+                        try:
+                            lost = int(row['skipped_frames'])
+                            if lost >= 0: skipped.append(lost)
+                        except (KeyError, ValueError, TypeError):
+                            pass
                 except (KeyError, ValueError, TypeError):
                     pass
     except OSError:
         pass
-    return {'available': bool(values), 'samples': len(values),
+    report = {'available': bool(values), 'samples': len(values),
             'mean_gpu_interval_ms': statistics.mean(values) if values else None,
             'measurement': 'recorded GPU timestamp interval; includes intervening barriers, copies and waits',
             'note': 'Independent GPU samples; not aligned one-to-one with VideoOut flip rows. Profiling adds overhead.'}
+    if labelled_work:
+        report.update(mean_labelled_work_ms=statistics.mean(labelled_work),
+                      mean_between_submissions_ms=statistics.mean(between_submissions),
+                      partition_samples=len(labelled_work))
+    if skipped:
+        report['skipped_frames'] = max(skipped)
+        report['note'] += ' Busy query slices skip sampling; skipped frames can bias GPU averages.'
+    return report
 
 
 def classify_exit(code, phase, fault=None, log_tail=''):

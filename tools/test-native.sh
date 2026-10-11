@@ -14,6 +14,8 @@ link=(-Wl,--disable-dynamicbase,--disable-high-entropy-va -lwinmm -lws2_32 -lpsa
 python -m unittest discover -s tests -p 'test_native_crash_reporter.py'
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${includes[@]}" -I. -Iengine/runtime tests/test_pad.c engine/runtime/runtime_host.c "${libraries[@]}" -o out/pad-test.exe
 out/pad-test.exe
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -Iengine/runtime tests/test_host_clock.c engine/runtime/runtime_host.c -o out/host-clock-test.exe
+out/host-clock-test.exe
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. -Iengine/runtime tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -lwinpthread -o out/runtime-test.exe
 out/runtime-test.exe
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. -Iengine/runtime tests/test_file_mods.c engine/runtime/win32_compat.c -lws2_32 -o out/file-mods-test.exe
