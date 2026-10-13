@@ -3,23 +3,16 @@
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
-#include <setjmp.h>
-#ifdef _WIN32
-struct alignas(16) RuntimeRecoverBuf {
-    unsigned char registers[256];
-};
-#else
-typedef sigjmp_buf RuntimeRecoverBuf;
-#endif
+#include "bbport_toggles.h"
 // Renderer tests have no guest process. Clock/host-thread services work; guest accesses abort.
 extern "C" {
 // Engine asset mounts belong to the runtime; GPU-only tests never install them.
 int runtime_file_mount(const char*, const char*) { return -1; }
 void runtime_file_unmount(const char*) {}
-__thread RuntimeRecoverBuf* runtime_fault_recover = nullptr;
-int runtime_setjmp(RuntimeRecoverBuf*) { return 0; }
-[[noreturn]] void runtime_longjmp(RuntimeRecoverBuf*) { std::abort(); }
-uint32_t runtime_disabled_optimizations = 0;
+__thread BbRecoverBuf* runtime_fault_recover = nullptr;
+int runtime_setjmp(BbRecoverBuf*) { return 0; }
+[[noreturn]] void runtime_longjmp(BbRecoverBuf*) { std::abort(); }
+uint64_t runtime_disabled_optimizations = 0;
 uint64_t runtime_experiment_bits = 0;
 uint64_t runtime_tsc_frequency() { return 1000000000; }
 int runtime_file_translate(const char*, char*, size_t) { std::abort(); }

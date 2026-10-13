@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Source { uint words[]; };
+layout(push_constant) uniform Params { Source source; uint count; } params;
+layout(set = 0, binding = 0, std430) buffer Output { uint words[]; } result;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < params.count) result.words[i] = params.source.words[i];
+}

@@ -4,6 +4,7 @@
 #include <limits>
 #include <initializer_list>
 #include "video_core/texture_cache/memory_pressure.h"
+#include "video_core/buffer_cache/residency_policy.h"
 
 int main() {
     using VideoCore::MemoryPressure;
@@ -59,4 +60,27 @@ int main() {
         }
     }
     puts("PASS: memory pressure, shrinking budgets, recovery hysteresis and low-VRAM thresholds");
+    using VideoCore::ResidencyPolicy;
+    for (auto budget : {4 * GiB, 6 * GiB, 8 * GiB}) {
+        const auto pressure = MemoryPressure::Percent(budget, 85);
+        assert(ResidencyPolicy::Fits(pressure - 2 * ResidencyPolicy::ChunkBytes,
+                                    0, ResidencyPolicy::ChunkBytes, pressure));
+        assert(!ResidencyPolicy::Fits(pressure - ResidencyPolicy::ChunkBytes,
+                                     0, ResidencyPolicy::ChunkBytes, pressure));
+        assert(!ResidencyPolicy::Fits(pressure - 2 * ResidencyPolicy::ChunkBytes,
+                                     ResidencyPolicy::ChunkBytes, ResidencyPolicy::ChunkBytes, pressure));
+        assert(!ResidencyPolicy::Fits(pressure + 1, 0, 1, pressure));
+    }
+    assert(!ResidencyPolicy::Fits(max - 1, max - 1, 64, max));
+    assert(!ResidencyPolicy::Fits(0, 0, 64, 0));
+    assert(ResidencyPolicy::IdleSeconds(Level::Normal, 0) == 0);
+    assert(ResidencyPolicy::IdleSeconds(Level::Pressure, 60) == 5);
+    assert(ResidencyPolicy::IdleSeconds(Level::Critical, 60) == 1);
+    assert(ResidencyPolicy::CanEvict(10, 5, 5, true, false));
+    assert(!ResidencyPolicy::CanEvict(10, 6, 5, true, false));
+    assert(!ResidencyPolicy::CanEvict(10, 5, 5, false, false));
+    assert(!ResidencyPolicy::CanEvict(10, 5, 5, true, true));
+    assert(!ResidencyPolicy::CanEvict(10, 11, 5, true, false));
+    assert(!ResidencyPolicy::CanEvict(10, 5, 0, true, false));
+    puts("PASS: shared headroom, speculative growth, age gates and GPU ownership guards");
 }

@@ -24,8 +24,8 @@ SAFE_ENV = {
     'BB_PRESENT_MODE', 'BB_LIVE_RES', 'BB_TIMEOUT',
     'BB_VK_RECORD_THREADS', 'BB_VK_RECORD_THREAD', 'BB_VK_SEGMENT_KB',
     'BB_ASYNC_SUBMIT', 'BB_DIRECT_SEGMENT', 'BB_FSR4_OPT',
-    'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
-    'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM',
+    'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_GC_PRESSURE_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
+    'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM', 'BB_GPU_DATA_CHECK',
 }
 
 
@@ -152,6 +152,8 @@ def memory_summary(path):
                         'tracked_image_bytes', 'guest_buffer_allocated_bytes',
                         'guest_buffer_unused_bytes', 'pending_image_bytes',
                         'gc_evicted_images', 'gc_written_back_images', 'gc_pressure', 'gc_critical')}
+                    for key in ('pending_buffer_bytes', 'buffer_evicted_bytes', 'buffer_freed_bytes'):
+                        values[key] = int(row[key]) if key in row else 0  # Older headers remain readable.
                     if any(value < 0 for value in values.values()) or values['device_budget_bytes'] == 0:
                         raise ValueError('invalid memory sample')
                     if values['gc_pressure'] not in (0, 1) or values['gc_critical'] not in (0, 1):
@@ -177,8 +179,10 @@ def memory_summary(path):
         'note': 'Independent low-frequency samples can miss peaks. Tracked images, guest buffers and pending frees overlap; do not add them to driver usage. Shared VMA block slack, upscaler internals and driver allocations are not individually attributed.',
     }
     for name in ('tracked_image_bytes', 'guest_buffer_allocated_bytes', 'guest_buffer_unused_bytes',
-                 'pending_image_bytes'):
+                 'pending_image_bytes', 'pending_buffer_bytes'):
         result['peak_' + name] = max(row[name] for row in rows)
+    for name in ('buffer_evicted_bytes', 'buffer_freed_bytes'):
+        result[name] = max(row[name] for row in rows)
     return result
 
 
@@ -283,7 +287,8 @@ class Session:
         memory = self.report['memory']
         if memory.get('available'):
             text += [f"VRAM driver estimate peak: {memory['peak_device_usage_bytes'] / (1024**2):.1f} MiB; minimum budget: {memory['minimum_device_budget_bytes'] / (1024**2):.1f} MiB",
-                     f"Cache pressure samples: {memory['pressure_samples']}; critical: {memory['critical_samples']}"]
+                     f"Cache pressure samples: {memory['pressure_samples']}; critical: {memory['critical_samples']}",
+                     f"Buffer evictions: {memory['buffer_evicted_bytes'] / (1024**2):.1f} MiB; allocations returned to Vulkan: {memory['buffer_freed_bytes'] / (1024**2):.1f} MiB"]
         text += ['Evidence and settings: session.json', 'Runtime/preparation log: session.log',
                  'Crash signatures identify the failure, not necessarily its underlying cause.']
         (self.directory / 'summary.txt').write_text('\n'.join(text) + '\n', encoding='utf-8')

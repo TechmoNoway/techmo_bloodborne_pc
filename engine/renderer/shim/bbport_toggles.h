@@ -198,6 +198,7 @@ inline std::atomic<std::uint64_t> live_image_bytes{0}, live_images{0};
 /// Every Vulkan image we allocated (their memory as allocated: host sizes, mips, scene targets).
 inline std::atomic<std::uint64_t> vk_image_bytes{0};
 inline std::atomic<std::uint64_t> residency_alloc_bytes{0}, residency_unused_bytes{0};
+inline std::atomic<std::uint64_t> pending_buffer_bytes{0}, buffer_evicted_bytes{0};
 /// The texture cache collector: the usage it compares, the mark it starts at, images it freed.
 inline std::atomic<std::uint64_t> gc_used_bytes{0}, gc_trigger_bytes{0}, gc_freed_images{0};
 /// Seconds of a steady clock, updated at every guest submission (cheap ages for caches).

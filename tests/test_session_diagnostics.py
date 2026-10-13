@@ -104,14 +104,17 @@ class SessionDiagnosticsTests(unittest.TestCase):
         session.finish(1)
         self.assertEqual(session.report['outcome']['stage'], 'startup')
 
-    def write_memory(self, rows):
+    def write_memory(self, rows, buffer_columns=False):
         path = self.root / 'vram.csv'
         with path.open('w', newline='') as stream:
             writer = csv.writer(stream)
-            writer.writerow(['t_s', 'driver_available', 'device_usage_bytes', 'device_budget_bytes',
-                             'gc_budget_bytes', 'tracked_image_bytes', 'guest_buffer_allocated_bytes',
-                             'guest_buffer_unused_bytes', 'pending_image_bytes', 'gc_evicted_images',
-                             'gc_written_back_images', 'gc_pressure', 'gc_critical'])
+            columns = ['t_s', 'driver_available', 'device_usage_bytes', 'device_budget_bytes',
+                       'gc_budget_bytes', 'tracked_image_bytes', 'guest_buffer_allocated_bytes',
+                       'guest_buffer_unused_bytes', 'pending_image_bytes', 'gc_evicted_images',
+                       'gc_written_back_images', 'gc_pressure', 'gc_critical']
+            if buffer_columns:
+                columns += ['pending_buffer_bytes', 'buffer_evicted_bytes', 'buffer_freed_bytes']
+            writer.writerow(columns)
             writer.writerows(rows)
         return path
 
@@ -132,6 +135,19 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report['critical_samples'], 1)
         self.assertIn('overlap', report['note'])
         self.assertNotIn('total_category_bytes', report)
+        self.assertEqual(report['peak_pending_buffer_bytes'], 0)
+        self.assertEqual(report['buffer_freed_bytes'], 0)
+
+    def test_memory_report_distinguishes_retired_slots_from_freed_allocations(self):
+        base = [0, 1, 3000, 4000, 4000, 1500, 1200, 300, 0, 0, 0, 1, 0]
+        rows = [base + [128, 512, 0], base + [0, 1024, 256],
+                base + [-1, 1024, 256], base + [128, 512]]
+        report = memory_summary(self.write_memory(rows, buffer_columns=True))
+        self.assertEqual(report['samples'], 2)
+        self.assertEqual(report['skipped_rows'], 2)
+        self.assertEqual(report['peak_pending_buffer_bytes'], 128)
+        self.assertEqual(report['buffer_evicted_bytes'], 1024)
+        self.assertEqual(report['buffer_freed_bytes'], 256)
 
     def test_memory_report_ignores_unsupported_invalid_and_truncated_samples(self):
         good = [0, 1, 3000, 4000, 4000, 1500, 1200, 300, 100, 0, 0, 0, 0]

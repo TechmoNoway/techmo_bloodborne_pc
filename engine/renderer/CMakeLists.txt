@@ -218,6 +218,46 @@ if (WIN32)
 endif()
 set_source_files_properties(../../tests/test_memory_residency.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(image-buffer-sync-test EXCLUDE_FROM_ALL ../../tests/test_image_buffer_sync.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+target_compile_options(image-buffer-sync-test PRIVATE -UNDEBUG)
+target_include_directories(image-buffer-sync-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(image-buffer-sync-test PRIVATE bbgpu)
+if (WIN32)
+    target_link_libraries(image-buffer-sync-test PRIVATE winmm ws2_32 psapi onecore)
+endif()
+set_source_files_properties(../../tests/test_image_buffer_sync.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(buffer-budget-test EXCLUDE_FROM_ALL ../../tests/test_buffer_budget.cpp)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/memory_safety_comp.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/test_shaders
+    COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 --vn MEMORY_SAFETY_COMP
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/memory_safety_comp.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/shaders/memory_safety.comp
+    DEPENDS ${GLSLANG_COMPILER} ../../tests/shaders/memory_safety.comp VERBATIM)
+target_sources(buffer-budget-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/memory_safety_comp.h)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/null_index_vert.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/test_shaders
+    COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 --vn NULL_INDEX_VERT
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/null_index_vert.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/shaders/null_index.vert
+    DEPENDS ${GLSLANG_COMPILER} ../../tests/shaders/null_index.vert VERBATIM)
+target_sources(buffer-budget-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/null_index_vert.h)
+target_include_directories(buffer-budget-test PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/test_shaders)
+target_compile_options(buffer-budget-test PRIVATE -UNDEBUG)
+target_include_directories(buffer-budget-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(buffer-budget-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+set_source_files_properties(../../tests/test_buffer_budget.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(index-buffer-range-test EXCLUDE_FROM_ALL ../../tests/test_index_buffer_range.cpp)
+target_compile_options(index-buffer-range-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(index-buffer-range-test PRIVATE shadps4)
+add_executable(liverpool-tasks-test EXCLUDE_FROM_ALL ../../tests/test_liverpool_tasks.cpp
+    ../../tests/test_gpu_runtime_stubs.cpp)
+target_compile_options(liverpool-tasks-test PRIVATE -UNDEBUG)
+target_include_directories(liverpool-tasks-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(liverpool-tasks-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+set_source_files_properties(../../tests/test_liverpool_tasks.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_executable(pipeline-cache-blob-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_cache_blob.cpp)
 target_compile_options(pipeline-cache-blob-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(pipeline-cache-blob-test PRIVATE ../..)
