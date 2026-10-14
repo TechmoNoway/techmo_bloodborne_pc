@@ -31,8 +31,13 @@ directories are also ignored. Vendored shader blobs, header-generation scripts,
 dependency source, licenses and launcher/documentation artwork remain included.
 
 Dependencies are vendored, so a normal clone or GitHub source ZIP is complete.
-The Windows build workflow runs on `main` or by manual dispatch. A launcher
-verification result does not replace a native engine or in-game validation.
+The Windows build workflow runs on pushes to `main` and `experiment/**` when
+native, launcher, test, tool or workflow files change. Documentation-only pushes
+do not trigger a build. To build a chosen branch manually, open GitHub Actions,
+select **Techmo Windows**, choose **Run workflow**, and select that branch.
+Download the `Techmo-Bloodborne-Windows-<commit SHA>` artifact from a successful
+run. A launcher verification result does not replace native engine or in-game
+validation.
 
 Compiled packages should include `LICENSE`, `LICENSING.md`, `NOTICE.md`,
 `DEPENDENCIES.md`, the retained license directories and the corresponding source.
