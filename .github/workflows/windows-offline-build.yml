@@ -16,6 +16,7 @@ on:
       - "build.sh"
       - "run.bat"
       - "setup.bat"
+      - ".gitattributes"
       - ".github/workflows/windows-offline-build.yml"
 
 jobs:
