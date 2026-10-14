@@ -262,7 +262,7 @@ add_executable(pipeline-cache-blob-test EXCLUDE_FROM_ALL ../../tests/test_pipeli
 add_executable(pipeline-precompiler-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_precompiler.cpp)
 target_compile_options(pipeline-precompiler-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(pipeline-precompiler-test PRIVATE shadps4)
-foreach(stage IN ITEMS vert frag)
+foreach(stage IN ITEMS vert frag comp)
     string(TOUPPER ${stage} upper_stage)
     add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_${stage}.h
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/test_shaders
@@ -271,10 +271,18 @@ foreach(stage IN ITEMS vert frag)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/shaders/pipeline_prep.${stage}
         DEPENDS ${GLSLANG_COMPILER} ../../tests/shaders/pipeline_prep.${stage} VERBATIM)
 endforeach()
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_quad.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/test_shaders
+    COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 --vn PIPELINE_PREP_QUAD
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_quad.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/shaders/pipeline_prep_quad.vert
+    DEPENDS ${GLSLANG_COMPILER} ../../tests/shaders/pipeline_prep_quad.vert VERBATIM)
 add_executable(pipeline-precompile-gpu-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_precompile_gpu.cpp
     ../../tests/test_gpu_runtime_stubs.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_vert.h
-    ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_frag.h)
+    ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_frag.h
+    ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_comp.h
+    ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_quad.h)
 target_include_directories(pipeline-precompile-gpu-test PRIVATE shim shadps4
     third_party/gcn/include ${CMAKE_CURRENT_BINARY_DIR}/test_shaders)
 target_compile_options(pipeline-precompile-gpu-test PRIVATE -UNDEBUG)

@@ -9,30 +9,50 @@ These need separate fixes and comparisons; average FPS alone misses both.
 
 ## Native pipeline lookahead
 
-Draw preparation can now queue native Vulkan graphics pipeline creation when
-the required shader modules and permutations already exist. One background
-compiler retains at most 32 outstanding results, including completed results
-that have not been consumed. Duplicate keys and foreground reservations prevent
-the same pipeline being built twice. Shader metadata, register user data,
-runtime state and fetch information are copied into owned snapshots.
+Draw preparation queues native Vulkan graphics and compute pipeline creation
+when the shader modules and permutations exist. The graphics compiler retains
+at most 32 speculative results and the compute compiler at most eight, including
+completed results awaiting use. Each compiler can accept one additional required
+miss while the single GPU consumer waits. Duplicate keys prevent the same
+pipeline being built twice. Shader metadata, register user data, runtime state
+and fetch information are copied into owned snapshots.
 
-The worker uses its own driver cache, seeded from the foreground cache. It does
-not hold the foreground cache mutex during creation. Only the GPU thread
+Each compiler uses its own driver cache, seeded from the foreground cache. It
+does not hold the foreground cache mutex during creation. Only the GPU thread
 publishes pipelines into the graphics map, reconnects their canonical runtime
 stage pointers and saves their recipes. Shutdown drains accepted work before
 merging the driver caches and saving. Existing disk caches remain compatible:
 shader translation and recipe formats have not changed.
 
-A required draw promotes its unstarted pipeline ahead of speculative queued
-jobs, then waits for completion. An already running driver call cannot be
-preempted. A preparation
-failure falls back to required foreground compilation. No draws or resources
-are skipped. The lookahead is limited to triangle lists/strips and point lists
-with known vertex and fragment modules and dynamic vertex input. Debug shader
-replacement disables it. Cold shader translation, unseen permutations,
-compute pipelines and other primitive paths retain foreground compilation.
-Lookahead can hide work only when the preparation thread gets far enough ahead;
-driver contention and extra work may limit the gain.
+A required miss is submitted to the native compiler even if no speculative job
+was queued. Required work overtakes queued jobs, and Windows temporarily raises
+that compiler from idle to normal thread priority while the GPU consumer waits.
+An already running driver call cannot be preempted. Failed background work falls
+back to foreground compilation. Draws and resources are preserved.
+
+Graphics lookahead now includes lines, depth-only draws, and generated rectangle
+and quad tessellation helpers. Those generated shader modules have scoped
+ownership through pipeline creation, including error paths. Compute lookahead
+replays the graphics queue's private compute-register state and direct dispatch
+packets; selection on the GPU thread still verifies the actual shader and
+specialization key before adopting a result. Async compute submissions and
+indirect dispatches use the required path when first needed.
+
+Preparation previously discarded a buffer after encountering an unknown shader
+or permutation. It now retries unavailable draws after a program publication,
+up to four passes per buffer. Already published draw data and its backing arenas
+remain immutable. Programs first used after disk-cache warmup also publish their
+new preparation templates. Speculative shader-header reads return unavailable
+for incomplete headers and use the existing guest-read fault recovery.
+
+Cold GCN-to-SPIR-V translation and unseen permutations still run on the GPU
+command thread, where live guest resource tables and compiler state are owned.
+Once those modules exist, native pipeline creation uses the compiler worker.
+Guest tessellation selection also remains on the required path. Debug shader
+replacement disables native preparation. Lookahead hides work only when it
+gets far enough ahead: moving a required compile onto a worker still leaves a
+first-use wait. Gameplay frame times, rather than a lower foreground compile
+count alone, determine whether the change reduced hitches.
 
 ## Resource upload costs
 
@@ -61,8 +81,10 @@ No texture resolution, mip availability, quality setting or DLSS model changes.
 `BB_FRAME_STATS=1` records `pipeline_wait_ms` per flip, alongside foreground
 compile counts and upload/allocation counters. The session log records foreground
 compile operations >=8 ms, background pipeline operations >=8 ms and preparation
-waits >=2 ms. The shutdown summary records queued/adopted pipelines and all
-foreground handoff wait time. These counters have different scopes.
+waits >=2 ms. The shutdown summary records queued/adopted graphics and compute
+pipelines, required submissions, retries and all foreground handoff wait time.
+Required misses record `cold_shader`, `new_permutation` or `not_prepared`.
+These counters have different scopes; background time can overlap a foreground wait.
 
 `session.json` adds `compilation` and `resource_uploads`; `summary.txt` includes
 their main figures. Reports retain at most 20 large events in each list and
@@ -73,9 +95,14 @@ Use these environment switches before starting Techmo for controlled comparisons
 | Override | Behavior |
 | --- | --- |
 | `BB_PIPELINE_PREP=0` | Existing foreground native pipeline creation |
+| `BB_COMPUTE_PREP=0` | Disable compute lookahead and required compiler handoff |
+| `BB_PIPELINE_RETRY=0` | Process each preparation buffer only once |
 | `BB_STAGING_REUSE_SLACK=0` | Existing staging reuse size threshold |
 
-Both default to enabled and explicit overrides appear in session provenance.
+These features default to enabled and explicit overrides appear in session provenance.
+For a comparison of the whole pipeline batch, disable both `BB_PIPELINE_PREP`
+and `BB_PIPELINE_RETRY`; the master preparation switch also disables compute.
+Keep red-zone protection enabled in both runs.
 Keep FPS cap, GPU profiling, graphics/upscaler settings and the route identical.
 Compare first traversal separately from subsequent cached traversals. Do not
 delete the player's cache just to make a run cold. Record p99, 1% low, frames
@@ -92,8 +119,10 @@ The pre-change native executable and manifest are preserved under
 The new queue fixture checks concurrent duplicate prevention, bounded snapshots
 and results, foreground waits/reservations, snapshot failures, failed compilation
 and shutdown drain, plus required-job priority over speculative queued work.
-The GPU fixture builds real production pipelines both ways
-and checks every rendered pixel after releasing the preparation snapshot.
+The GPU fixture builds production pipelines both ways and checks every rendered
+pixel after releasing the preparation snapshot, including generated rect/quad
+helpers. It also checks compute register replay, incomplete shader headers and
+prepared/required compute selection with exact storage-buffer readback.
 The buffer budget fixture checks retired large-buffer reuse, held/in-flight and
 undersized exclusions, correct GPU readback bytes, and exact-base image lookup.
 

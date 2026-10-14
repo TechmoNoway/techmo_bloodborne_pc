@@ -148,6 +148,31 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(report))
         self.assertFalse(compilation_summary(self.root / 'missing.log')['available'])
 
+    def test_compute_preparation_required_misses_and_retries_are_recorded(self):
+        path = self.root / 'session.log'
+        path.write_text('Compute pipeline preparation: on, 1 worker, 8 outstanding results maximum\n'
+                        'Pipeline prepared: compute 0x12 90.00 ms (background)\n'
+                        'Pipeline preparation wait: compute 0x12 40.00 ms\n'
+                        'Compute pipeline preparation: 3 queued, 2 adopted, 40.40 ms foreground waits, 1 retained\n'
+                        'Pipeline required submissions: gfx 2\n'
+                        'Pipeline required submissions: compute 1\n'
+                        'Pipeline required: gfx 0x12 reason=cold_shader primitive=4\n'
+                        'Pipeline required: compute 0x12 reason=new_permutation\n'
+                        'Pipeline retries: 3 passes, 7 draws recovered\n')
+        report = compilation_summary(path)
+        self.assertTrue(report['compute_preparation_enabled'])
+        self.assertEqual(report['background_slow_ms'], 90)
+        self.assertEqual(report['logged_wait_ms'], 40)
+        self.assertEqual(report['foreground_slow_ms'], 0)
+        self.assertEqual(report['compute_preparation']['adopted'], 2)
+        self.assertEqual(report['required_graphics_submissions'], 2)
+        self.assertEqual(report['required_compute_submissions'], 1)
+        self.assertEqual(report['required_miss_reasons']['graphics pipeline']['cold_shader'], 1)
+        self.assertEqual(report['required_miss_reasons']['compute pipeline']['new_permutation'], 1)
+        self.assertEqual(report['retries']['recovered_draws'], 7)
+        self.assertEqual(report['largest_events'][0]['stage'], 'compute pipeline')
+        self.assertEqual(report['skipped_events'], 0)
+
     def test_upload_report_keeps_counters_separate_and_finds_large_slow_flips(self):
         path = self.root / 'frames.csv'
         path.write_text('t_s,frame_ms,image_mb,buffer_mb,alloc_mb\n'

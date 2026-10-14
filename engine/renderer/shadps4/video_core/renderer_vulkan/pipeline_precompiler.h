@@ -18,7 +18,9 @@ namespace Vulkan {
 template <typename Key, typename Result, typename Hash = std::hash<Key>>
 class PipelinePrecompiler {
 public:
-    PipelinePrecompiler(size_t limit, std::function<void()> start = {}) : limit{limit} {
+    PipelinePrecompiler(size_t limit, std::function<void()> start = {},
+                        std::function<void(bool)> wait_priority = {})
+        : limit{limit}, wait_priority{std::move(wait_priority)} {
         worker = std::thread([this, start = std::move(start)] {
             if (start) start();
             Run();
@@ -66,8 +68,48 @@ public:
         }
         struct Retire {
             PipelinePrecompiler* owner;
-            ~Retire() { std::scoped_lock lock{owner->mutex}; --owner->outstanding; }
+            ~Retire() { owner->SetWaiting(false); std::scoped_lock lock{owner->mutex}; --owner->outstanding; }
         } retire{this};
+        SetWaiting(true);
+        return future.get();
+    }
+
+    // The single GPU consumer can submit a required miss even when speculative
+    // capacity is full. At most one extra result exists while that consumer
+    // waits. This keeps native driver compilation off the GPU command thread
+    // without skipping its draw. Snapshotting remains on the requesting thread.
+    template <typename Prepare>
+    std::optional<Result> TakeOrQueue(const Key& key, Prepare&& make_work) {
+        std::future<Result> future;
+        {
+            std::scoped_lock lock{mutex};
+            auto it = keys.find(key);
+            if (it == keys.end()) {
+                if (!accepting) return std::nullopt;
+                auto work = make_work();
+                std::packaged_task<Result()> task{std::move(work)};
+                it = keys.emplace(key, task.get_future()).first;
+                try {
+                    tasks.push_front({key, std::move(task)});
+                } catch (...) {
+                    keys.erase(it);
+                    throw;
+                }
+                ++outstanding; ++queued; ++required_queued;
+            }
+            if (!it->second.valid()) return std::nullopt;
+            future = std::move(it->second);
+            const auto pending = std::find_if(tasks.begin(), tasks.end(),
+                                              [&](const Job& job) { return job.key == key; });
+            if (pending != tasks.end())
+                std::rotate(tasks.begin(), pending, std::next(pending));
+        }
+        cv.notify_one();
+        struct Retire {
+            PipelinePrecompiler* owner;
+            ~Retire() { owner->SetWaiting(false); std::scoped_lock lock{owner->mutex}; --owner->outstanding; }
+        } retire{this};
+        SetWaiting(true);
         return future.get();
     }
 
@@ -84,9 +126,14 @@ public:
         if (worker.joinable()) worker.join(); // Drain accepted jobs before dependencies die.
     }
     size_t Queued() const { std::scoped_lock lock{mutex}; return queued; }
+    size_t RequiredQueued() const { std::scoped_lock lock{mutex}; return required_queued; }
     size_t Outstanding() const { std::scoped_lock lock{mutex}; return outstanding; }
 
 private:
+    void SetWaiting(bool waiting) noexcept {
+        // Scheduling is optional and cannot invalidate an accepted future.
+        if (wait_priority) try { wait_priority(waiting); } catch (...) {}
+    }
     struct Job {
         Key key;
         std::packaged_task<Result()> task;
@@ -104,10 +151,11 @@ private:
         }
     }
     const size_t limit;
+    std::function<void(bool)> wait_priority;
     mutable std::mutex mutex;
     std::condition_variable cv;
     bool accepting = true;
-    size_t outstanding = 0, queued = 0;
+    size_t outstanding = 0, queued = 0, required_queued = 0;
     std::unordered_map<Key, std::future<Result>, Hash> keys;
     std::deque<Job> tasks;
     std::thread worker;

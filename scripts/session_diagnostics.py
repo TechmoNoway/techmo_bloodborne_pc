@@ -27,6 +27,7 @@ SAFE_ENV = {
     'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_GC_PRESSURE_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
     'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM', 'BB_GPU_DATA_CHECK',
     'BB_PIPELINE_PREP', 'BB_STAGING_REUSE_SLACK',
+    'BB_COMPUTE_PREP', 'BB_PIPELINE_RETRY', 'BB_PREP_WORKERS',
     'BB_RED_ZONE',
 }
 
@@ -192,31 +193,51 @@ def compilation_summary(path):
     """Stream bounded compile evidence; slow events do not count all compilations."""
     patterns = (
         ('foreground', re.compile(r'Compile stall: (shader module|graphics pipeline|compute pipeline) (\w+) (\d+(?:\.\d+)?) ms \(foreground\)')),
-        ('background', re.compile(r'Pipeline prepared: gfx (\w+) (\d+(?:\.\d+)?) ms \(background\)')),
-        ('wait', re.compile(r'Pipeline preparation wait: gfx (\w+) (\d+(?:\.\d+)?) ms')),
+        ('background', re.compile(r'Pipeline prepared: (gfx|compute) (\w+) (\d+(?:\.\d+)?) ms \(background\)')),
+        ('wait', re.compile(r'Pipeline preparation wait: (gfx|compute) (\w+) (\d+(?:\.\d+)?) ms')),
     )
     counts = {'shader module': 0, 'graphics pipeline': 0, 'compute pipeline': 0}
     foreground_ms = background_ms = wait_ms = 0.0
     background_events = wait_events = failures = skipped = 0
     largest = []
+    required_reasons = {stage: {reason: 0 for reason in ('cold_shader', 'new_permutation', 'not_prepared')}
+                        for stage in ('graphics pipeline', 'compute pipeline')}
     result = {'available': False,
               'measurement': 'foreground operations >=8 ms; background operations >=8 ms; foreground waits >=2 ms',
-              'note': 'Thresholded log events omit shorter operations. Background time is not a foreground stall. Hashes identify pipeline state, not game assets.'}
+              'note': 'Thresholded log events omit shorter operations. Background work can overlap required foreground waits; do not add those totals. Hashes identify pipeline state, not game assets.'}
     try:
         with Path(path).open(encoding='utf-8', errors='replace') as stream:
             for line_number, line in enumerate(stream, 1):
                 if 'Pipeline preparation: on,' in line:
                     result.update(available=True, preparation_enabled=True)
+                if 'Compute pipeline preparation: on,' in line:
+                    result.update(available=True, compute_preparation_enabled=True)
                 if 'Pipeline preparation failed:' in line:
                     failures += 1
                     result['available'] = True
-                summary = re.search(r'Pipeline preparation: (\d+) queued, (\d+) adopted, (\d+(?:\.\d+)?) ms foreground waits, (\d+) retained', line)
+                summary = re.search(r'(Compute pipeline|Pipeline) preparation: (\d+) queued, (\d+) adopted, (\d+(?:\.\d+)?) ms foreground waits, (\d+) retained', line)
                 if summary:
-                    queued, adopted, elapsed, retained = summary.groups()
+                    pipeline_kind, queued, adopted, elapsed, retained = summary.groups()
                     elapsed = float(elapsed)
                     if math.isfinite(elapsed) and 0 <= int(adopted) <= int(queued):
-                        result.update(available=True, preparation={'queued': int(queued), 'adopted': int(adopted),
-                                      'foreground_wait_ms': elapsed, 'retained': int(retained)})
+                        field = 'compute_preparation' if pipeline_kind == 'Compute pipeline' else 'preparation'
+                        result['available'] = True
+                        result[field] = {'queued': int(queued), 'adopted': int(adopted),
+                                         'foreground_wait_ms': elapsed, 'retained': int(retained)}
+                required = re.search(r'Pipeline required submissions: (gfx|compute) (\d+)', line)
+                if required:
+                    field = 'required_graphics_submissions' if required[1] == 'gfx' else 'required_compute_submissions'
+                    result[field] = int(required[2])
+                    result['available'] = True
+                reason = re.search(r'Pipeline required: (gfx|compute) (?:0x)?[0-9a-fA-F]+ reason=(cold_shader|new_permutation|not_prepared)\b', line)
+                if reason:
+                    stage = 'graphics pipeline' if reason[1] == 'gfx' else 'compute pipeline'
+                    required_reasons[stage][reason[2]] += 1
+                    result['available'] = True
+                retries = re.search(r'Pipeline retries: (\d+) passes, (\d+) draws recovered', line)
+                if retries:
+                    result['retries'] = {'passes': int(retries[1]), 'recovered_draws': int(retries[2])}
+                    result['available'] = True
                 matched = False
                 for kind, pattern in patterns:
                     match = pattern.search(line)
@@ -224,7 +245,9 @@ def compilation_summary(path):
                         continue
                     matched = True
                     groups = match.groups()
-                    stage, key, duration = groups if kind == 'foreground' else ('graphics pipeline', *groups)
+                    stage, key, duration = groups
+                    if kind != 'foreground':
+                        stage = 'graphics pipeline' if stage == 'gfx' else 'compute pipeline'
                     duration = float(duration)
                     if not math.isfinite(duration) or duration < 0 or not re.fullmatch(r'(?:0x)?[0-9a-fA-F]+', key):
                         skipped += 1
@@ -251,6 +274,7 @@ def compilation_summary(path):
                   background_slow_events=background_events, background_slow_ms=background_ms,
                   logged_wait_events=wait_events, logged_wait_ms=wait_ms,
                   preparation_failures=failures, skipped_events=skipped, largest_events=largest)
+    result['required_miss_reasons'] = required_reasons
     return result
 
 
@@ -408,6 +432,14 @@ class Session:
             if 'preparation' in compilation:
                 prep = compilation['preparation']
                 text += [f"Prepared pipelines: {prep['adopted']} adopted / {prep['queued']} queued; total foreground waits: {prep['foreground_wait_ms']:.2f} ms"]
+            if 'compute_preparation' in compilation:
+                prep = compilation['compute_preparation']
+                text += [f"Compute pipelines: {prep['adopted']} adopted / {prep['queued']} queued; total foreground waits: {prep['foreground_wait_ms']:.2f} ms"]
+            if 'required_graphics_submissions' in compilation or 'required_compute_submissions' in compilation:
+                text += [f"Required compiler submissions: graphics {compilation.get('required_graphics_submissions', 0)}, compute {compilation.get('required_compute_submissions', 0)} (included in queued totals)"]
+            if 'retries' in compilation:
+                retries = compilation['retries']
+                text += [f"Preparation retries: {retries['passes']} passes; {retries['recovered_draws']} draws recovered"]
         uploads = self.report['resource_uploads']
         if uploads.get('available'):
             text += [f"Upload peaks per flip: image {uploads['peak_image_mb_per_flip']:.2f} MB; buffer {uploads['peak_buffer_mb_per_flip']:.2f} MB (separate stages)",

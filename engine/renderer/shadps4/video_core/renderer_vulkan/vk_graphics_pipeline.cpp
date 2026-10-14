@@ -41,6 +41,18 @@ GraphicsPipeline::GraphicsPipeline(
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
     const vk::Device device = instance.GetDevice();
+    // Generated helpers are only needed until pipeline creation finishes.
+    // Keep them owned on error paths as well as successful speculative builds.
+    boost::container::static_vector<vk::UniqueShaderModule, 3> generated_modules;
+    const auto compile_generated = [&](std::span<const u32> code) {
+        auto [result, module] = device.createShaderModuleUnique({
+            .codeSize = code.size_bytes(), .pCode = code.data()});
+        if (speculative && result != vk::Result::eSuccess)
+            throw std::runtime_error{"background helper shader: " + vk::to_string(result)};
+        ASSERT_MSG(result == vk::Result::eSuccess, "Generated shader rejected: {}", vk::to_string(result));
+        generated_modules.push_back(std::move(module));
+        return *generated_modules.back();
+    };
     std::ranges::copy(infos, stages.begin());
     BuildDescSetLayout(preloading, speculative);
     const auto debug_str = GetDebugString();
@@ -210,7 +222,7 @@ GraphicsPipeline::GraphicsPipeline(
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
-            .module = CompileSPV(sdata.tcs, instance.GetDevice()),
+            .module = compile_generated(sdata.tcs),
             .pName = "main",
         });
     }
@@ -229,7 +241,7 @@ GraphicsPipeline::GraphicsPipeline(
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
-            .module = CompileSPV(sdata.tes, instance.GetDevice()),
+            .module = compile_generated(sdata.tes),
             .pName = "main",
         });
     }
@@ -249,7 +261,7 @@ GraphicsPipeline::GraphicsPipeline(
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eFragment,
-            .module = CompileSPV(sdata.fragment, instance.GetDevice()),
+            .module = compile_generated(sdata.fragment),
             .pName = "main",
         });
     }

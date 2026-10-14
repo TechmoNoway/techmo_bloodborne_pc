@@ -27,6 +27,11 @@
 #include "common/types.h"
 #include "video_core/amdgpu/regs.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/pipeline_retry.h"
+
+namespace AmdGpu {
+union PM4Header;
+}
 
 namespace Vulkan {
 
@@ -88,6 +93,9 @@ struct PreparedDraw {
 
 class DrawPreparation {
 public:
+    // Graphics queue replay, including its private compute-register shadow.
+    static void ApplyPreparationRegisters(AmdGpu::Regs& regs, const AmdGpu::PM4Header* header,
+                                         u64& checksum, AmdGpu::RegDirty* dirty = nullptr);
     explicit DrawPreparation(PipelineCache& pipeline_cache);
     ~DrawPreparation();
 
@@ -125,7 +133,7 @@ public:
         u64 start_checksum{}, end_checksum{}; ///< set by the scanner
         AmdGpu::RegDelta delta;                ///< registers written, values at the end
         std::atomic<bool> scanned{false};
-        std::atomic<bool> claimed{false};
+        PipelineRetry retry; ///< guarded by the submission mutex
         std::atomic<bool> gpu_done{false};
     };
 
@@ -162,6 +170,8 @@ private:
     u32 current_draw = 0;
     u64 used = 0, unused = 0;
     u32 worker_count = 0; ///< fixed before the worker threads start
+    bool retry_enabled = false;
+    std::atomic<u64> retry_passes{0}, retry_draws{0};
     std::jthread scanner;
     std::vector<std::jthread> workers;
 };

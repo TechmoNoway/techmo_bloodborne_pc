@@ -505,6 +505,14 @@ void PipelineCache::Sync() {
         std::printf("Pipeline preparation: %zu queued, %llu adopted, %.2f ms foreground waits, %zu retained\n",
             precompiler->Queued(), static_cast<unsigned long long>(prepared_pipeline_hits),
             prepared_pipeline_wait_ns / 1e6, precompiler->Outstanding());
+        std::printf("Pipeline required submissions: gfx %zu\n", precompiler->RequiredQueued());
+    }
+    if (compute_precompiler) {
+        compute_precompiler->Stop();
+        std::printf("Compute pipeline preparation: %zu queued, %llu adopted, %.2f ms foreground waits, %zu retained\n",
+            compute_precompiler->Queued(), static_cast<unsigned long long>(prepared_compute_hits),
+            prepared_compute_wait_ns / 1e6, compute_precompiler->Outstanding());
+        std::printf("Pipeline required submissions: compute %zu\n", compute_precompiler->RequiredQueued());
     }
     std::scoped_lock lock{native_cache_mutex};
     try {
@@ -513,6 +521,12 @@ void PipelineCache::Sync() {
             const auto status = instance.GetDevice().mergePipelineCaches(*pipeline_cache, source);
             if (status != vk::Result::eSuccess)
                 LOG_WARNING(Render, "Cannot merge prepared driver cache: {}", vk::to_string(status));
+        }
+        if (compute_preparation_cache) {
+            const auto source = *compute_preparation_cache;
+            const auto status = instance.GetDevice().mergePipelineCaches(*pipeline_cache, source);
+            if (status != vk::Result::eSuccess)
+                LOG_WARNING(Render_Vulkan, "Cannot merge prepared compute cache: {}", vk::to_string(status));
         }
         SaveNativeCache();
         Storage::DataBase::Instance().Close();

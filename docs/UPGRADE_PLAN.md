@@ -5,6 +5,10 @@ The small correctness/lifetime batch is now implemented; see
 [memory safety checks](guides/MEMORY_SAFETY.md). Gameplay acceptance remains a
 separate gate. A first pass at compilation lookahead, staging reuse and exact-base
 image lookup is also implemented; see [compile/upload checks](guides/COMPILE_UPLOAD.md).
+Pipeline preparation now retries unavailable draws after shader publication,
+includes compute and generated rect/quad helpers, and submits required native
+pipeline misses to prioritized compiler workers. First-use waits and cold shader
+translation still require gameplay measurements.
 Further work in the stages below remains subject to measurement.
 
 The immediate crash follow-up is Windows guest red-zone store protection; see
