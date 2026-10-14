@@ -7,6 +7,11 @@ separate gate. A first pass at compilation lookahead, staging reuse and exact-ba
 image lookup is also implemented; see [compile/upload checks](guides/COMPILE_UPLOAD.md).
 Further work in the stages below remains subject to measurement.
 
+The immediate crash follow-up is Windows guest red-zone store protection; see
+[implementation, coverage and tester acceptance](guides/RED_ZONE.md). It is
+enabled in guest preparation. Intel/RTX 3050 Ti gameplay verification remains
+pending, independent of the compilation and upload performance work.
+
 The immediate goal is to explain and recover the reported FSR 3 performance
 regression in the package built from `4f7541e`, while preserving image correctness
 and resource ownership. Stable 60 native FPS is a target to validate on each GPU,

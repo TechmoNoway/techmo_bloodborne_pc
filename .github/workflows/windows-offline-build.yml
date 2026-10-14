@@ -107,6 +107,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_upscaler_assets.py'
           python -m unittest discover -s tests -p 'test_fsr4cap_dll_info.py'
           python -m unittest discover -s tests -p 'test_session_diagnostics.py'
+          python -m unittest discover -s tests -p 'test_red_zone.py'
           python -m unittest discover -s tests -p 'test_native_package.py'
 
       - name: Fetch DLSS 310.9.1

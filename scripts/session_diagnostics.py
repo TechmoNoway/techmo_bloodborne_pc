@@ -27,6 +27,7 @@ SAFE_ENV = {
     'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_GC_PRESSURE_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
     'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM', 'BB_GPU_DATA_CHECK',
     'BB_PIPELINE_PREP', 'BB_STAGING_REUSE_SLACK',
+    'BB_RED_ZONE',
 }
 
 
@@ -355,6 +356,16 @@ class Session:
         except OSError:
             pass
         self.report['environment'] = {key: self.env[key][:256] for key in SAFE_ENV if key in self.env}
+
+    def record_red_zone(self, path):
+        """Called only after this session's successful guest linker step."""
+        protection = read_json(path).get('red_zone', {})
+        keys = ('enabled', 'table_sha256', 'total_sites', 'applied_sites',
+                'protected_stores', 'functions', 'uncovered_stores',
+                'trampoline_base', 'trampoline_bytes')
+        self.report['red_zone'] = {key: protection[key] for key in keys if key in protection}
+        for key in ('changed_sites', 'conflicting_sites', 'outside_code_sites'):
+            self.report['red_zone'][key] = len(protection.get(key, []))
 
     def set_phase(self, phase):
         self.report['stage'] = phase
