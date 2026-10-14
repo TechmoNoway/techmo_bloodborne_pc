@@ -500,8 +500,20 @@ void PipelineCache::WarmUp() {
 }
 
 void PipelineCache::Sync() {
+    if (precompiler) {
+        precompiler->Stop();
+        std::printf("Pipeline preparation: %zu queued, %llu adopted, %.2f ms foreground waits, %zu retained\n",
+            precompiler->Queued(), static_cast<unsigned long long>(prepared_pipeline_hits),
+            prepared_pipeline_wait_ns / 1e6, precompiler->Outstanding());
+    }
     std::scoped_lock lock{native_cache_mutex};
     try {
+        if (preparation_cache) {
+            const auto source = *preparation_cache;
+            const auto status = instance.GetDevice().mergePipelineCaches(*pipeline_cache, source);
+            if (status != vk::Result::eSuccess)
+                LOG_WARNING(Render, "Cannot merge prepared driver cache: {}", vk::to_string(status));
+        }
         SaveNativeCache();
         Storage::DataBase::Instance().Close();
     } catch (const std::exception& error) {

@@ -3,7 +3,9 @@
 Planning date: 2026-10-13. Status: staged upgrade in progress.
 The small correctness/lifetime batch is now implemented; see
 [memory safety checks](guides/MEMORY_SAFETY.md). Gameplay acceptance remains a
-separate gate. The other stages below are still planned work.
+separate gate. A first pass at compilation lookahead, staging reuse and exact-base
+image lookup is also implemented; see [compile/upload checks](guides/COMPILE_UPLOAD.md).
+Further work in the stages below remains subject to measurement.
 
 The immediate goal is to explain and recover the reported FSR 3 performance
 regression in the package built from `4f7541e`, while preserving image correctness

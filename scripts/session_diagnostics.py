@@ -26,6 +26,7 @@ SAFE_ENV = {
     'BB_ASYNC_SUBMIT', 'BB_DIRECT_SEGMENT', 'BB_FSR4_OPT',
     'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_GC_PRESSURE_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
     'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM', 'BB_GPU_DATA_CHECK',
+    'BB_PIPELINE_PREP', 'BB_STAGING_REUSE_SLACK',
 }
 
 
@@ -79,7 +80,7 @@ def frame_summary(path, start=0, end=None):
         'frames_over_33_33_ms': sum(ms > 1000/30 for ms in samples),
         'frames_over_50_ms': sum(ms > 50 for ms in samples), 'skipped_rows': skipped,
     }
-    for name in ('stage_a_cpu_ms', 'present_wait_ms', 'tick_wait_ms', 'compiles'):
+    for name in ('stage_a_cpu_ms', 'present_wait_ms', 'tick_wait_ms', 'compiles', 'pipeline_wait_ms'):
         values = []
         for row in rows:
             try:
@@ -186,6 +187,108 @@ def memory_summary(path):
     return result
 
 
+def compilation_summary(path):
+    """Stream bounded compile evidence; slow events do not count all compilations."""
+    patterns = (
+        ('foreground', re.compile(r'Compile stall: (shader module|graphics pipeline|compute pipeline) (\w+) (\d+(?:\.\d+)?) ms \(foreground\)')),
+        ('background', re.compile(r'Pipeline prepared: gfx (\w+) (\d+(?:\.\d+)?) ms \(background\)')),
+        ('wait', re.compile(r'Pipeline preparation wait: gfx (\w+) (\d+(?:\.\d+)?) ms')),
+    )
+    counts = {'shader module': 0, 'graphics pipeline': 0, 'compute pipeline': 0}
+    foreground_ms = background_ms = wait_ms = 0.0
+    background_events = wait_events = failures = skipped = 0
+    largest = []
+    result = {'available': False,
+              'measurement': 'foreground operations >=8 ms; background operations >=8 ms; foreground waits >=2 ms',
+              'note': 'Thresholded log events omit shorter operations. Background time is not a foreground stall. Hashes identify pipeline state, not game assets.'}
+    try:
+        with Path(path).open(encoding='utf-8', errors='replace') as stream:
+            for line_number, line in enumerate(stream, 1):
+                if 'Pipeline preparation: on,' in line:
+                    result.update(available=True, preparation_enabled=True)
+                if 'Pipeline preparation failed:' in line:
+                    failures += 1
+                    result['available'] = True
+                summary = re.search(r'Pipeline preparation: (\d+) queued, (\d+) adopted, (\d+(?:\.\d+)?) ms foreground waits, (\d+) retained', line)
+                if summary:
+                    queued, adopted, elapsed, retained = summary.groups()
+                    elapsed = float(elapsed)
+                    if math.isfinite(elapsed) and 0 <= int(adopted) <= int(queued):
+                        result.update(available=True, preparation={'queued': int(queued), 'adopted': int(adopted),
+                                      'foreground_wait_ms': elapsed, 'retained': int(retained)})
+                matched = False
+                for kind, pattern in patterns:
+                    match = pattern.search(line)
+                    if not match:
+                        continue
+                    matched = True
+                    groups = match.groups()
+                    stage, key, duration = groups if kind == 'foreground' else ('graphics pipeline', *groups)
+                    duration = float(duration)
+                    if not math.isfinite(duration) or duration < 0 or not re.fullmatch(r'(?:0x)?[0-9a-fA-F]+', key):
+                        skipped += 1
+                        break
+                    result['available'] = True
+                    if kind == 'foreground':
+                        counts[stage] += 1
+                        foreground_ms += duration
+                    elif kind == 'background':
+                        background_events += 1
+                        background_ms += duration
+                    else:
+                        wait_events += 1
+                        wait_ms += duration
+                    largest.append({'kind': kind, 'stage': stage, 'hash': key, 'duration_ms': duration, 'log_line': line_number})
+                    largest.sort(key=lambda event: event['duration_ms'], reverse=True)
+                    del largest[20:]
+                    break
+                if not matched and any(prefix in line for prefix in ('Compile stall:', 'Pipeline prepared:', 'Pipeline preparation wait:')):
+                    skipped += 1
+    except OSError:
+        pass  # Keep partial streamed evidence and the same report shape.
+    result.update(foreground_slow_events=counts, foreground_slow_ms=foreground_ms,
+                  background_slow_events=background_events, background_slow_ms=background_ms,
+                  logged_wait_events=wait_events, logged_wait_ms=wait_ms,
+                  preparation_failures=failures, skipped_events=skipped, largest_events=largest)
+    return result
+
+
+def upload_summary(path):
+    """Separate source-byte counters and nearby frame times, without causal inference."""
+    samples = skipped = large = slow_large = 0
+    image_peak = buffer_peak = allocation_peak = 0.0
+    largest = []
+    try:
+        with Path(path).open(encoding='utf-8') as stream:
+            for row in csv.DictReader(stream):
+                try:
+                    values = {key: float(row[key]) for key in ('t_s', 'frame_ms', 'image_mb', 'buffer_mb', 'alloc_mb')}
+                    if any(not math.isfinite(value) or value < 0 for value in values.values()) or values['frame_ms'] == 0:
+                        raise ValueError('invalid upload sample')
+                except (KeyError, TypeError, ValueError):
+                    skipped += 1
+                    continue
+                samples += 1
+                image_peak = max(image_peak, values['image_mb'])
+                buffer_peak = max(buffer_peak, values['buffer_mb'])
+                allocation_peak = max(allocation_peak, values['alloc_mb'])
+                if max(values['image_mb'], values['buffer_mb']) >= 64:
+                    large += 1
+                    slow_large += values['frame_ms'] > 1000/30
+                    largest.append(values)
+                    largest.sort(key=lambda event: event['frame_ms'], reverse=True)
+                    del largest[20:]
+    except OSError:
+        return {'available': False}
+    return {'available': bool(samples), 'samples': samples, 'skipped_rows': skipped,
+            'peak_image_mb_per_flip': image_peak, 'peak_buffer_mb_per_flip': buffer_peak,
+            'peak_allocation_mb_per_flip': allocation_peak,
+            'flips_with_upload_counter_at_least_64_mb': large,
+            'large_upload_flips_over_33_33_ms': slow_large, 'slowest_large_upload_flips': largest,
+            'measurement': 'separate image source mip bytes, buffer upload bytes and allocation bytes per flip; decimal MB',
+            'note': 'Image/buffer counters can describe the same data at different stages; do not add them. Co-occurrence does not prove a cause. Older builds count full image refresh attempts, including skipped mips.'}
+
+
 def classify_exit(code, phase, fault=None, log_tail=''):
     fault = fault or {}
     exception = str(fault.get('exception_code', '')).lower()
@@ -272,6 +375,8 @@ class Session:
                            outcome=classify_exit(code, self.report['stage'], fault, tail),
                            performance=frame_summary(self.directory / 'frames.csv'),
                            gpu_performance=gpu_summary(self.directory / 'gpu.csv'),
+                           compilation=compilation_summary(self.env['BB_LOG_FILE']),
+                           resource_uploads=upload_summary(self.directory / 'frames.csv'),
                            memory=memory_summary(self.directory / 'vram.csv'), native_fault=fault)
         self.report['minidump'] = read_json(self.directory / 'minidump.json')
         self.report['artifacts'] = [path.name for path in self.directory.iterdir() if path.is_file() and not path.name.endswith('.tmp')]
@@ -285,6 +390,17 @@ class Session:
                      f"Frame time p95/p99: {performance['p95_frame_ms']:.2f}/{performance['p99_frame_ms']:.2f} ms",
                      f"Scope: {performance['scope']}"]
         memory = self.report['memory']
+        compilation = self.report['compilation']
+        if compilation.get('available'):
+            text += [f"Slow foreground compile events: {sum(compilation['foreground_slow_events'].values())}; accumulated: {compilation['foreground_slow_ms']:.2f} ms",
+                     f"Logged pipeline waits: {compilation['logged_wait_events']}; accumulated: {compilation['logged_wait_ms']:.2f} ms"]
+            if 'preparation' in compilation:
+                prep = compilation['preparation']
+                text += [f"Prepared pipelines: {prep['adopted']} adopted / {prep['queued']} queued; total foreground waits: {prep['foreground_wait_ms']:.2f} ms"]
+        uploads = self.report['resource_uploads']
+        if uploads.get('available'):
+            text += [f"Upload peaks per flip: image {uploads['peak_image_mb_per_flip']:.2f} MB; buffer {uploads['peak_buffer_mb_per_flip']:.2f} MB (separate stages)",
+                     f"Large upload flips >=64 MB: {uploads['flips_with_upload_counter_at_least_64_mb']}; also >33.33 ms: {uploads['large_upload_flips_over_33_33_ms']}"]
         if memory.get('available'):
             text += [f"VRAM driver estimate peak: {memory['peak_device_usage_bytes'] / (1024**2):.1f} MiB; minimum budget: {memory['minimum_device_budget_bytes'] / (1024**2):.1f} MiB",
                      f"Cache pressure samples: {memory['pressure_samples']}; critical: {memory['critical_samples']}",

@@ -15,3 +15,11 @@ Memory/lifetime fixes adapted from upstream (2026-10-14):
   Techmo retains its existing required robustBufferAccess2 and uses a 16-byte zero buffer;
   maintenance6 is not added. maintenance5, when available, bounds the index binding size.
   Local adaptation preserves draw-pipeline register deltas and tracks index reads explicitly.
+Lookup optimization adapted from upstream (2026-10-14):
+  #5240: exact-base FindImageFromRange searches the first page bucket only; preserve
+  eligibility, equal-size selection, ambiguous aliases and zero-size rejection.
+  Region-manager synchronization is retained; no lock-free lookup is backported.
+Local compile/upload improvements (2026-10-14):
+  Bounded native graphics-pipeline lookahead for known modules with owned snapshots,
+  a separate driver cache and foreground reservation/fallback. No draws are skipped.
+  Retired large staging buffers allow bounded best-fit reuse with existing GPU-tick guards.

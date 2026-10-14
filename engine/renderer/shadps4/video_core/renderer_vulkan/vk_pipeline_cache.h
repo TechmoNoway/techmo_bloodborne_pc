@@ -15,6 +15,7 @@
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
+#include "video_core/renderer_vulkan/pipeline_precompiler.h"
 
 template <>
 struct std::hash<vk::ShaderModule> {
@@ -149,8 +150,8 @@ public:
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
                                                 const PreparedDraw* prepared = nullptr);
 
-    /// bbport: worker side of draw preparation: selects the pipeline key for `sel.regs` without
-    /// creating anything. False when a program or permutation does not exist yet.
+    /// bbport: worker side of draw preparation: selects a key using known modules and queues
+    /// safe native pipeline lookahead. False when a shader program/permutation is missing.
     bool PrepareGraphicsPipeline(PipelineSelection& sel);
 
     /// bbport: GPU-thread side: the pipeline for a prepared draw after checking that registers
@@ -180,6 +181,23 @@ public:
     }
 
 private:
+    friend struct PipelinePrecompileTest;
+    void StartPreparation();
+    void QueuePreparedPipeline(const PipelineSelection& selection);
+    struct PipelineSnapshot {
+        std::array<std::unique_ptr<Shader::Info>, MaxShaderStages> infos;
+        std::array<std::vector<u32>, MaxShaderStages> user_data;
+        std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};
+        std::array<vk::ShaderModule, MaxShaderStages> modules{};
+        std::optional<Shader::Gcn::FetchShaderData> fetch_shader;
+        GraphicsPipelineKey key;
+    };
+    struct PreparedPipeline {
+        std::shared_ptr<PipelineSnapshot> snapshot; // Keeps constructor Info pointers alive.
+        std::unique_ptr<GraphicsPipeline> pipeline;
+        GraphicsPipeline::SerializationSupport serialization;
+    };
+    using Precompiler = PipelinePrecompiler<GraphicsPipelineKey, PreparedPipeline>;
     void CreateNativeCache();
     void SaveNativeCache();
     // Only pipeline creation and shutdown snapshots take this lock, never cache hits.
@@ -225,6 +243,10 @@ private:
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
     bool object_motion_enabled{};
+    vk::UniquePipelineCache preparation_cache;
+    std::unique_ptr<Precompiler> precompiler;
+    u64 prepared_pipeline_hits = 0;
+    u64 prepared_pipeline_wait_ns = 0;
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,

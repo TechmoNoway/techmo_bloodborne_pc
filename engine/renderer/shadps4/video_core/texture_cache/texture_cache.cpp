@@ -776,8 +776,11 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 }
 
 ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure_valid) {
+    if (!size) return {};
     ImageIds image_ids;
-    ForEachImageInRegion(address, size, [&](ImageId image_id, Image& image) {
+    // Every registered image is present in its first page's bucket. Only exact
+    // base addresses qualify below, so later pages cannot add a candidate (#5240).
+    ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
         if (image.info.guest_address != address) {
             return;
         }
@@ -926,7 +929,7 @@ void TextureCache::RefreshImage(Image& image) {
     const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
-    BbStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
+    u64 upload_bytes = 0;
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
         const u32 width = std::max(image.info.size.width >> m, 1u);
@@ -948,6 +951,7 @@ void TextureCache::RefreshImage(Image& image) {
             continue;
         }
         image.mip_hashes[m] = mip_hash;
+        upload_bytes += mip_size;
 
         const u32 extent_width = mip_pitch ? std::min(mip_pitch, width) : width;
         const u32 extent_height = mip_height ? std::min(mip_height, height) : height;
@@ -970,6 +974,10 @@ void TextureCache::RefreshImage(Image& image) {
         image.flags &= ~ImageFlagBits::Dirty;
         return;
     }
+
+    // Count source mips actually scheduled, excluding refresh attempts that only
+    // clear dirty flags. Buffer bytes describe another stage of the same data.
+    BbStats::image_upload_bytes.fetch_add(upload_bytes, std::memory_order_relaxed);
 
     scheduler.EndRendering();
 

@@ -11,6 +11,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "memory_safety_comp.h"
 #include "null_index_vert.h"
@@ -35,6 +36,38 @@ constexpr u64 GuestSize = 128ull << 20, Size = 64ull << 10;
 // The fixture has no guest threads or fault handlers. Keep production RegionManager
 // ownership bits, but replace the OS page-watcher boundary (not the cache logic).
 namespace VideoCore {
+struct TextureLookupTest {
+    static void Run(TextureCache& cache) {
+        auto make = [&](VAddr address, u32 width, u32 height) {
+            ImageInfo info{};
+            info.guest_address=address; info.guest_size=u64(width)*height*4;
+            info.type=AmdGpu::ImageType::Color2D; info.pixel_format=vk::Format::eR8G8B8A8Unorm;
+            info.size={width,height,1}; info.pitch=width; info.num_bits=32;
+            info.resources={1,1}; info.mips_layout[0]={info.guest_size,width,height,0};
+            const auto id=cache.slot_images.insert(cache.instance,cache.runtime,cache.slot_image_views,info);
+            cache.RegisterImage(id); return id;
+        };
+        constexpr VAddr base=Guest+(16ull<<20);
+        const auto large=make(base,4096,2048); // Spans 32 registry pages.
+        const auto small=make(base,128,128);
+        const auto adjacent=make(base+(1ull<<20),128,128);
+        assert(cache.FindImageFromRange(base,32ull<<20,false)==large);
+        assert(cache.FindImageFromRange(base,64ull<<10,false)==small);
+        assert(!cache.FindImageFromRange(base,0,false));
+        assert(!cache.FindImageFromRange(base+256,64ull<<10,false));
+        cache.slot_images[large].flags=ImageFlagBits::Registered|ImageFlagBits::GpuModified;
+        assert(cache.FindImageFromRange(base,32ull<<20,true)==large);
+        assert(!cache.FindImageFromRange(base+(1ull<<20),64ull<<10,true));
+        cache.UnregisterImage(small);
+        assert(cache.FindImageFromRange(base,64ull<<10,false)==large); // Single candidate fallback retained.
+        cache.UnregisterImage(large);
+        assert(!cache.FindImageFromRange(base,32ull<<20,false));
+        assert(cache.FindImageFromRange(base+(1ull<<20),64ull<<10,false)==adjacent);
+        cache.UnregisterImage(adjacent);
+        cache.slot_images.erase(large); cache.slot_images.erase(small); cache.slot_images.erase(adjacent);
+        puts("PASS: first-page exact image lookup preserves multi-page overlap, equal-base size selection, GPU eligibility and unregister behavior");
+    }
+};
 struct PageManager::Impl {};
 PageManager::PageManager(Vulkan::Rasterizer*) {}
 PageManager::~PageManager() = default;
@@ -361,4 +394,26 @@ int main() {
     check_bda(spare, spare_offset + Large - Size, 0x11111111);
     assert(BbStats::residency_alloc_bytes.load() >= (128ull << 20));
     puts("PASS: shader reads survive demand, asynchronous spare and tight sparse backing allocations");
+    TextureLookupTest::Run(caches.textures);
+    Vulkan::StagingBufferPool pool{instance,scheduler};
+    const auto big=pool.Request(32ull<<20,MemoryType::HostUncached);
+    const auto held=pool.Request(20ull<<20,MemoryType::HostUncached,0,true);
+    assert(held.buffer!=big.buffer); // Current-tick and held storage must not alias.
+    std::memset(big.mapped,0x44,big.size); big.Flush();
+    const vk::BufferCopy capture{big.size-Size,0,Size};
+    runtime.CopyBuffer(big.buffer,&readback,std::span{&capture,1});
+    scheduler.Finish(); readback.Invalidate(0,Size);
+    for (u32 n=0;n<Size;++n) assert(readback.mapped_data[n]==0x44);
+    const auto reused=pool.Request(20ull<<20,MemoryType::HostUncached);
+    assert(reused.buffer==big.buffer && reused.size==(20ull<<20));
+    std::memset(reused.mapped,0x22,reused.size); reused.Flush();
+    const vk::BufferCopy fresh{reused.size-Size,0,Size};
+    runtime.CopyBuffer(reused.buffer,&readback,std::span{&fresh,1});
+    scheduler.Finish(); readback.Invalidate(0,Size);
+    for (u32 n=0;n<Size;++n) assert(readback.mapped_data[n]==0x22);
+    const auto larger=pool.Request(48ull<<20,MemoryType::HostUncached);
+    assert(larger.buffer!=big.buffer && larger.buffer!=held.buffer);
+    pool.FreeDeferred(held);
+    scheduler.Finish();
+    puts("PASS: retired 32 MiB staging serves 20 MiB uploads, GPU reads stay correct, held/in-flight/undersized storage is excluded");
 }

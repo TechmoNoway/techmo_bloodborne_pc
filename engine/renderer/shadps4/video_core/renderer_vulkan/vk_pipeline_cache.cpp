@@ -11,6 +11,8 @@
 #include <unordered_set>
 
 #include "common/hash.h"
+#include "bbport_threads.h"
+#include "common/thread.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
@@ -455,6 +457,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     };
     CreateNativeCache();
     WarmUp();
+    StartPreparation();
     std::scoped_lock lock{Registry().mutex};
     Registry().caches.push_back(this);
 }
@@ -463,14 +466,22 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
 // bbport: shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
+std::atomic<u64> g_bb_pipeline_wait_ns;
 namespace {
 struct CompileTimer {
+    const char* kind;
+    u64 hash;
+    CompileTimer(const char* kind, u64 hash) : kind{kind}, hash{hash} {}
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     ~CompileTimer() {
-        g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now() - start)
-                                   .count());
+        const auto ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count());
+        g_bb_compile_ns += ns;
         ++g_bb_compiles;
+        if (ns >= 8'000'000) {
+            std::printf("Compile stall: %s %#llx %.2f ms (foreground)\n", kind,
+                        static_cast<unsigned long long>(hash), ns / 1e6);
+        }
     }
 };
 } // namespace
@@ -480,7 +491,93 @@ bool PipelineCache::PrepareGraphicsPipeline(PipelineSelection& worker_sel) {
     if (worker_sel.regs->stage_enable.hs_en) {
         return false;
     }
-    return RefreshGraphicsKey(worker_sel) && !worker_sel.worker->failed;
+    const bool ready = RefreshGraphicsKey(worker_sel) && !worker_sel.worker->failed;
+    if (ready) QueuePreparedPipeline(worker_sel);
+    return ready;
+}
+
+void PipelineCache::StartPreparation() try {
+    const char* option = std::getenv("BB_PIPELINE_PREP");
+    if ((option && option[0] == '0') || !instance.IsVertexInputDynamicState() ||
+        EmulatorSettings.IsShaderCollect()) {
+        return;
+    }
+    // One compiler owns a separate driver-cache object. A speculative compile
+    // must not take the foreground's cache mutex or delay a required compute job.
+    const auto device = instance.GetDevice();
+    size_t size{};
+    std::vector<u8> seed;
+    if (device.getPipelineCacheData(*pipeline_cache, &size, nullptr) == vk::Result::eSuccess &&
+        size <= DriverCache::MaxBytes) {
+        seed.resize(size);
+        if (device.getPipelineCacheData(*pipeline_cache, &size, seed.data()) == vk::Result::eSuccess)
+            seed.resize(size);
+        else seed.clear();
+    }
+    auto [status, cache] = device.createPipelineCacheUnique({
+        .initialDataSize = seed.size(), .pInitialData = seed.empty() ? nullptr : seed.data()});
+    if (status != vk::Result::eSuccess) return; // Foreground remains available.
+    preparation_cache = std::move(cache);
+    precompiler = std::make_unique<Precompiler>(32, [] {
+        Common::SetCurrentThreadName("bb:PipelinePrep");
+        BbThreads::MakeBackground();
+    });
+    for (const auto& [key, _] : graphics_pipelines) precompiler->Known(key);
+    std::printf("Pipeline preparation: on, 1 worker, 32 outstanding results maximum\n");
+} catch (const std::exception& error) {
+    precompiler.reset();
+    preparation_cache.reset();
+    std::printf("Pipeline preparation disabled: %s\n", error.what());
+}
+
+void PipelineCache::QueuePreparedPipeline(const PipelineSelection& selection) try {
+    if (!precompiler) return;
+    // These constructors need no new shader translation, tessellation generation
+    // or guest vertex-buffer reads. Other draws keep the existing synchronous path.
+    const auto vertex = u32(Shader::SwStage::Vertex);
+    const auto fragment = u32(Shader::SwStage::Fragment);
+    const auto primitive = selection.graphics_key.prim_type;
+    if (!selection.infos[vertex] || !selection.infos[fragment] ||
+        !selection.modules[vertex] || !selection.modules[fragment] ||
+        (primitive != AmdGpu::PrimitiveType::TriangleList &&
+         primitive != AmdGpu::PrimitiveType::TriangleStrip &&
+         primitive != AmdGpu::PrimitiveType::PointList)) return;
+    precompiler->Queue(selection.graphics_key, [&] {
+        auto snapshot = std::make_shared<PipelineSnapshot>();
+        snapshot->key = selection.graphics_key;
+        snapshot->runtime_infos = selection.runtime_infos;
+        snapshot->modules = selection.modules;
+        snapshot->fetch_shader = selection.fetch_shader;
+        for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
+            if (!selection.infos[stage]) continue;
+            snapshot->infos[stage] = std::make_unique<Shader::Info>(*selection.infos[stage]);
+            const auto ud = selection.infos[stage]->user_data;
+            snapshot->user_data[stage].assign(ud.begin(), ud.end());
+            snapshot->infos[stage]->user_data = snapshot->user_data[stage];
+        }
+        return [this, snapshot] {
+            const auto start = std::chrono::steady_clock::now();
+            std::array<const Shader::Info*, MaxShaderStages> infos{};
+            for (u32 stage = 0; stage < MaxShaderStages; ++stage)
+                infos[stage] = snapshot->infos[stage].get();
+            PreparedPipeline result;
+            result.snapshot = snapshot;
+            result.pipeline = std::make_unique<GraphicsPipeline>(instance, scheduler, desc_heap,
+                profile, snapshot->key, *preparation_cache, infos, snapshot->runtime_infos,
+                snapshot->fetch_shader, snapshot->modules, result.serialization, false, true);
+            const auto ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            if (ms >= 8) std::printf("Pipeline prepared: gfx %#llx %.2f ms (background)\n",
+                static_cast<unsigned long long>(std::hash<GraphicsPipelineKey>{}(snapshot->key)), ms);
+            return result;
+        };
+    });
+} catch (const std::exception& error) {
+    // Optional lookahead must not terminate the draw-preparation thread when its
+    // snapshot or queue allocation fails. The foreground owns the required draw.
+    static std::atomic_flag warned{};
+    if (!warned.test_and_set())
+        std::printf("Pipeline preparation queue unavailable: %s; using foreground\n", error.what());
 }
 
 const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& prepared) {
@@ -533,13 +630,38 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
-        CompileTimer timer;
-
         GraphicsPipeline::SerializationSupport sdata{};
-        std::scoped_lock cache_lock{native_cache_mutex};
-        it.value() = std::make_unique<GraphicsPipeline>(
-            instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
-            sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+        if (precompiler) {
+            const auto start = std::chrono::steady_clock::now();
+            try {
+                if (auto ready = precompiler->TakeOrReserve(sel.graphics_key)) {
+                    it.value() = std::move(ready->pipeline);
+                    it.value()->BindRuntimeStages(sel.infos);
+                    sdata = std::move(ready->serialization);
+                    ++prepared_pipeline_hits;
+                    const auto ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - start).count());
+                    prepared_pipeline_wait_ns += ns;
+                    g_bb_pipeline_wait_ns.fetch_add(ns, std::memory_order_relaxed);
+                    if (ns >= 2'000'000) std::printf("Pipeline preparation wait: gfx %#llx %.2f ms\n",
+                        static_cast<unsigned long long>(pipeline_hash), ns / 1e6);
+                }
+            } catch (const std::exception& error) {
+                const auto ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - start).count());
+                prepared_pipeline_wait_ns += ns;
+                g_bb_pipeline_wait_ns.fetch_add(ns, std::memory_order_relaxed);
+                std::printf("Pipeline preparation failed: gfx %#llx %s; compiling required draw\n",
+                    static_cast<unsigned long long>(pipeline_hash), error.what());
+            }
+        }
+        if (!it.value()) {
+            CompileTimer timer{"graphics pipeline", pipeline_hash};
+            std::scoped_lock cache_lock{native_cache_mutex};
+            it.value() = std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
+                sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+        }
 
         RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
         ++num_new_pipelines;
@@ -565,7 +687,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
-        CompileTimer timer;
+        CompileTimer timer{"compute pipeline", pipeline_hash};
 
         ComputePipeline::SerializationSupport sdata{};
         std::scoped_lock cache_lock{native_cache_mutex};
@@ -903,7 +1025,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.hw_stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
-    CompileTimer timer;
+    CompileTimer timer{"shader module", info.pgm_hash};
 
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);

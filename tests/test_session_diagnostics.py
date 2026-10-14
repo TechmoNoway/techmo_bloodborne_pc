@@ -8,7 +8,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from session_diagnostics import Session, classify_exit, frame_summary, gpu_summary, memory_summary
+from session_diagnostics import (Session, classify_exit, frame_summary, gpu_summary, memory_summary,
+                                 compilation_summary, upload_summary)
 import run_windows
 
 
@@ -45,6 +46,13 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result['samples'], 2)
         self.assertEqual(result['skipped_rows'], 4)
         self.assertFalse(frame_summary(self.root / 'missing.csv')['available'])
+
+    def test_pipeline_handoff_waits_are_distinct_from_compile_counts(self):
+        path = self.root / 'frames.csv'
+        path.write_text('t_s,frame_ms,compiles,pipeline_wait_ms\n0,10,0,0.001\n1,50,0,35.000\n')
+        report = frame_summary(path)
+        self.assertEqual(report['mean_compiles'], 0)
+        self.assertAlmostEqual(report['mean_pipeline_wait_ms'], 17.5005)
 
     def test_crash_evidence_has_priority_over_shell_exit_code(self):
         result = classify_exit(139, 'runtime', {'exception_code': '0xc0000005'})
@@ -103,6 +111,69 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertNotIn('BB_VRAM_LOG', env)
         session.finish(1)
         self.assertEqual(session.report['outcome']['stage'], 'startup')
+
+    def test_compile_report_separates_foreground_work_background_work_and_waits(self):
+        path = self.root / 'session.log'
+        path.write_text('Pipeline preparation: on, 1 worker, 32 outstanding results maximum\n'
+                        'Compile stall: shader module 0x12 120.50 ms (foreground)\n'
+                        'Compile stall: graphics pipeline 0x34 30.00 ms (foreground)\n'
+                        'Pipeline prepared: gfx 0x56 200.00 ms (background)\n'
+                        'Pipeline preparation wait: gfx 0x56 2.75 ms\n'
+                        'Pipeline preparation failed: gfx 0x78 synthetic; compiling required draw\n'
+                        'Pipeline preparation: 3 queued, 2 adopted, 3.12 ms foreground waits, 1 retained\n'
+                        'Pipeline preparation: 3 queued, 2 adopted, 3.12 ms foreground waits, 1 retained\n')
+        report = compilation_summary(path)
+        self.assertEqual(report['foreground_slow_ms'], 150.5)
+        self.assertEqual(report['background_slow_ms'], 200)
+        self.assertEqual(report['logged_wait_ms'], 2.75)
+        self.assertEqual(report['preparation']['adopted'], 2)  # Repeated shutdown snapshots are not added.
+        self.assertEqual(report['preparation']['foreground_wait_ms'], 3.12)
+        self.assertEqual(report['preparation_failures'], 1)
+        self.assertEqual(report['largest_events'][0]['kind'], 'background')
+
+    def test_compile_report_bounds_evidence_and_ignores_invalid_or_truncated_events(self):
+        path = self.root / 'session.log'
+        lines = [f'Compile stall: compute pipeline 0x12 {i}.00 ms (foreground)\n' for i in range(8, 80)]
+        lines += ['Compile stall: shader module 0x12 NaN ms (foreground)\n',
+                  'Pipeline preparation wait: gfx 0x34 -12 ms\n',
+                  'Pipeline prepared: gfx 0x56 ... ms (background)\n',
+                  'Compile stall: graphics pipeline secret 40 ms (foreground)\n',
+                  'Pipeline prepared: gfx 0x12']
+        path.write_text(''.join(lines))
+        report = compilation_summary(path)
+        self.assertEqual(report['foreground_slow_events']['compute pipeline'], 72)
+        self.assertEqual(len(report['largest_events']), 20)
+        self.assertEqual(report['largest_events'][0]['duration_ms'], 79)
+        self.assertEqual(report['skipped_events'], 5)
+        self.assertNotIn('secret', json.dumps(report))
+        self.assertFalse(compilation_summary(self.root / 'missing.log')['available'])
+
+    def test_upload_report_keeps_counters_separate_and_finds_large_slow_flips(self):
+        path = self.root / 'frames.csv'
+        path.write_text('t_s,frame_ms,image_mb,buffer_mb,alloc_mb\n'
+                        '10,16,400,180,88\n20,138,402,187,0\n30,257,113,43,88.4\n'
+                        '40,50,0,0,200\n50,16,NaN,1,1\n60,16,-1,2,1\n70,8\n')
+        report = upload_summary(path)
+        self.assertEqual(report['samples'], 4)
+        self.assertEqual(report['skipped_rows'], 3)
+        self.assertEqual(report['peak_image_mb_per_flip'], 402)
+        self.assertEqual(report['peak_buffer_mb_per_flip'], 187)
+        self.assertEqual(report['peak_allocation_mb_per_flip'], 200)
+        self.assertEqual(report['flips_with_upload_counter_at_least_64_mb'], 3)
+        self.assertEqual(report['large_upload_flips_over_33_33_ms'], 2)
+        self.assertEqual(report['slowest_large_upload_flips'][0]['t_s'], 30)
+        self.assertNotIn('total_upload_mb', report)
+        self.assertFalse(upload_summary(self.root / 'missing.csv')['available'])
+
+    def test_session_includes_compile_evidence_and_safe_comparison_overrides(self):
+        env = {'BB_PIPELINE_PREP': '0', 'BB_STAGING_REUSE_SLACK': '0'}
+        session = Session(self.root, env)
+        Path(env['BB_LOG_FILE']).write_text('Compile stall: graphics pipeline 0x123 20.00 ms (foreground)\n')
+        session.finish(0)
+        self.assertEqual(session.report['environment']['BB_PIPELINE_PREP'], '0')
+        self.assertEqual(session.report['environment']['BB_STAGING_REUSE_SLACK'], '0')
+        self.assertEqual(session.report['compilation']['foreground_slow_ms'], 20)
+        self.assertIn('Slow foreground compile events: 1', (session.directory / 'summary.txt').read_text())
 
     def write_memory(self, rows, buffer_columns=False):
         path = self.root / 'vram.csv'
