@@ -108,7 +108,16 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
 
 StagingBufferRef StagingBufferPool::RequestLarge(u64 size, MemoryType type, bool deferred) {
     auto& cache = large_caches[u32(type)];
-    const u64 max_size = std::max(size + size / 4, RoundAllocationSize(size));
+    // Reuse compatible retired storage before allocating/first-touching another
+    // large buffer. The former 25% cutoff discarded e.g. a free 32 MiB buffer
+    // for a 20 MiB upload. Allow bounded slack; no in-flight or held entry qualifies.
+    static const bool reuse_slack = [] {
+        const char* value = std::getenv("BB_STAGING_REUSE_SLACK");
+        return !value || value[0] != '0';
+    }();
+    const u64 original_limit = std::max(size + size / 4, RoundAllocationSize(size));
+    const u64 max_size = reuse_slack
+        ? std::max(original_limit, size + std::min<u64>(size, 64_MB)) : original_limit;
 
     LargeBuffer* best{};
     for (LargeBuffer& entry : cache) {

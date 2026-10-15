@@ -152,7 +152,7 @@ def main():
                        '--enabled', os.environ.get('BB_MODS_ENABLED', '1')], capture=True))
     overlay = merged if merged.resolve() != original else None
     try:
-        for script, extra in (('prepare.py', []), ('link_libc.py', []), ('link_modules.py', []),
+        for script, extra in (('prepare.py', []), ('link_libc.py', []),
                               ('content_profile.py', ['--sku', os.environ.get('BB_CONTENT_SKU', 'full')])):
             phase(script.removesuffix('.py'))
             run([PYTHON, SCRIPTS / script, merged, '--out', out, *extra])
@@ -216,6 +216,13 @@ def main():
              '--output-res', os.environ.get('BB_OUTPUT_RES', ''),
              '--patches-dir', os.environ.get('BB_PATCHES_DIR', data / 'patches'),
              '--patches-config', os.environ.get('BB_PATCHES_CONFIG', data / 'patches.json')])
+        # Selected writes must be known before creating red-zone detours: an
+        # external patch may otherwise replace a detour or only part of it.
+        phase('link_modules')
+        run([PYTHON, SCRIPTS / 'link_modules.py', merged, '--out', out,
+             '--runtime-patches', out / 'patches.bin'])
+        if SESSION is not None:
+            SESSION.record_red_zone(out / 'link.json')
         probe = ROOT / os.environ.get('BB_PROBE', out / 'bb-probe.exe')
         phase('native_startup')
         if not probe.is_file():

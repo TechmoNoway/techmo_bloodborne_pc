@@ -41,3 +41,7 @@ The launcher locates the root using `run.bat` and `build.sh`, so a published bui
 inside this repository keeps its configuration separate from another installation.
 The internal `BB_*` variables, `bbport.ini`, source namespaces and native target
 names are compatibility interfaces, rather than public project branding.
+
+The proposed [Techmo Renderer experiment](RENDERER_EXPERIMENT.md) describes staged
+renderer ownership, prepared-game caches, temporal captures and the requirements
+for upscaling and frame generation. It is a design proposal, not a completed backend.

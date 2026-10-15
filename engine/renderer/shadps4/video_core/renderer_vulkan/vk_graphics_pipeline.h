@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <boost/container/static_vector.hpp>
 #include <xxhash.h>
 
@@ -91,8 +92,14 @@ public:
                      std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
                      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader,
                      std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
-                     bool preloading);
+                     bool preloading, bool speculative = false);
     ~GraphicsPipeline();
+
+    // The background constructor reads owned snapshots; publishing a completed
+    // pipeline binds it to the foreground's verified, persistent program Infos.
+    void BindRuntimeStages(std::span<const Shader::Info*, MaxShaderStages> infos) {
+        std::ranges::copy(infos, stages.begin());
+    }
 
     const std::optional<const Shader::Gcn::FetchShaderData>& GetFetchShader() const noexcept {
         return fetch_shader;
@@ -113,7 +120,7 @@ public:
                          u32 step_rate_1, std::span<const AmdGpu::Buffer> sharps = {}) const;
 
 private:
-    void BuildDescSetLayout(bool preloading);
+    void BuildDescSetLayout(bool preloading, bool speculative);
 
 private:
     GraphicsPipelineKey key;

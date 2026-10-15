@@ -36,12 +36,25 @@ GraphicsPipeline::GraphicsPipeline(
     vk::PipelineCache pipeline_cache, std::span<const Shader::Info*, MaxShaderStages> infos,
     std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader_,
-    std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading)
+    std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading,
+    bool speculative)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
     const vk::Device device = instance.GetDevice();
+    // Generated helpers are only needed until pipeline creation finishes.
+    // Keep them owned on error paths as well as successful speculative builds.
+    boost::container::static_vector<vk::UniqueShaderModule, 3> generated_modules;
+    const auto compile_generated = [&](std::span<const u32> code) {
+        auto [result, module] = device.createShaderModuleUnique({
+            .codeSize = code.size_bytes(), .pCode = code.data()});
+        if (speculative && result != vk::Result::eSuccess)
+            throw std::runtime_error{"background helper shader: " + vk::to_string(result)};
+        ASSERT_MSG(result == vk::Result::eSuccess, "Generated shader rejected: {}", vk::to_string(result));
+        generated_modules.push_back(std::move(module));
+        return *generated_modules.back();
+    };
     std::ranges::copy(infos, stages.begin());
-    BuildDescSetLayout(preloading);
+    BuildDescSetLayout(preloading, speculative);
     const auto debug_str = GetDebugString();
 
     const vk::PushConstantRange push_constants = {
@@ -62,6 +75,9 @@ GraphicsPipeline::GraphicsPipeline(
         .pPushConstantRanges = &push_constants,
     };
     auto [layout_result, layout] = instance.GetDevice().createPipelineLayoutUnique(layout_info);
+    if (speculative && layout_result != vk::Result::eSuccess) {
+        throw std::runtime_error{"background graphics layout: " + vk::to_string(layout_result)};
+    }
     ASSERT_MSG(layout_result == vk::Result::eSuccess,
                "Failed to create graphics pipeline layout: {}", vk::to_string(layout_result));
     pipeline_layout = std::move(layout);
@@ -206,7 +222,7 @@ GraphicsPipeline::GraphicsPipeline(
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
-            .module = CompileSPV(sdata.tcs, instance.GetDevice()),
+            .module = compile_generated(sdata.tcs),
             .pName = "main",
         });
     }
@@ -225,7 +241,7 @@ GraphicsPipeline::GraphicsPipeline(
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
-            .module = CompileSPV(sdata.tes, instance.GetDevice()),
+            .module = compile_generated(sdata.tes),
             .pName = "main",
         });
     }
@@ -245,7 +261,7 @@ GraphicsPipeline::GraphicsPipeline(
         }
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eFragment,
-            .module = CompileSPV(sdata.fragment, instance.GetDevice()),
+            .module = compile_generated(sdata.fragment),
             .pName = "main",
         });
     }
@@ -430,7 +446,7 @@ GraphicsPipeline::GraphicsPipeline(
 
     auto [pipeline_result, pipe] =
         device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
-    if (preloading && pipeline_result != vk::Result::eSuccess) {
+    if ((preloading || speculative) && pipeline_result != vk::Result::eSuccess) {
         // bbport: a pipeline from the cache the driver rejects is a damaged cache entry: the
         // cache is rebuilt (PipelineCache::WarmUp) instead of stopping the game at every start.
         throw Serialization::CorruptData{"cached graphics pipeline rejected by the driver: " +
@@ -501,7 +517,7 @@ template void GraphicsPipeline::GetVertexInputs(
     VertexInputs<AmdGpu::Buffer>& guest_buffers, u32 step_rate_0, u32 step_rate_1,
     std::span<const AmdGpu::Buffer> sharps) const;
 
-void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
+void GraphicsPipeline::BuildDescSetLayout(bool preloading, bool speculative) {
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
     u32 binding{};
 
@@ -552,6 +568,9 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
     };
     auto [layout_result, layout] =
         instance.GetDevice().createDescriptorSetLayoutUnique(desc_layout_ci);
+    if (speculative && layout_result != vk::Result::eSuccess) {
+        throw std::runtime_error{"background descriptor layout: " + vk::to_string(layout_result)};
+    }
     ASSERT_MSG(layout_result == vk::Result::eSuccess,
                "Failed to create graphics descriptor set layout: {}", vk::to_string(layout_result));
     desc_layout = std::move(layout);

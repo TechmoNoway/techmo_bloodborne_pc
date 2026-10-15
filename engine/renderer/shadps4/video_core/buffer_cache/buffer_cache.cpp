@@ -480,6 +480,12 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       stream_buffer{instance, scheduler, MemoryType::Stream, STREAM_BUFFER_SIZE},
       gds_buffer{instance, 0, GDS_BUFFER_SIZE, MemoryType::Stream, "GDS Buffer"},
       memory_semaphore{instance} {
+    // First bindings can precede the first GC sample; give their ages the same clock.
+    u32 unset_second = 0;
+    BbStats::coarse_second.compare_exchange_strong(unset_second,
+        u32(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()),
+        std::memory_order_relaxed);
     integrated_gpu = instance.IsIntegrated();
     // bbport: the PC memory model needs the game's direct memory in dma-buf chunks the runtime can
     // map at any offset (BbGuestMemory::Usable), and an AMD GPU for now (PcModelGpu). Without
@@ -518,6 +524,7 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     blocks_per_arena_page = ARENA_PAGE_SIZE / block_size;
     blocks_per_arena_page_shift = ARENA_PAGE_BITS - block_shift;
     group_use.assign(u64{1} << (ADDRESS_SPACE_BITS - USE_GROUP_BITS), 0);
+    group_use_tick.assign(group_use.size(), 0);
     group_demoted.assign(group_use.size(), 0);
     arena_memory_type_index =
         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
@@ -531,6 +538,11 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     bda_pagetable_buffer = std::make_unique<Buffer>(
         instance, 0, bda_pagetable_size, MemoryType::DeviceLocal, "BDA Page Table Buffer");
     runtime.FillBuffer(bda_pagetable_buffer.get(), 0u, bda_pagetable_size, 0u);
+    // No maintenance6 on this backend: bind real zero storage for missing indices.
+    // robustBufferAccess2 (required by Instance) supplies zero beyond these 16 bytes.
+    null_index_buffer = std::make_unique<Buffer>(
+        instance, 0, 16, MemoryType::DeviceLocal, "Null Index Buffer");
+    runtime.FillBuffer(null_index_buffer.get(), 0u, 16u, 0u);
 }
 
 BufferCache::~BufferCache() = default;
@@ -1106,7 +1118,19 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
     if (memory_tracker->IsRegionGpuModified(addr, size)) {
         return true;
     }
-    // bbport BB_GUEST_IN_PLACE: GPU writes are not tracked per page; one not done yet counts.
+    // Completion does not make a VRAM-only GPU write visible in guest RAM. Keep
+    // these ranges on the GPU path even after their submission has finished;
+    // otherwise constants and image uploads can copy stale CPU bytes over them.
+    // BB_GPU_DATA_CHECK=0 is an upstream diagnostic escape hatch, not a speed preset.
+    static const bool gpu_data_check = [] {
+        const char* env = std::getenv("BB_GPU_DATA_CHECK");
+        return !(env && env[0] == '0');
+    }();
+    if (gpu_data_check && GuestInPlace() && gpu_written_bytes.Overlaps(addr, addr + size) &&
+        !IsInPlace(addr, size)) {
+        return true;
+    }
+    // BB_GUEST_IN_PLACE: an unfinished write into guest RAM also needs the GPU path.
     if (GuestInPlace()) {
         const u64 tick = WriteTicks().Newest(addr, size);
         if (tick == 0 || scheduler.GetWorkSemaphore()->IsFree(tick)) {
@@ -1135,6 +1159,8 @@ void BufferCache::SynchronizeDmaBuffers() {
         const u64 page = range.start >> (ARENA_PAGE_BITS - block_shift);
         const VAddr device_addr = range.start << block_shift;
         const u64 size = (range.end - range.start) << block_shift;
+        // Arbitrary shader pointers can read any resident range, without a named binding.
+        NoteUse(device_addr, size);
         SynchronizeMemory(address_space[page], device_addr, size, false, false);
     }
 }
@@ -1196,10 +1222,10 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
 void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_block,
                                  bool in_place) {
     BB_SECTION(EnsureResident);
-    NoteUse(first_block << block_shift, (last_block - first_block + 1) << block_shift);
     if (maintained_epoch != packet_epoch) {
         Maintain();
     }
+    NoteUse(first_block << block_shift, (last_block - first_block + 1) << block_shift);
     // bbport: the blocks were all resident the last time and nothing changed since: no interval
     // lookup (it ran for every buffer binding).
     thread_local std::array<ResidencyMemo, 256> resident_memo{};
@@ -1323,20 +1349,47 @@ std::pair<vk::DeviceMemory, u64> BufferCache::AllocateResidency(u64 bytes) {
     // one block is partly unused. The next block is allocated in the background once half of the
     // current one is used: the kernel clears new memory, on a Steam Deck with the CPU (16-22 ms a
     // burst). At most one spare block.
-    constexpr u64 ResidencyBlock = 64_MB;
+    constexpr u64 ResidencyBlock = ResidencyPolicy::ChunkBytes;
     const auto allocate = [this](u64 size) {
-        const auto memory = Vulkan::Check(instance.GetDevice().allocateMemory({
+        const vk::MemoryAllocateFlagsInfo flags{
+            .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
+        };
+        const auto result = instance.GetDevice().allocateMemory({
+            .pNext = &flags,
             .allocationSize = size,
             .memoryTypeIndex = arena_memory_type_index,
-        }));
+        });
+        if (result.result != vk::Result::eSuccess) {
+            ASSERT_MSG(result.result == vk::Result::eErrorOutOfDeviceMemory ||
+                           result.result == vk::Result::eErrorOutOfHostMemory,
+                       "Residency allocation failed: {}", vk::to_string(result.result));
+            return vk::DeviceMemory{}; // Speculation must not terminate the game on OOM.
+        }
         BbStats::device_alloc_bytes.fetch_add(size, std::memory_order_relaxed);
         BbStats::residency_alloc_bytes.fetch_add(size, std::memory_order_relaxed);
-        return memory;
+        return result.value;
+    };
+    const auto fits = [&](u64 size) {
+        return residency_budget_available && ResidencyPolicy::Fits(
+            residency_budget_usage, residency_budget_growth, size, residency_pressure.marks.pressure);
     };
     if (residency_used + bytes > residency_size) {
-        const u64 size = std::max(bytes, ResidencyBlock);
-        residency_memory = size == ResidencyBlock && spare_residency.valid() ? spare_residency.get()
-                                                                              : allocate(size);
+        u64 size = std::max(bytes, ResidencyBlock);
+        vk::DeviceMemory memory;
+        if (size == ResidencyBlock && spare_residency.valid()) memory = spare_residency.get();
+        if (!memory) {
+            if (residency_budget_available && !fits(size)) size = bytes;
+            memory = allocate(size);
+            if (!memory && size > bytes) {
+                size = bytes;
+                memory = allocate(size);
+            }
+            ASSERT_MSG(memory, "VK_ERROR_OUT_OF_DEVICE_MEMORY: cannot allocate {} bytes for guest "
+                              "buffers (sampled usage {}, pressure mark {})", size,
+                       residency_budget_usage, residency_pressure.marks.pressure);
+            residency_budget_growth += size;
+        }
+        residency_memory = memory;
         residency_size = size;
         residency_used = 0;
         residency_chunks[static_cast<VkDeviceMemory>(residency_memory)] = {size, 0, 0, 0};
@@ -1344,7 +1397,8 @@ std::pair<vk::DeviceMemory, u64> BufferCache::AllocateResidency(u64 bytes) {
     const u64 offset = residency_used;
     residency_used += bytes;
     residency_chunks[static_cast<VkDeviceMemory>(residency_memory)].used += bytes;
-    if (!spare_residency.valid() && residency_used * 2 >= residency_size) {
+    if (!spare_residency.valid() && residency_used * 2 >= residency_size && fits(ResidencyBlock)) {
+        residency_budget_growth += ResidencyBlock;
         spare_residency = std::async(std::launch::async, allocate, ResidencyBlock);
     }
     NoteResidencyUnused();
@@ -1370,6 +1424,7 @@ void BufferCache::NoteUse(VAddr address, u64 size) {
     const u32 now = BbStats::coarse_second.load(std::memory_order_relaxed);
     const u64 last = std::min<u64>((address + size - 1) >> USE_GROUP_BITS, group_use.size() - 1);
     for (u64 group = address >> USE_GROUP_BITS; group <= last; ++group) {
+        group_use_tick[group] = scheduler.CurrentTick();
         if (group_use[group] != now) {
             group_use[group] = now;
         }
@@ -1422,7 +1477,11 @@ void BufferCache::EvictVramBlock(u64 block) {
     memory_tracker->UnmarkRegionAsGpuModified(address, block_size);
     gpu_modified_ranges.Subtract(address, block_size);
     memory_tracker->MarkRegionAsCpuModified(address, block_size);
-    ReleaseResidencySlot(memory, offset);
+    // Neither the slot nor its memory may be reused before the unbind submission finishes.
+    retired_slots.push_back({memory, offset, scheduler.CurrentTick()});
+    BbStats::pending_buffer_bytes.fetch_add(block_size, std::memory_order_relaxed);
+    runtime.FillBuffer(bda_pagetable_buffer.get(), block * sizeof(vk::DeviceAddress),
+                       sizeof(vk::DeviceAddress), 0);
     // After the work submitted so far: it may still read the block.
     bind_wait_tick = std::max(bind_wait_tick, scheduler.CurrentTick() - 1);
     BbStats::vram_unmapped_bytes.fetch_add(block_size, std::memory_order_relaxed);
@@ -1482,24 +1541,117 @@ void BufferCache::ProcessIdleBlocks() {
             }
         }
     }
-    // Chunks without blocks for 5 s, the rebinds away from them long done: back to the driver.
+    ReleaseUnusedChunks(false);
+}
+
+void BufferCache::ReleaseRetiredSlots() {
+    if (retired_slots.empty()) return;
+    scheduler.GetWorkSemaphore()->Refresh();
+    std::erase_if(retired_slots, [&](const RetiredSlot& slot) {
+        if (!scheduler.GetWorkSemaphore()->IsFree(slot.tick)) return false;
+        ReleaseResidencySlot(slot.memory, slot.offset);
+        if (auto it = residency_chunks.find(static_cast<VkDeviceMemory>(slot.memory));
+            it != residency_chunks.end() && it->second.used == 0) {
+            it->second.empty_tick = slot.tick;
+        }
+        BbStats::pending_buffer_bytes.fetch_sub(block_size, std::memory_order_relaxed);
+        return true;
+    });
+}
+
+u64 BufferCache::ReleaseUnusedChunks(bool pressured) {
+    const u32 now = BbStats::coarse_second.load(std::memory_order_relaxed);
+    u64 freed = 0;
+    // Whole Vulkan allocations only. Free slots inside a live chunk are not freed VRAM.
     for (auto it = residency_chunks.begin(); it != residency_chunks.end();) {
         const ResidencyChunk& chunk = it->second;
         const VkDeviceMemory memory = it->first;
-        if (chunk.used != 0 || memory == static_cast<VkDeviceMemory>(residency_memory) ||
-            now - chunk.empty_second < 5 || !pending_binds.empty() ||
-            !scheduler.GetWorkSemaphore()->IsFree(chunk.empty_tick + 1)) {
+        if (chunk.used != 0 || (!pressured && memory == static_cast<VkDeviceMemory>(residency_memory)) ||
+            (!pressured && now - chunk.empty_second < 5) || !pending_binds.empty() ||
+            !scheduler.GetWorkSemaphore()->IsFree(chunk.empty_tick)) {
             ++it;
             continue;
         }
         free_slot_count -= chunk.free_offsets.size();
+        if (memory == static_cast<VkDeviceMemory>(residency_memory)) {
+            residency_memory = nullptr;
+            residency_size = residency_used = 0;
+        }
         instance.GetDevice().freeMemory(vk::DeviceMemory{memory});
+        freed += chunk.size;
         BbStats::residency_alloc_bytes.fetch_sub(chunk.size, std::memory_order_relaxed);
         BbStats::device_free_bytes.fetch_add(chunk.size, std::memory_order_relaxed);
         BbStats::vram_chunks_freed_bytes.fetch_add(chunk.size, std::memory_order_relaxed);
         it = residency_chunks.erase(it);
         NoteResidencyUnused();
     }
+    return freed;
+}
+
+u64 BufferCache::ReclaimMemory(const MemoryPressure& pressure, u64 usage, bool budget_available) {
+    residency_pressure = pressure;
+    residency_budget_usage = usage;
+    residency_budget_available = budget_available;
+    // A pending speculative allocation may complete after this driver sample.
+    residency_budget_growth = spare_residency.valid() ? ResidencyPolicy::ChunkBytes : 0;
+    ProcessPendingUnmaps();
+    ReleaseRetiredSlots();
+    const bool pressured = pressure.level != MemoryPressure::Level::Normal;
+    u64 freed = ReleaseUnusedChunks(budget_available && pressured);
+    if (!budget_available) return freed; // Unknown budgets do not authorize pressure eviction.
+    if (pressured && spare_residency.valid() &&
+        spare_residency.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        const auto spare = spare_residency.get();
+        residency_budget_growth = 0;
+        if (spare) {
+            instance.GetDevice().freeMemory(spare); // Never bound; no GPU retirement needed.
+            BbStats::residency_alloc_bytes.fetch_sub(ResidencyPolicy::ChunkBytes);
+            BbStats::device_free_bytes.fetch_add(ResidencyPolicy::ChunkBytes);
+            BbStats::vram_chunks_freed_bytes.fetch_add(ResidencyPolicy::ChunkBytes);
+            freed += ResidencyPolicy::ChunkBytes;
+        }
+        NoteResidencyUnused();
+    }
+    residency_budget_usage -= std::min(residency_budget_usage, freed);
+    const u32 now = BbStats::coarse_second.load(std::memory_order_relaxed);
+    const u32 idle = ResidencyPolicy::IdleSeconds(pressure.level, VramIdleSeconds());
+    if (!idle || (!pressured && usage < pressure.marks.trigger)) return freed;
+    const u64 batch = ResidencyPolicy::BatchBytes(pressure.level);
+    std::vector<u64> candidates;
+    u32 visited = 0;
+    bool more = false;
+    scheduler.GetWorkSemaphore()->Refresh();
+    for (const auto& range : resident_ranges) {
+        if (range.end <= reclaim_cursor) continue;
+        for (u64 block = std::max(range.start, reclaim_cursor); block < range.end; ++block) {
+            if (++visited > 4096 || candidates.size() * u64(block_size) >= batch) {
+                more = true;
+                break;
+            }
+            reclaim_cursor = block + 1;
+            const VAddr address = block << block_shift;
+            const u64 group = address >> USE_GROUP_BITS;
+            if (in_place_blocks.Contains(block) ||
+                !residency_chunks.contains(static_cast<VkDeviceMemory>(range.memory))) continue;
+            const bool gpu_data = memory_tracker->IsRegionGpuModified(address, block_size) ||
+                                  gpu_modified_ranges.Intersects(address, block_size) ||
+                                  gpu_written_bytes.Overlaps(address, address + block_size);
+            if (ResidencyPolicy::CanEvict(now, group_use[group], idle,
+                    scheduler.GetWorkSemaphore()->IsFree(group_use_tick[group]), gpu_data)) {
+                candidates.push_back(block);
+            }
+        }
+        if (more) break;
+    }
+    if (!more) reclaim_cursor = 0;
+    for (u64 block : candidates) {
+        EvictVramBlock(block);
+        BbStats::buffer_evicted_bytes.fetch_add(block_size, std::memory_order_relaxed);
+    }
+    // Submit unbinds before a later binding can reuse the same guest range. Vulkan
+    // forbids binding a resource range twice inside one sparse submission batch.
+    if (!candidates.empty()) scheduler.Flush();
+    return freed;
 }
 
 bool BufferCache::VramEligible(u64 block, bool garlic_known) {
@@ -2187,7 +2339,7 @@ void BufferCache::QueuePromotions(u64 submitted) {
 }
 
 void BufferCache::UnmapInPlace(VAddr addr, u64 size) {
-    if (!GuestInPlace() || size == 0) {
+    if (size == 0) {
         return;
     }
     std::scoped_lock lk{pending_unmaps_mutex};
@@ -2214,6 +2366,24 @@ void BufferCache::ProcessPendingUnmaps() {
         unmaps.swap(pending_unmaps);
         unmaps_pending.store(false, std::memory_order_release);
     }
+    // A guest unmap can arrive while earlier draws are still recorded, unlike
+    // pressure eviction which selects only completed uses. Preserve those draws
+    // before changing the legacy arena's mappings. The unbind waits for that
+    // submission on the GPU, without forcing the CPU to wait for the whole queue.
+    const bool legacy = !GuestInPlace();
+    if (legacy) {
+        bool resident = false;
+        for (const auto& [addr, size] : unmaps) {
+            const u64 first = (addr + block_size - 1) >> block_shift;
+            const u64 end = (addr + size) >> block_shift;
+            if (first >= end) continue;
+            resident_ranges.ForEachInRange(first, end, [&](const Backing& range) {
+                resident |= residency_chunks.contains(static_cast<VkDeviceMemory>(range.memory));
+            });
+        }
+        if (resident) scheduler.Flush();
+    }
+    const size_t retired_before = retired_slots.size();
     // The blocks bound to memory the game no longer maps there: unbound, and bound again (to
     // whatever is mapped then) when next used. Partly unmapped blocks go too.
     for (const auto& [addr, size] : unmaps) {
@@ -2254,6 +2424,7 @@ void BufferCache::ProcessPendingUnmaps() {
             EvictVramBlock(block);
         }
     }
+    if (legacy && retired_slots.size() != retired_before) scheduler.Flush();
 }
 
 bool BufferCache::IsInPlace(VAddr addr, u64 size) const {
@@ -2462,10 +2633,22 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
 }
 
 bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size) {
+    const auto note_transfer = [&](u64 bytes) {
+        // GPU writes through either image copies or metadata fills leave guest RAM stale.
+        if (!IsInPlace(device_addr, bytes)) {
+            memory_tracker->MarkRegionAsGpuModified(device_addr, bytes);
+            gpu_modified_ranges.Add(device_addr, bytes);
+        }
+        DropShadows(device_addr, bytes);
+        if (GuestInPlace() && !WriteTracking()) {
+            NoteGpuWrite(device_addr, bytes);
+        }
+    };
     if (auto type = texture_cache.IsMeta(device_addr)) {
         if (*type == TextureCache::MetaType::HTile) {
             static constexpr u32 ZmaskUncompressed = 0xf;
             runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
+            note_transfer(size);
             return true;
         } else {
             LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(*type));
@@ -2519,12 +2702,12 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
     }
     auto& tile_manager = texture_cache.GetTileManager();
     tile_manager.TileImage(image, buffer_copies, arena, arena_offset);
-    DropShadows(device_addr, size);
-    // A GPU write like any other: what the GPU copies there each frame (a render target read as a
-    // texel buffer) goes to VRAM instead of crossing PCIe twice (written there, read back).
-    if (GuestInPlace() && !WriteTracking()) {
-        NoteGpuWrite(device_addr, size);
-    }
+    // TileImage wrote the buffer on the GPU, including on the legacy Windows path.
+    // Its guest RAM is stale until read back: neither a small stream binding nor
+    // cache reclamation may treat it as an ordinary CPU-backed copy.
+    const auto& last_mip = image.info.mips_layout[buffer_copies.size() - 1];
+    const u64 written_size = last_mip.offset + last_mip.size;
+    note_transfer(written_size);
     return true;
 }
 
@@ -2707,16 +2890,21 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
                 .pBinds = arena_binds.binds.data(),
             });
         }
+        // Sparse batches can complete out of order even on one queue. Chain them
+        // so a rebind cannot overtake an earlier unbind of the same resource range.
+        const std::array<vk::Semaphore, 2> wait_semas{signal_sema, wait_sema};
+        const std::array<u64, 2> wait_values{signal_tick - 1, wait_tick};
+        const u32 wait_count = wait_tick ? 2u : 1u;
         const vk::TimelineSemaphoreSubmitInfo timeline_si = {
-            .waitSemaphoreValueCount = wait_tick ? 1u : 0u,
-            .pWaitSemaphoreValues = wait_tick ? &wait_tick : nullptr,
+            .waitSemaphoreValueCount = wait_count,
+            .pWaitSemaphoreValues = wait_values.data(),
             .signalSemaphoreValueCount = 1u,
             .pSignalSemaphoreValues = &signal_tick,
         };
         const vk::BindSparseInfo sparse_info = {
             .pNext = &timeline_si,
-            .waitSemaphoreCount = wait_tick ? 1u : 0u,
-            .pWaitSemaphores = wait_tick ? &wait_sema : nullptr,
+            .waitSemaphoreCount = wait_count,
+            .pWaitSemaphores = wait_semas.data(),
             .bufferBindCount = static_cast<u32>(buffer_binds.size()),
             .pBufferBinds = buffer_binds.data(),
             .signalSemaphoreCount = 1u,

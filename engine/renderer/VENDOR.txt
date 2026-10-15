@@ -8,3 +8,18 @@ Backported from upstream after b4e7ae7 (2026-10-02), recompiler correctness fixe
   mode (#5126), e518a6515 S_SUBB_U32 SCC wrap (#5031), 282e5c792 S_ADDC_U32 SCC carry-out (#5030),
   fb6367d29 32-bit literals in the high dword of 64-bit floats (#5114), 94e217781 V_BFM_B32 (#5185),
   d1cb90dbb ADDC (#5200), dd43d1cac V_CVT_PK_U8_F32 (#5194), ef08b1e1f V_ALIGNBIT/ALIGNBYTE (#5186).
+Memory/lifetime fixes adapted from upstream (2026-10-14):
+  #5258: destroy completed nested CE, graphics and compute coroutine frames.
+  #5233: device-address allocation flags on sparse residency backing, including spare/tight paths.
+  #5278, #5327, #5358: indirect index capacity, mapped-range clamping and null index fallback.
+  Techmo retains its existing required robustBufferAccess2 and uses a 16-byte zero buffer;
+  maintenance6 is not added. maintenance5, when available, bounds the index binding size.
+  Local adaptation preserves draw-pipeline register deltas and tracks index reads explicitly.
+Lookup optimization adapted from upstream (2026-10-14):
+  #5240: exact-base FindImageFromRange searches the first page bucket only; preserve
+  eligibility, equal-size selection, ambiguous aliases and zero-size rejection.
+  Region-manager synchronization is retained; no lock-free lookup is backported.
+Local compile/upload improvements (2026-10-14):
+  Bounded native graphics-pipeline lookahead for known modules with owned snapshots,
+  a separate driver cache and foreground reservation/fallback. No draws are skipped.
+  Retired large staging buffers allow bounded best-fit reuse with existing GPU-tick guards.

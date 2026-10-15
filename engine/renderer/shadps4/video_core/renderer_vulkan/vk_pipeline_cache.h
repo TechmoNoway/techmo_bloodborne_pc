@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <functional>
 #include <unordered_map>
 #include <mutex>
 #include <shared_mutex>
@@ -15,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
+#include "video_core/renderer_vulkan/pipeline_precompiler.h"
 
 template <>
 struct std::hash<vk::ShaderModule> {
@@ -96,6 +99,8 @@ struct PipelineSelection {
     bool motion = false;
     DrawIndirectParams draw_indirect_params{};
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
+    const AmdGpu::ComputeProgram* compute_regs{}; ///< owned register snapshot for compute lookahead
+    bool cold_shader = false, new_permutation = false;
 };
 
 /// bbport: a draw-preparation worker's own program state (see vk_draw_prep.h).
@@ -111,6 +116,7 @@ struct PrepWorker {
     std::unordered_map<const Program*, Shader::Info> infos;
     boost::container::static_vector<Stage, MaxShaderStages> stages;
     bool failed = false;
+    bool missing_shader = false;
 };
 
 struct PreparedDraw;
@@ -149,9 +155,13 @@ public:
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
                                                 const PreparedDraw* prepared = nullptr);
 
-    /// bbport: worker side of draw preparation: selects the pipeline key for `sel.regs` without
-    /// creating anything. False when a program or permutation does not exist yet.
+    /// bbport: worker side of draw preparation: selects a key using known modules and queues
+    /// safe native pipeline lookahead. False when a shader program/permutation is missing.
     bool PrepareGraphicsPipeline(PipelineSelection& sel);
+    bool PrepareComputePipeline(const AmdGpu::ComputeProgram& regs, PrepWorker& worker);
+    const AmdGpu::ComputeProgram& GetComputeRegisters() const;
+    u64 ProgramGeneration() const { return program_generation.load(std::memory_order_acquire); }
+    void SetPreparationWake(std::function<void()> wake);
 
     /// bbport: GPU-thread side: the pipeline for a prepared draw after checking that registers
     /// and flattened user data match; null to take the regular path.
@@ -180,6 +190,34 @@ public:
     }
 
 private:
+    friend struct PipelinePrecompileTest;
+    void StartPreparation();
+    void QueuePreparedPipeline(const PipelineSelection& selection);
+    void QueuePreparedCompute(const PipelineSelection& selection, ComputePipelineKey key);
+    void ProgramPublished();
+    struct PipelineSnapshot {
+        std::array<std::unique_ptr<Shader::Info>, MaxShaderStages> infos;
+        std::array<std::vector<u32>, MaxShaderStages> user_data;
+        std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};
+        std::array<vk::ShaderModule, MaxShaderStages> modules{};
+        std::optional<Shader::Gcn::FetchShaderData> fetch_shader;
+        GraphicsPipelineKey key;
+    };
+    struct PreparedPipeline {
+        std::shared_ptr<PipelineSnapshot> snapshot; // Keeps constructor Info pointers alive.
+        std::unique_ptr<GraphicsPipeline> pipeline;
+        GraphicsPipeline::SerializationSupport serialization;
+    };
+    using Precompiler = PipelinePrecompiler<GraphicsPipelineKey, PreparedPipeline>;
+    struct PreparedCompute {
+        std::shared_ptr<PipelineSnapshot> snapshot;
+        std::unique_ptr<ComputePipeline> pipeline;
+        ComputePipeline::SerializationSupport serialization;
+    };
+    using ComputePrecompiler = PipelinePrecompiler<ComputePipelineKey, PreparedCompute>;
+    std::function<PreparedPipeline()> MakeGraphicsWork(const PipelineSelection& selection);
+    std::function<PreparedCompute()> MakeComputeWork(const PipelineSelection& selection,
+                                                   ComputePipelineKey key);
     void CreateNativeCache();
     void SaveNativeCache();
     // Only pipeline creation and shutdown snapshots take this lock, never cache hits.
@@ -225,6 +263,16 @@ private:
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
     bool object_motion_enabled{};
+    vk::UniquePipelineCache preparation_cache;
+    std::unique_ptr<Precompiler> precompiler;
+    vk::UniquePipelineCache compute_preparation_cache;
+    std::unique_ptr<ComputePrecompiler> compute_precompiler;
+    u64 prepared_compute_hits = 0, prepared_compute_wait_ns = 0;
+    u64 prepared_pipeline_hits = 0;
+    u64 prepared_pipeline_wait_ns = 0;
+    std::atomic<u64> program_generation{0};
+    std::mutex preparation_wake_mutex;
+    std::function<void()> preparation_wake;
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,

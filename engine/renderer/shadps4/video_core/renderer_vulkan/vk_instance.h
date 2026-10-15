@@ -142,6 +142,11 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    /// Returns true if VK_KHR_maintenance5 is supported
+    bool IsMaintenance5Supported() const {
+        return maintenance_5;
+    }
+
     /// Returns true if VK_KHR_maintenance8 is supported
     bool IsMaintenance8Supported() const {
         return maintenance_8;

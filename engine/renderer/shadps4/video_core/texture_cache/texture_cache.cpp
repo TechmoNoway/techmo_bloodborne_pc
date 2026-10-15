@@ -205,16 +205,18 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
         .imageOffset = {0, 0, 0},
         .imageExtent = {image.info.size.width, image.info.size.height, image.info.size.depth},
     };
-    // bbport BB_GUEST_IN_PLACE: the GPU copies the image into the game's memory itself, in stream
-    // order: before the fences that follow, no wait here and no CPU copy afterwards.
+    // BB_GUEST_IN_PLACE: publish the image to the buffer backing in GPU command order,
+    // including when that backing is a VRAM copy. Waiting for the CPU readback below
+    // leaves subsequent buffer reads using an older frame (upstream issue #122).
     if (GuestInPlace() && image.info.guest_address != 0) {
         const auto [arena, offset] =
             buffer_cache.ObtainBuffer(image.info.guest_address, download_size, true);
+        image_copy.bufferOffset = offset;
+        runtime.DownloadImage(&image, arena, std::span{&image_copy, 1});
         if (buffer_cache.IsInPlace(image.info.guest_address, download_size)) {
-            image_copy.bufferOffset = offset;
-            runtime.DownloadImage(&image, arena, std::span{&image_copy, 1});
             return;
         }
+        // A VRAM copy still needs the existing guest RAM readback for CPU consumers.
     }
     const auto download =
         runtime.GetStagingPool().Request(download_size, MemoryType::HostCached, 16, !sync);
@@ -774,8 +776,11 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 }
 
 ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure_valid) {
+    if (!size) return {};
     ImageIds image_ids;
-    ForEachImageInRegion(address, size, [&](ImageId image_id, Image& image) {
+    // Every registered image is present in its first page's bucket. Only exact
+    // base addresses qualify below, so later pages cannot add a candidate (#5240).
+    ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
         if (image.info.guest_address != address) {
             return;
         }
@@ -924,7 +929,7 @@ void TextureCache::RefreshImage(Image& image) {
     const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
 
-    BbStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
+    u64 upload_bytes = 0;
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
         const u32 width = std::max(image.info.size.width >> m, 1u);
@@ -946,6 +951,7 @@ void TextureCache::RefreshImage(Image& image) {
             continue;
         }
         image.mip_hashes[m] = mip_hash;
+        upload_bytes += mip_size;
 
         const u32 extent_width = mip_pitch ? std::min(mip_pitch, width) : width;
         const u32 extent_height = mip_height ? std::min(mip_height, height) : height;
@@ -968,6 +974,10 @@ void TextureCache::RefreshImage(Image& image) {
         image.flags &= ~ImageFlagBits::Dirty;
         return;
     }
+
+    // Count source mips actually scheduled, excluding refresh attempts that only
+    // clear dirty flags. Buffer bytes describe another stage of the same data.
+    BbStats::image_upload_bytes.fetch_add(upload_bytes, std::memory_order_relaxed);
 
     scheduler.EndRendering();
 
@@ -1172,6 +1182,7 @@ void TextureCache::GarbageCollectImages() {
         driver_memory_budget = snapshot.budget;
         if (!snapshot.budget) {
             // Keep the last valid thresholds, but don't evict based on an unavailable query.
+            buffer_cache.ReclaimMemory(memory_pressure, total_used_memory, false);
             return;
         }
         // Use the current budget on discrete GPUs too. The override is for reproducible
@@ -1203,6 +1214,10 @@ void TextureCache::GarbageCollectImages() {
         BbStats::coarse_second.store(u32(second), std::memory_order_relaxed);
         gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
     }
+    // Both caches consume one process budget. Retire cold CPU-backed buffer copies
+    // before evicting textures; only whole allocations actually freed count below.
+    const u64 freed_buffers = buffer_cache.ReclaimMemory(
+        memory_pressure, total_used_memory, instance.CanReportMemoryUsage() && driver_memory_budget != 0);
     if (BbToggle::Disabled(BbToggle::TextureCollector)) {
         return;
     }
@@ -1226,13 +1241,17 @@ void TextureCache::GarbageCollectImages() {
     u32 visited = 0;
     // Batch-local estimate only: unregistering guest bytes is not a measurement of
     // freed VRAM. Host images may have different sizes, and destruction is deferred.
-    u64 projected_usage = total_used_memory;
+    u64 projected_usage = total_used_memory - std::min(total_used_memory, freed_buffers);
     const u64 pressure_target = instance.CanReportMemoryUsage()
                                    ? memory_pressure.marks.pressure_exit : pressure_gc_memory;
     const u64 critical_target = instance.CanReportMemoryUsage()
                                    ? memory_pressure.marks.critical_exit : critical_gc_memory;
 
-    const auto configure = [&](bool allow_aggressive) {
+    static const u64 pressure_idle_seconds = [] {
+        const char* env = std::getenv("BB_GC_PRESSURE_IDLE_SECONDS");
+        return std::clamp<u64>(env ? std::strtoull(env, nullptr, 10) : 5, 1, 63);
+    }();
+    const auto configure = [&](bool allow_aggressive, bool emergency = false) {
         pressured = instance.CanReportMemoryUsage()
                         ? memory_pressure.level != MemoryPressure::Level::Normal
                         : total_used_memory >= pressure_gc_memory;
@@ -1244,6 +1263,10 @@ void TextureCache::GarbageCollectImages() {
         below_tick = gc_tick - ticks_to_destroy;
         if (!pressured && !aggresive) {
             below_tick = std::min(below_tick, idle_tick);
+        } else if (!emergency) {
+            const u64 age = aggresive ? 1 : pressure_idle_seconds;
+            below_tick = std::min(below_tick,
+                gc_tick_at_second[(second - age) % gc_tick_at_second.size()]);
         }
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
         visited = 0;
@@ -1307,6 +1330,11 @@ void TextureCache::GarbageCollectImages() {
              : total_used_memory >= critical_gc_memory)) {
         configure(true);
         lru_cache.ForEachItemBelow(below_tick, clean_up);
+        // If cold resources were insufficient, retain the existing bounded emergency pass.
+        if (projected_usage >= critical_gc_memory) {
+            configure(true, true);
+            lru_cache.ForEachItemBelow(below_tick, clean_up);
+        }
     }
     // bbport: evictions under memory pressure, at most every 5 s (BB_FRAME_STATS or not).
     if (pressured || gc_downloads != 0) {
@@ -1334,9 +1362,10 @@ void TextureCache::WriteMemorySample() {
         std::fprintf(memory_log, "t_s,driver_available,device_usage_bytes,device_budget_bytes,"
                                 "gc_budget_bytes,tracked_image_bytes,guest_buffer_allocated_bytes,"
                                 "guest_buffer_unused_bytes,pending_image_bytes,gc_evicted_images,"
-                                "gc_written_back_images,gc_pressure,gc_critical\n");
+                                "gc_written_back_images,gc_pressure,gc_critical,"
+                                "pending_buffer_bytes,buffer_evicted_bytes,buffer_freed_bytes\n");
     }
-    std::fprintf(memory_log, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u\n",
+    std::fprintf(memory_log, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u,%llu,%llu,%llu\n",
                  std::chrono::duration<double>(memory_sample_time - memory_log_start).count(),
                  unsigned(instance.CanReportMemoryUsage()),
                  static_cast<unsigned long long>(total_used_memory),
@@ -1349,7 +1378,10 @@ void TextureCache::WriteMemorySample() {
                  static_cast<unsigned long long>(gc_total_evictions),
                  static_cast<unsigned long long>(gc_total_downloads),
                  unsigned(memory_pressure.level != MemoryPressure::Level::Normal),
-                 unsigned(memory_pressure.level == MemoryPressure::Level::Critical));
+                 unsigned(memory_pressure.level == MemoryPressure::Level::Critical),
+                 static_cast<unsigned long long>(BbStats::pending_buffer_bytes.load()),
+                 static_cast<unsigned long long>(BbStats::buffer_evicted_bytes.load()),
+                 static_cast<unsigned long long>(BbStats::vram_chunks_freed_bytes.load()));
     std::fflush(memory_log);
 }
 

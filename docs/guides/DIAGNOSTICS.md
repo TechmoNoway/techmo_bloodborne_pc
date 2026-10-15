@@ -183,6 +183,81 @@ original game dump and list enabled mods when comparing performance.
 
 ## Validate without the game
 
+`image-buffer-sync-test` uses the production Vulkan runtime to clear an image,
+copy it to a VRAM buffer at a nonzero offset, and upload a second image from that
+buffer before any CPU wait. It verifies every pixel, untouched bytes around the
+copy and four successive submissions. Build/run it in the native shell:
+
+```sh
+ninja -C out/gpu image-buffer-sync-test
+out/gpu/image-buffer-sync-test.exe
+```
+
+The selective coherence backport from upstream
+[3c57da4](https://github.com/DarkIzuku/bloodborne_pc/commit/3c57da4198ad62039f63f33bfd205b9916518acf)
+publishes render-target downloads to their VRAM buffer immediately and prevents
+completed VRAM-only writes from being treated as current guest RAM. Guest CPU
+readback remains in place. `BB_GPU_DATA_CHECK=0` disables the latter check for
+diagnostics only; it can reintroduce stale reads.
+
+Those two fixes apply to `BB_GUEST_IN_PLACE`. This Windows fork currently rejects
+that model in `bbport_windows_experiments.cpp`; the backport does not enable it or
+import the Linux memory layer. The GPU test checks common transfer/barrier paths,
+not guest-memory import, the guarded cache branches or the reported in-game
+motion-blur bug. No Windows FPS or VRAM saving follows from this backport alone.
+
+## Shared Windows cache budget
+
+The legacy Windows renderer now passes the same driver usage, budget and pressure
+state to both texture and buffer caches. The memory model remains unchanged.
+Buffer allocation keeps its 64 MiB pool when there is headroom, suppresses the
+next speculative pool near the pressure threshold and falls back to the requested
+size if a larger pool allocation fails. Unknown budgets disable speculation and
+pressure eviction; they still allow safely retired empty allocations to be freed.
+
+Cold CPU-backed buffer copies are eligible after 60 seconds normally, 5 seconds
+under pressure and 1 second at critical pressure. Work must have completed and no
+GPU-only bytes may remain. Scans and eviction batches are bounded. Shader DMA
+access conservatively keeps resident ranges active. Sparse slots retire only after
+the unbind submission completes; empty whole allocations can then return to Vulkan.
+Unbinds are submitted before the same guest range can be rebound, following the
+[Vulkan sparse binding ordering rules](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueueBindSparse.html).
+Guest unmaps also retire fully unmapped legacy buffer blocks. Unlike pressure
+eviction, they can include draws still being recorded, so legacy unmap maintenance
+submits prior work before changing those mappings. GPU timeline waits chain sparse
+batches and order unbinds after earlier reads, without a CPU wait for the entire
+queue. These extra submissions occur only when cached ranges are retired; assess
+their cost in the same-route gameplay comparison.
+
+Texture pressure passes keep a 5-second grace period
+(`BB_GC_PRESSURE_IDLE_SECONDS`, 1–63); critical passes use 1 second. If cold images
+are insufficient above the critical threshold, a bounded emergency pass retains
+the existing writeback protections. Image-to-buffer transfers now mark the legacy
+buffer bytes (including GPU-filled HTile metadata) as GPU-owned, preventing stale
+CPU uploads or premature reclamation.
+
+`vram.csv` and session reports distinguish `pending_buffer_bytes` (awaiting GPU
+retirement), cumulative `buffer_evicted_bytes` (discarded cached copies) and
+`buffer_freed_bytes` (whole allocations and unused spare pools returned to Vulkan).
+Evicting a slot alone does not lower allocated VRAM. Older captures remain readable.
+
+`buffer-budget-test` exercises the actual legacy caches on headless Vulkan with a
+small mapped guest fixture: fresh CPU data after eviction/rebinding, retained
+GPU-written data, image/buffer alias ownership and whole-allocation release after
+unbind completion. Guest protection services are simulated; it does not test real
+game fault handlers or establish an FPS/VRAM gain. Run GPU tests in the MSYS2 native
+shell, which waits for these executables and captures their output:
+
+```sh
+ninja -C out/gpu buffer-budget-test memory-pressure-test
+out/gpu/buffer-budget-test.exe
+out/gpu/memory-pressure-test.exe
+```
+
+Use the existing same-route A/B procedure to assess real gameplay before changing
+the memory model. A forced 4 GiB cache budget on an 8 GiB GPU tests policy only;
+it does not reproduce a real 4 GiB card's bandwidth, capacity or driver behavior.
+
 `bb-probe.exe --vulkan-only` submits a tiny buffer fill and reads it back; it
 does not load Bloodborne. Native regression fixtures cover the runtime and input.
 The crash fixture raises a synthetic Windows exception and checks the original

@@ -20,6 +20,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
+#include "video_core/buffer_cache/residency_policy.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 namespace AmdGpu {
@@ -83,6 +84,10 @@ public:
     /// Returns a pointer to GDS device local buffer.
     [[nodiscard]] const Buffer* GetGdsBuffer() const noexcept {
         return &gds_buffer;
+    }
+
+    [[nodiscard]] const Buffer* GetNullIndexBuffer() const noexcept {
+        return null_index_buffer.get();
     }
 
     /// Retrieves the device local DBA page table buffer.
@@ -159,6 +164,10 @@ public:
 
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
+
+    /// Shared driver snapshot, supplied by texture GC after draw workers are drained.
+    /// Returns bytes actually handed back to Vulkan, not the sizes of unbound slots.
+    u64 ReclaimMemory(const MemoryPressure& pressure, u64 usage, bool budget_available);
 
     /// bbport BB_GUEST_IN_PLACE: the game unmapped [addr, addr + size) (a guest thread): arena
     /// blocks bound to its memory there are unbound before the next binding (GPU side).
@@ -241,6 +250,8 @@ private:
         return TrackedIntervalList<Backing>::generation + TrackedIntervalList<>::generation;
     }
     void ProcessPendingUnmaps();
+    u64 ReleaseUnusedChunks(bool pressured);
+    void ReleaseRetiredSlots();
     /// bbport BB_GUEST_IN_PLACE: a write fault (guest thread). Blocks the CPU keeps writing (faults in
     /// 3 frames of 60) move from VRAM to the game's memory in place: dynamic data, like an upload
     /// heap; static data stays in VRAM, like a default heap.
@@ -341,6 +352,7 @@ private:
 
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
+    std::unique_ptr<Buffer> null_index_buffer;
     RangeSet gpu_modified_ranges;
 
     std::unique_ptr<FaultManager> fault_manager;
@@ -415,12 +427,19 @@ private:
     vk::DeviceMemory residency_memory{}; ///< bbport: the 64 MiB block arena residency comes from
     u64 residency_size = 0, residency_used = 0;
     std::future<vk::DeviceMemory> spare_residency; ///< the next block, allocated in the background
+    MemoryPressure residency_pressure;
+    u64 residency_budget_usage = 0, residency_budget_growth = 0;
+    bool residency_budget_available = false;
+    struct RetiredSlot { vk::DeviceMemory memory; u64 offset, tick; };
+    std::vector<RetiredSlot> retired_slots;
+    u64 reclaim_cursor = 0;
     /// bbport: VRAM blocks no longer needed. Per 2 MiB of guest addresses, the second
     /// (BbStats::coarse_second) it was last bound: blocks in VRAM unused for BB_VRAM_IDLE_SECONDS
     /// (60, 0: never) go back to the game's memory, and residency chunks left without blocks
     /// go back to the driver (ProcessIdleBlocks). Blocks of unmapped memory leave VRAM too.
     static constexpr u64 USE_GROUP_BITS = 21;
     std::vector<u32> group_use;
+    std::vector<u64> group_use_tick;
     /// Groups with blocks moved in place for idleness, and those blocks: bound again, they get a
     /// VRAM copy again (QueuePromotions). Else the GPU kept reading them over PCIe (FPS 90 -> 55).
     std::vector<u8> group_demoted;

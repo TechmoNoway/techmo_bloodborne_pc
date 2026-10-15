@@ -28,6 +28,7 @@
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/index_buffer_range.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -1536,8 +1537,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             GetDrawOffsets(regs, vs, pipeline->GetFetchShader());
         const u32 index_size =
             regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2u : 4u;
-        const VAddr index_address = is_indexed
-            ? regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size : 0;
+        const VAddr index_base = regs.index_base_address.Address<VAddr>();
+        const VAddr index_address = is_indexed && index_base
+            ? index_base + u64(index_offset) * index_size : 0;
         // Without a character-size skeleton the draw is gated on its bone palette changing
         // since last frame (model constants follow the camera, the palette does not). The
         // check comes first: most gated draws are static world pieces with long index lists.
@@ -1727,7 +1729,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
     BindVertexBuffers(pipeline);
     if (is_indexed) {
-        BindIndexBuffer();
+        BindIndexBuffer(0, true);
     }
 
     const auto [buffer, base] =
@@ -2431,19 +2433,24 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     v.num_buffers = static_cast<u32>(guest_buffers.size());
 }
 
-void Rasterizer::BindIndexBuffer(u32 index_offset) {
-    ResolveIndexBuffer(index_offset);
+void Rasterizer::BindIndexBuffer(u32 index_offset, bool is_indirect) {
+    ResolveIndexBuffer(index_offset, is_indirect);
     EmitIndexBuffer();
 }
 
 void Rasterizer::EmitIndexBuffer() {
     scheduler.Record([handle = index_bind.handle, offset = index_bind.offset,
-                      type = index_bind.type](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindIndexBuffer(handle, offset, type);
+                      type = index_bind.type, size = index_bind.size,
+                      bounded = instance.IsMaintenance5Supported()](vk::CommandBuffer cmdbuf) {
+        if (bounded) {
+            cmdbuf.bindIndexBuffer2KHR(handle, offset, size, type);
+        } else {
+            cmdbuf.bindIndexBuffer(handle, offset, type);
+        }
     });
 }
 
-void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
+void Rasterizer::ResolveIndexBuffer(u32 index_offset, bool is_indirect) {
     BB_SECTION(ResolveIndexBuffer);
     const auto& regs = Regs();
 
@@ -2451,18 +2458,26 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const bool is_index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
     const vk::IndexType index_type = is_index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32;
     const u32 index_size = is_index16 ? sizeof(u16) : sizeof(u32);
-    const VAddr index_address =
-        regs.index_base_address.Address<VAddr>() + index_offset * index_size;
-
-    // Bind index buffer.
-    const u32 index_buffer_size = regs.num_indices * index_size;
-    const auto [buffer, offset] =
-        buffer_cache.ObtainBuffer(index_address, index_buffer_size, false);
-    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, index_buffer_size);
-    index_bind = {buffer->Handle(), offset, index_type};
+    const auto range = VideoCore::ResolveIndexBufferRange(
+        regs.index_base_address.Address<VAddr>(), index_offset, index_size,
+        is_indirect ? regs.max_index_size : regs.num_indices,
+        [this](VAddr address, u64 size) { return memory->ClampRangeSize(address, size); });
+    const auto [buffer, offset] = range.size
+        ? buffer_cache.ObtainBuffer(range.address, range.size, false)
+        : std::pair{buffer_cache.GetNullIndexBuffer(), u64{0}};
+    const u32 size = range.size ? range.size : 16;
+    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
+    index_bind = {buffer->Handle(), offset, index_type, size};
+    index_read_buffer = buffer;
 }
 
 void Rasterizer::ResetBindings(bool is_compute) {
+    if (index_read_buffer) {
+        runtime.AccessBuffer(index_read_buffer, index_bind.offset, index_bind.size,
+                             vk::PipelineStageFlagBits2::eIndexInput,
+                             vk::AccessFlagBits2::eIndexRead);
+        index_read_buffer = nullptr;
+    }
     for (auto& image_id : bound_images) {
         texture_cache.GetImage(image_id).binding = {};
     }

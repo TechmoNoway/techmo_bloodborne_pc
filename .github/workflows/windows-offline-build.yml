@@ -4,7 +4,7 @@ name: Techmo Windows
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, "experiment/**"]
     paths:
       - "engine/runtime/**"
       - "engine/renderer/**"
@@ -16,6 +16,7 @@ on:
       - "build.sh"
       - "run.bat"
       - "setup.bat"
+      - ".gitattributes"
       - ".github/workflows/windows-offline-build.yml"
 
 jobs:
@@ -95,6 +96,15 @@ jobs:
           out/gpu/pc-input-bridge-test.exe
           out/gpu/widescreen-test.exe
 
+      - name: Build and run pipeline preparation regressions
+        shell: msys2 {0}
+        run: |
+          set -e
+          ninja -C out/gpu -j2 pipeline-precompiler-test liverpool-tasks-test pipeline-precompile-gpu-test
+          out/gpu/pipeline-precompiler-test.exe
+          out/gpu/liverpool-tasks-test.exe
+          # The real Vulkan readback fixture is compiled here and run locally on a GPU.
+
       - name: Verify preparation, patches, and mod safety
         shell: msys2 {0}
         run: |
@@ -107,6 +117,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_upscaler_assets.py'
           python -m unittest discover -s tests -p 'test_fsr4cap_dll_info.py'
           python -m unittest discover -s tests -p 'test_session_diagnostics.py'
+          python -m unittest discover -s tests -p 'test_red_zone.py'
           python -m unittest discover -s tests -p 'test_native_package.py'
 
       - name: Fetch DLSS 310.9.1

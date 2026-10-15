@@ -71,6 +71,8 @@ struct Liverpool {
     };
 
     Regs regs{};
+    // INDEX_BUFFER_SIZE persists independently of the count/capacity of direct draws.
+    u32 index_buffer_num_indices{};
     std::array<CbDbExtent, NUM_COLOR_BUFFERS> last_cb_extent{};
     CbDbExtent last_db_extent{};
     /// bbport: register blocks written since the last draw handed to the draw recording thread
@@ -201,6 +203,7 @@ public:
 #endif
 
 private:
+    friend struct LiverpoolTaskTest;
     struct Task {
         struct promise_type {
             auto get_return_object() {
