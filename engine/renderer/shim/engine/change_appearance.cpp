@@ -168,7 +168,9 @@ void Install(std::uint8_t* image, std::size_t size) {
     const char* identity = std::getenv("BB_ENGINE_IMAGE_SHA256");
     const bool mirror = asset && *asset;
     const bool respec=std::getenv("BB_REBIRTH_ASSET");
-    if (!mirror && !respec && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
+    const char* menu_assets=std::getenv("BB_PC_MENU_ASSETS");
+    const bool native_menus=menu_assets && *menu_assets;
+    if (!mirror && !respec && !native_menus && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
     if (!identity || std::strcmp(identity, "071df19c8880086d97182dbc057bc8cb37badaca57d9112683836b24a0444c0a")) {
         Log("mirror disabled: executable identity was not verified"); return;
     }
@@ -180,7 +182,7 @@ void Install(std::uint8_t* image, std::size_t size) {
         !std::filesystem::equivalent(resolved, std::filesystem::path(original) / "dvdroot_ps4/map/mapstudio/m21_00_00_00.msb.dcx", error))) {
         Log("mirror disabled: a user mod owns the Dream layout");
         asset = nullptr;
-        if (!respec && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
+        if (!respec && !native_menus && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
     }
     Hook hooks[2];
     if (!Prepare(hooks[0], image, size, 0x1c1cce0, kStepPrologue, StepHook) ||

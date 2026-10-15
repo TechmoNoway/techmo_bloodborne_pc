@@ -28,6 +28,8 @@ on every page, and smaller windows use a scrolling layout.
 - Mods, community patches and optional shadNet connection settings.
 - English or Vietnamese launcher UI, independent of the game's language.
 - Session exit reports, optional frame/GPU CSV recordings and native minidumps.
+- **Quit Game** on the title screen, with the game's own YES/NO confirmation.
+  It uses the window-close path and saves completed pipeline-cache work before exiting.
 
 For native builds and repeatable measurements, see the
 [diagnostics guide](docs/guides/DIAGNOSTICS.md). Recorded whole-session statistics

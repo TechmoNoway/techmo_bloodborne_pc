@@ -29,6 +29,12 @@ checked before and after preparation.
 from `engine/graphics_patch.cpp`. Fog, renderer replacement and shader patches
 are not included; motion blur, DoF and CA keep bloodborne_pc's startup patches.
 
+The title menu's Quit Game row and native YES/NO dialog adapt bbhost c421ea0
+through GerasimosKan/bloodborne_pc commit
+35936fb5557179bc5f62f57f3b9b485f1ba75777 (DarkIzuku/bloodborne_pc PR #1).
+The asset tool adds one slot to the player's title movies; confirming YES uses
+the existing SDL window-close path and pipeline-cache shutdown handling.
+
 These portions are GPL-3.0-or-later. Copyright remains with the bbhost contributors.
 The surrounding bloodborne_pc code remains GPL-2.0-or-later under its existing notices.
 Combined builds containing these ports are distributed under GPL-3.0-or-later; see
