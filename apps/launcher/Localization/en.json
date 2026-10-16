@@ -335,5 +335,8 @@
   "Ui.Dlss_installed": "Model installed · driver checked at launch",
   "Ui.Dlss_invalid": "Model DLL is invalid",
   "Ui.Fsr4_installed": "v07 installed · experimental",
-  "Ui.Fsr4_incomplete": "Assets incomplete or damaged"
+  "Ui.Fsr4_incomplete": "Assets incomplete or damaged",
+  "Ui.VSync_choice": "VSync",
+  "Ui.Unlimited": "Unlimited",
+  "Ui.Unlimited_hint": "Unlimited is experimental. Title and loading screens stay capped at 60 FPS."
 }

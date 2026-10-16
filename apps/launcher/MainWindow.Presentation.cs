@@ -7,6 +7,36 @@ namespace BloodborneLauncher;
 
 public partial class MainWindow
 {
+    bool syncingVSync;
+    string lastNonVSyncMode = "";
+
+    void SyncVSyncChoice()
+    {
+        if (syncingVSync) return;
+        syncingVSync = true;
+        try
+        {
+            string mode = ComboTag(PresentCombo);
+            bool enabled = mode is "Fifo" or "FifoRelaxed";
+            if (!enabled) lastNonVSyncMode = mode;
+            VSyncCheck.IsChecked = enabled;
+        }
+        finally { syncingVSync = false; }
+    }
+
+    void PresentMode_Changed(object sender, SelectionChangedEventArgs e) => SyncVSyncChoice();
+
+    void VSyncChoice_Changed(object sender, RoutedEventArgs e)
+    {
+        if (syncingVSync || syncing) return;
+        syncingVSync = true;
+        try
+        {
+            SetComboTag(PresentCombo, VSyncCheck.IsChecked == true ? "Fifo" : lastNonVSyncMode);
+        }
+        finally { syncingVSync = false; }
+    }
+
     // Keep presentation events separate from configuration and launch contracts.
     void InitializePresentation()
     {
@@ -23,6 +53,9 @@ public partial class MainWindow
         FpsCombo.SelectionChanged += DetailedSetting_Changed;
         FullscreenCheck.Checked += DisplaySetting_Changed;
         FullscreenCheck.Unchecked += DisplaySetting_Changed;
+        PresentCombo.SelectionChanged += PresentMode_Changed;
+        VSyncCheck.Checked += VSyncChoice_Changed;
+        VSyncCheck.Unchecked += VSyncChoice_Changed;
 
         AddHandler(Selector.SelectionChangedEvent, new SelectionChangedEventHandler(SettingsSelection_Changed));
         AddHandler(ToggleButton.CheckedEvent, new RoutedEventHandler(SettingsToggle_Changed));
@@ -67,7 +100,7 @@ public partial class MainWindow
             QuickPreset.SelectedIndex = PresetCombo.SelectedIndex;
             string fps = ComboTag(FpsCombo);
             SetQuickFps(fps);
-            FooterFps.Text = $"   |   {fps} FPS";
+            FooterFps.Text = "   |   " + FpsLabel(fps);
         }
         finally { syncing = false; }
     }

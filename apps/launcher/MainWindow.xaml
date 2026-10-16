@@ -248,6 +248,7 @@
                                                     <ComboBoxItem Content="30" />
                                                     <ComboBoxItem Content="60" />
                                                     <ComboBoxItem Content="90" />
+                                                    <ComboBoxItem Content="{local:Loc Key=Ui.Unlimited}" Tag="uncap" />
                                                 </ComboBox>
                                             </StackPanel>
                                         </Border>
@@ -340,6 +341,7 @@
                                             <ComboBoxItem Content="5120x2160" />
                                         </ComboBox>
                                         <TextBlock Text="{local:Loc Key=Ui.Present_mode}" />
+                                        <CheckBox x:Name="VSyncCheck" Content="{local:Loc Key=Ui.VSync_choice}" Margin="0,6,0,0" />
                                         <ComboBox x:Name="PresentCombo" AutomationProperties.Name="{local:Loc Key=Ui.Present_mode}" Margin="0,6,0,12">
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Mailbox_default}" Tag="" />
                                             <ComboBoxItem Content="{local:Loc Key=Ui.FIFO_VSync}" Tag="Fifo" />
@@ -410,6 +412,7 @@
                                         <ComboBoxItem Content="30 FPS" Tag="30" />
                                         <ComboBoxItem Content="60 FPS" Tag="60" />
                                         <ComboBoxItem Content="90 FPS" Tag="90" />
+                                        <ComboBoxItem Content="{local:Loc Key=Ui.Unlimited}" Tag="uncap" ToolTip="{local:Loc Key=Ui.Unlimited_hint}" />
                                     </ComboBox>
                                     <TextBlock TextWrapping="Wrap" Text="{local:Loc Key=Ui.Choose_a_frame_rate_limit_for_your_next_session}" Foreground="#AFA69A" Margin="0,8,0,22" />
                                     <TextBlock Style="{StaticResource SectionTitle}" Text="{local:Loc Key=Ui.MODEL_DETAIL}" />

@@ -206,6 +206,16 @@ if (WIN32)
 endif()
 
 # Explicit test targets never launch the game. record-data-test also has a GPU readback mode.
+add_executable(frame-pacing-test EXCLUDE_FROM_ALL ../../tests/test_frame_pacing.cpp shim/frame_pacing.cpp)
+target_compile_options(frame-pacing-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(frame-pacing-test PRIVATE shim shadps4)
+add_executable(ngx-lifetime-test EXCLUDE_FROM_ALL ../../tests/test_ngx_lifetime.cpp
+    ../../tests/test_gpu_runtime_stubs.cpp)
+target_compile_options(ngx-lifetime-test PRIVATE -UNDEBUG)
+target_include_directories(ngx-lifetime-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(ngx-lifetime-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+set_source_files_properties(../../tests/test_ngx_lifetime.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_executable(record-data-test EXCLUDE_FROM_ALL ../../tests/test_record_data.cpp
     ../../tests/test_gpu_runtime_stubs.cpp)
 target_compile_options(record-data-test PRIVATE -UNDEBUG)

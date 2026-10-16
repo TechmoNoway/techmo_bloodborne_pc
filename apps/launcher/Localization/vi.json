@@ -335,5 +335,8 @@
   "Ui.Dlss_installed": "Đã có mô hình · kiểm tra driver khi chạy",
   "Ui.Dlss_invalid": "DLL mô hình không hợp lệ",
   "Ui.Fsr4_installed": "Đã có v07 · thử nghiệm",
-  "Ui.Fsr4_incomplete": "Dữ liệu thiếu hoặc bị hỏng"
+  "Ui.Fsr4_incomplete": "Dữ liệu thiếu hoặc bị hỏng",
+  "Ui.VSync_choice": "VSync",
+  "Ui.Unlimited": "Không giới hạn",
+  "Ui.Unlimited_hint": "Không giới hạn FPS là chế độ thử nghiệm. Màn hình tiêu đề và tải game giữ tối đa 60 FPS."
 }

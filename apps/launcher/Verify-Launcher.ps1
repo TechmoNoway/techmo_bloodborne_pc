@@ -575,8 +575,34 @@ static class Program
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Tag("UpscalerCombo")=="fsr411" && Tag("FpsCombo")=="90" && Tag("PresetCombo")=="3","Settings reload");
         Check(Get<ComboBox>("QuickUpscaler").SelectedIndex==1 && Get<ComboBox>("QuickFps").SelectedIndex==2,"Quick settings reload");
-        Check(Get<ComboBox>("FpsCombo").Items.Count==3 && Get<ComboBox>("QuickFps").Items.Count==3,"Only supported FPS presets");
-        foreach(string legacy in new[]{"uncap","Unlimited","0","480","bad"}) {
+        Check(Get<ComboBox>("FpsCombo").Items.Count==4 && Get<ComboBox>("QuickFps").Items.Count==4,"30/60/90/Unlimited presets without 120 FPS");
+        foreach(string fps in new[]{"30","60","90","uncap"}) {
+            Select("FpsCombo",fps);
+            Select("PresentCombo","Immediate");
+            Check(Get<CheckBox>("VSyncCheck").IsChecked==false,"Immediate clears VSync at "+fps);
+            Get<CheckBox>("VSyncCheck").IsChecked=true;
+            Check(Tag("PresentCombo")=="Fifo","VSync selects FIFO at "+fps);
+            Get<CheckBox>("VSyncCheck").IsChecked=false;
+            Check(Tag("PresentCombo")=="Immediate","Disabling VSync restores user mode at "+fps);
+            Select("PresentCombo","FifoRelaxed");
+            Check(Get<CheckBox>("VSyncCheck").IsChecked==true,"Adaptive FIFO reflects VSync at "+fps);
+            Select("PresentCombo","");
+            Check(Get<CheckBox>("VSyncCheck").IsChecked==false,"Mailbox remains selectable at "+fps);
+            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
+            Check(Tag("FpsCombo")==fps && Tag("PresentCombo")=="" && Get<CheckBox>("VSyncCheck").IsChecked==false,"FPS and disabled VSync round trip at "+fps);
+            if(fps=="uncap") {
+                Get<Button>("NavGraphics").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+                Render(Path.Combine(output,"graphics-unlimited-vsync-off-en.png"),1440,900);
+                Select("UiLanguageCombo","vi");
+                Render(Path.Combine(output,"graphics-unlimited-vsync-off-vi.png"),1440,900);
+                Select("UiLanguageCombo","en");
+            }
+            Get<CheckBox>("VSyncCheck").IsChecked=true;
+            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
+            Check(Tag("FpsCombo")==fps && Tag("PresentCombo")=="Fifo" && Get<CheckBox>("VSyncCheck").IsChecked==true,"FPS and enabled VSync round trip at "+fps);
+        }
+        Select("FpsCombo","90"); Select("PresentCombo","FifoRelaxed"); Call("SaveSettings");
+        foreach(string legacy in new[]{"120","Unlimited","0","480","bad"}) {
             string saved=File.ReadAllText(Path.Combine(root,"launcher-settings.json"));
             File.WriteAllText(Path.Combine(root,"launcher-settings.json"),saved.Replace("\"Fps\": \"90\"","\"Fps\": \""+legacy+"\""));
             Call("LoadState"); Call("ApplyStateToUi");

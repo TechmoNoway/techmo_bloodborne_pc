@@ -30,3 +30,8 @@ Recording/mapping fixes adapted from DarkIzuku public-stability-dlss-v1 (2026-10
   INVALIDATE callbacks for surviving Windows views after partial unmap.
   The runtime commit's full identity and source licenses are recorded in
   ../../licenses/RECORDING-MEMORY-PORTS.md. No texture writeback, DLSS or FPS policy is ported.
+NGX/pacing follow-up adapted from DarkIzuku (2026-10-16):
+  NGX lifetime in dceac3f478; frame-boundary retirement and partial-handle cleanup.
+  Frame pacing in 4afaeece57, 998b75cbea, 49421402b1 and 58ee8f5451.
+  User-controlled presentation is retained. No forced FIFO or 120 FPS option.
+  See ../../licenses/NGX-PACING-PORTS.md for source identities and attribution.

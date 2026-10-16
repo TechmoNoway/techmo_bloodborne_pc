@@ -154,7 +154,8 @@ public partial class MainWindow : Window
         LoadOnlineState();
     }
 
-    static string NormalizeFps(string? value) => value is "30" or "60" or "90" ? value : "60";
+    static string NormalizeFps(string? value) => value is "30" or "60" or "90" or "uncap" ? value : "60";
+    static string FpsLabel(string value) => value == "uncap" ? Localization.Current["Ui.Unlimited"] : value + " FPS";
 
     static string CameraScale(string? value, double min)
     {
@@ -214,6 +215,7 @@ public partial class MainWindow : Window
         SetComboContent(ResolutionCombo, state.Resolution);
         SetComboContent(QuickResolution, state.Resolution);
         SetComboTag(PresentCombo, state.PresentMode);
+        SyncVSyncChoice();
         FullscreenCheck.IsChecked = state.Fullscreen;
         QuickDisplay.SelectedIndex = state.Fullscreen ? 0 : 1;
         ShowFpsCheck.IsChecked = state.ShowFps;
@@ -424,7 +426,7 @@ public partial class MainWindow : Window
         Fsr4Status.Foreground = (fsr411 || fsr4) ? Green() : Muted();
 
         if (detectGpu) DetectGpu();
-        FooterFps.Text = $"   |   {state.Fps} FPS";
+        FooterFps.Text = "   |   " + FpsLabel(state.Fps);
     }
 
     static System.Windows.Media.Brush Green() => new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(117, 207, 121));
@@ -558,15 +560,15 @@ public partial class MainWindow : Window
             psi.Environment["BB_CONFIG"] = Path.Combine(root, "bbport.ini");
             psi.Environment["BB_GAME_DIR"] = state.GamePath;
             psi.Environment["BB_FPS"] = state.Fps;
-            psi.Environment["BB_FPS_LIMIT"] = state.Fps;
-            psi.Environment["BB_VBLANK_HZ"] = state.Fps == "90" ? "90" : "60";
+            psi.Environment["BB_FPS_LIMIT"] = state.Fps == "uncap" ? "0" : state.Fps;
+            psi.Environment["BB_VBLANK_HZ"] = state.Fps == "uncap" ? "480" : state.Fps == "90" ? "90" : "60";
             psi.Environment["BB_LANGUAGE"] = state.Language;
             psi.Environment["BB_GAMEPAD_INDEX"] = state.GamepadIndex.ToString();
             psi.Environment["BB_MODS_ENABLED"] = state.ModsEnabled ? "1" : "0";
             psi.Environment["BB_LOG_FILE"] = logPath;
             psi.Environment["BB_SESSION_DIR"] = sessionDir;
             psi.Environment["PYTHONUNBUFFERED"] = "1";
-            if (!string.IsNullOrEmpty(state.PresentMode)) psi.Environment["BB_PRESENT_MODE"] = state.PresentMode;
+            psi.Environment["BB_PRESENT_MODE"] = string.IsNullOrEmpty(state.PresentMode) ? "Mailbox" : state.PresentMode;
             if (state.DeveloperMode && state.DetailedLogs)
             {
                 psi.Environment["BB_DLSS_LOG"] = "1";
@@ -691,9 +693,9 @@ public partial class MainWindow : Window
     void QuickFps_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (syncing || QuickFps.SelectedItem is not ComboBoxItem item) return;
-        string v = NormalizeFps(item.Content?.ToString());
+        string v = NormalizeFps(item.Tag?.ToString() ?? item.Content?.ToString());
         SetComboTag(FpsCombo, v);
-        FooterFps.Text = $"   |   {v} FPS";
+        FooterFps.Text = "   |   " + FpsLabel(v);
     }
 
     void SetQuickUpscaler(string value)
@@ -702,7 +704,7 @@ public partial class MainWindow : Window
     }
     void SetQuickFps(string value)
     {
-        QuickFps.SelectedIndex = value switch { "30" => 0, "90" => 2, _ => 1 };
+        QuickFps.SelectedIndex = value switch { "30" => 0, "90" => 2, "uncap" => 3, _ => 1 };
     }
 
     static string ComboTag(ComboBox box, string fallback = "") =>

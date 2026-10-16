@@ -100,16 +100,16 @@ def settings_value(config, key):
 
 
 def configure_frame_rate(env):
-    """Windows supports the tested fixed-timestep presets, including old config migration.
+    """Resolve gameplay pace; the independent title/loading guard remains at 60.
 
-    Explicit limits also override inherited BB_VBLANK_HZ=0 / BB_FPS_LIMIT=0 so a
-    legacy uncapped launch cannot saturate the desktop during menus or loading.
+    The user's presentation choice is preserved for every frame-rate preset.
     """
     fps = env.get('BB_FPS', '60')
-    if fps not in ('30', '60', '90'):
+    if fps not in ('30', '60', '90', 'uncap'):
         print(f'Unsupported Windows FPS preset {fps!r}; using 60 FPS.', flush=True)
         fps = '60'
-    env.update(BB_FPS=fps, BB_FPS_LIMIT=fps, BB_VBLANK_HZ='90' if fps == '90' else '60')
+    env.update(BB_FPS=fps, BB_FPS_LIMIT='0' if fps == 'uncap' else fps,
+               BB_VBLANK_HZ='480' if fps == 'uncap' else '90' if fps == '90' else '60')
     return fps
 
 
@@ -187,6 +187,14 @@ def main():
         if os.environ.get('BB_AUTO_RENDER_RES') == '1':
             for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
                 os.environ.pop(key, None)
+        # The read-only title/loading guard works even when optional PC features or
+        # local menu asset preparation are disabled. Unknown images retain its 60 FPS ceiling.
+        if not os.environ.get('BB_ENGINE_IMAGE_SHA256'):
+            try:
+                from engine_assets import verify_executable
+                os.environ['BB_ENGINE_IMAGE_SHA256'] = verify_executable(out / 'eboot.elf')
+            except (OSError, ValueError, IndexError, struct.error) as error:
+                print(f'Frame pacing: unknown executable; retaining safe menu ceiling: {error}', flush=True)
         fps = configure_frame_rate(os.environ)
         scaled_render = scaled_output = None
         if not os.environ.get('BB_RENDER_RES'):
