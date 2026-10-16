@@ -205,7 +205,19 @@ if (WIN32)
     bb_write_link_closure(bbgpu ${CMAKE_CURRENT_BINARY_DIR}/bbgpu_link.txt)
 endif()
 
-# Explicit test targets; neither launches the game nor needs a Vulkan device.
+# Explicit test targets never launch the game. record-data-test also has a GPU readback mode.
+add_executable(record-data-test EXCLUDE_FROM_ALL ../../tests/test_record_data.cpp
+    ../../tests/test_gpu_runtime_stubs.cpp)
+target_compile_options(record-data-test PRIVATE -UNDEBUG)
+target_include_directories(record-data-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(record-data-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+set_source_files_properties(../../tests/test_record_data.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(memory-notifications-test EXCLUDE_FROM_ALL ../../tests/test_memory_notifications.c
+    ../runtime/win32_compat.c ../runtime/win32_memory.c)
+target_compile_options(memory-notifications-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_compile_definitions(memory-notifications-test PRIVATE _FILE_OFFSET_BITS=64 _WIN32_WINNT=0x0A00)
+target_link_libraries(memory-notifications-test PRIVATE ws2_32 onecore)
 add_executable(memory-pressure-test EXCLUDE_FROM_ALL ../../tests/test_memory_pressure.cpp)
 target_compile_options(memory-pressure-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(memory-pressure-test PRIVATE shadps4)

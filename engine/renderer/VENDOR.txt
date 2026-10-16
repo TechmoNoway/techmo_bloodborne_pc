@@ -23,3 +23,10 @@ Local compile/upload improvements (2026-10-14):
   Bounded native graphics-pipeline lookahead for known modules with owned snapshots,
   a separate driver cache and foreground reservation/fallback. No draws are skipped.
   Retired large staging buffers allow bounded best-fit reuse with existing GPU-tick guards.
+Recording/mapping fixes adapted from DarkIzuku public-stability-dlss-v1 (2026-10-16):
+  dceac3f4789c0125bc7df446c56b135590c8d146: owned overflow payloads for deferred recording,
+  aligned allocation and command-capture cleanup; focused recording/mapping fixtures.
+  4ee4e9ed39056d016bd882237edacb2f695a2d03: dynamic runtime memory notification queue and preservation of
+  INVALIDATE callbacks for surviving Windows views after partial unmap.
+  The runtime commit's full identity and source licenses are recorded in
+  ../../licenses/RECORDING-MEMORY-PORTS.md. No texture writeback, DLSS or FPS policy is ported.

@@ -105,6 +105,15 @@ jobs:
           out/gpu/liverpool-tasks-test.exe
           # The real Vulkan readback fixture is compiled here and run locally on a GPU.
 
+      - name: Build and run recording and memory notification regressions
+        # CPU ownership/remapping checks run on hosted Windows; GPU readback runs locally.
+        shell: msys2 {0}
+        run: |
+          set -e
+          ninja -C out/gpu -j2 record-data-test memory-notifications-test
+          out/gpu/record-data-test.exe --cpu-only
+          out/gpu/memory-notifications-test.exe
+
       - name: Verify preparation, patches, and mod safety
         shell: msys2 {0}
         run: |
