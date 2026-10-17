@@ -96,3 +96,7 @@ boot*.bin
 # Local documentation and editor settings
 /docs/
 /.vscode/
+
+# Local license working copies; published notices are consolidated at the root.
+/license/
+/licenses/
