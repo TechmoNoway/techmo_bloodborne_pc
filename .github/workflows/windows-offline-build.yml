@@ -196,9 +196,8 @@ jobs:
           cp -f apps/launcher/Assets/bloodborne.ico package/out/
           test ! -f out/nvngx_dlss.dll || cp -f out/nvngx_dlss.dll package/out/
           cp -rf scripts/* package/scripts/
-          mkdir -p package/tools/experiments package/docs/guides
+          mkdir -p package/tools/experiments
           cp -f tools/experiments/test-vram-writeback.cmd package/tools/experiments/
-          cp -f docs/guides/STABILITY_SHADER_GC.md package/docs/guides/
           test ! -d patches || cp -rf patches/* package/patches/
           test ! -d fsr4_shaders || cp -rf fsr4_shaders package/
           for document in LICENSE LICENSING.md NOTICE.md DEPENDENCIES.md; do

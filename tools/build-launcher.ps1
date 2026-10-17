@@ -27,7 +27,7 @@ SHA256: $sha256
 
 Open builds/TEST-LAUNCHER.cmd to test this launcher.
 Building the launcher does not compile the native engine. Playing requires the
-engine under the project's out/ folder; see docs/guides/BUILD.md.
+engine under the project's out/ folder; build it with tools/build-native.ps1.
 Local backups and verification screenshots are under builds/_internal/.
 "@ | Set-Content -LiteralPath (Join-Path $outputPath 'BUILD-INFO.md') -Encoding utf8
 @'
