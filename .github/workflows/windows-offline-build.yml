@@ -200,7 +200,7 @@ jobs:
           cp -f tools/experiments/test-vram-writeback.cmd package/tools/experiments/
           test ! -d patches || cp -rf patches/* package/patches/
           test ! -d fsr4_shaders || cp -rf fsr4_shaders package/
-          for document in LICENSE LICENSING.md NOTICE.md DEPENDENCIES.md; do
+          for document in LICENSE LICENSING.md NOTICE.md DEPENDENCIES.md THIRD_PARTY_NOTICES.txt; do
             test ! -f "$document" || cp -f "$document" package/
           done
           test ! -d licenses || cp -rf licenses package/

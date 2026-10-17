@@ -10,12 +10,12 @@ Keep upstream notices with these directories when updating them.
 | Dear ImGui | `engine/renderer/third_party/imgui` | `ocornut/imgui` · `f1cc2ae15e53a861a874c3034aae6798fde194ab` | MIT |
 | LibAtrac9 | `third_party/LibAtrac9` | `Thealexbarney/LibAtrac9` · `efca2e3af35562a09a9bb6deed90e45b4b824dc4` | See component LICENSE |
 | shadPS4-derived renderer | `engine/renderer/shadps4` | `b4e7ae776071ceb1dd35004577a8719481e1d258`, plus listed backports | GPL-2.0-or-later |
-| bbhost ports | Runtime/renderer engine and input modules | Revisions listed in `licenses/BBHOST-PORTS.md` | GPL-3.0-or-later |
+| bbhost ports | Runtime/renderer engine and input modules | Revisions listed in `THIRD_PARTY_NOTICES.txt` | GPL-3.0-or-later |
 
 The LibAtrac9 snapshot revision is recorded from the original source checkout.
 Other retained dependencies include sirit, GCN headers, half, DejaVu fonts,
 cpp-httplib and wepoll. Their notices remain in their component directories and
-`licenses/`. The shadNet adaptation is documented in `licenses/SHADNET-PORT.md`.
+`THIRD_PARTY_NOTICES.txt`, including the shadNet adaptation.
 
 The engine build applies the port's existing FSR-Vulkan patches from
 `engine/renderer/patches/fsr-vulkan`. Those patches and upstream notices remain
