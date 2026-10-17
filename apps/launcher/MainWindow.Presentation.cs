@@ -88,6 +88,22 @@ public partial class MainWindow
     void DetailedSetting_Changed(object sender, SelectionChangedEventArgs e) => SyncQuickSettings();
     void DisplaySetting_Changed(object sender, RoutedEventArgs e) => SyncQuickSettings();
 
+    void UpdateUpscalingModeAvailability()
+    {
+        string provider = ComboTag(UpscalerCombo);
+        bool available = provider is "dlss" or "fsr3" or "fsr4" or "fsr411";
+        PresetCombo.IsEnabled = QuickPreset.IsEnabled = available;
+        if (!available) PresetCombo.IsDropDownOpen = QuickPreset.IsDropDownOpen = false;
+        // Keep the saved selection: switching back to DLSS/FSR restores it.
+        PresetUnavailableHint.Visibility = available ? Visibility.Collapsed : Visibility.Visible;
+        L10n.SetText(PresetUnavailableHint, provider switch
+        {
+            "off" => "Upscaling is off. Quality modes do not apply.",
+            "taa" => "TAA uses the output resolution. Quality modes do not apply.",
+            _ => "Select the render scale used by DLSS or FSR."
+        });
+    }
+
     void SyncQuickSettings()
     {
         if (syncing) return;
@@ -98,6 +114,7 @@ public partial class MainWindow
             QuickDisplay.SelectedIndex = FullscreenCheck.IsChecked == true ? 0 : 1;
             SetQuickUpscaler(ComboTag(UpscalerCombo));
             QuickPreset.SelectedIndex = PresetCombo.SelectedIndex;
+            UpdateUpscalingModeAvailability();
             string fps = ComboTag(FpsCombo);
             SetQuickFps(fps);
             FooterFps.Text = "   |   " + FpsLabel(fps);

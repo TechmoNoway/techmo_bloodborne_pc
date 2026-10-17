@@ -262,6 +262,7 @@ public partial class MainWindow : Window
         AudioStatsCheck.IsChecked = state.AudioStats;
         FsrProfileCheck.IsChecked = state.FsrProfile;
         syncing = false;
+        UpdateUpscalingModeAvailability();
         ApplyOnlineUi();
     }
 
@@ -687,7 +688,7 @@ public partial class MainWindow : Window
     }
     void QuickPreset_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (syncing || QuickPreset.SelectedIndex < 0) return;
+        if (syncing || !QuickPreset.IsEnabled || QuickPreset.SelectedIndex < 0) return;
         if (QuickPreset.SelectedIndex >= 0) SetComboTag(PresetCombo, QuickPreset.SelectedIndex.ToString());
     }
     void QuickFps_Changed(object sender, SelectionChangedEventArgs e)

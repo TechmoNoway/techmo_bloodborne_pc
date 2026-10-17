@@ -231,8 +231,8 @@
                                         </Border>
                                         <Border Style="{StaticResource QuickCard}">
                                             <StackPanel>
-                                                <TextBlock Text="{local:Loc Key=Ui.Quality}" FontFamily="Segoe UI" FontSize="13" Foreground="#C8BDAC" />
-                                                <ComboBox x:Name="QuickPreset" Margin="0,8,0,0" AutomationProperties.Name="{local:Loc Key=Ui.Quality}" SelectionChanged="QuickPreset_Changed">
+                                                <TextBlock Text="{local:Loc Key=Ui.Upscaling_mode}" FontFamily="Segoe UI" FontSize="13" Foreground="#C8BDAC" TextWrapping="Wrap" />
+                                                <ComboBox x:Name="QuickPreset" Tag="upscaling-mode" Margin="0,8,0,0" AutomationProperties.Name="{local:Loc Key=Ui.Upscaling_mode}" AutomationProperties.HelpText="{Binding Text, ElementName=PresetUnavailableHint}" ToolTip="{Binding Text, ElementName=PresetUnavailableHint}" ToolTipService.ShowOnDisabled="True" SelectionChanged="QuickPreset_Changed">
                                                     <ComboBoxItem Content="{local:Loc Key=Ui.Native_AA}" />
                                                     <ComboBoxItem Content="{local:Loc Key=Ui.Quality}" />
                                                     <ComboBoxItem Content="{local:Loc Key=Ui.Balanced}" />
@@ -365,14 +365,15 @@
                                             <ComboBoxItem Content="TAA" Tag="taa" />
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Off}" Tag="off" />
                                         </ComboBox>
-                                        <TextBlock Text="{local:Loc Key=Ui.Quality_preset}" />
-                                        <ComboBox x:Name="PresetCombo" AutomationProperties.Name="{local:Loc Key=Ui.Quality_preset}" Margin="0,6,0,12">
+                                        <TextBlock Text="{local:Loc Key=Ui.Upscaling_mode}" />
+                                        <ComboBox x:Name="PresetCombo" Tag="upscaling-mode" AutomationProperties.Name="{local:Loc Key=Ui.Upscaling_mode}" AutomationProperties.HelpText="{Binding Text, ElementName=PresetUnavailableHint}" ToolTip="{Binding Text, ElementName=PresetUnavailableHint}" ToolTipService.ShowOnDisabled="True" Margin="0,6,0,12">
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Native_AA}" Tag="0" />
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Quality}" Tag="1" />
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Balanced}" Tag="2" />
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Performance}" Tag="3" />
                                             <ComboBoxItem Content="{local:Loc Key=Ui.Ultra_Performance}" Tag="4" />
                                         </ComboBox>
+                                        <TextBlock x:Name="PresetUnavailableHint" Visibility="Collapsed" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,-4,0,12" />
                                         <CheckBox x:Name="SharpenCheck" Content="{local:Loc Key=Ui.RCAS_sharpening}" />
                                         <TextBlock Text="{local:Loc Key=Ui.Live_resolution_changes}" Margin="0,12,0,6" />
                                         <ComboBox x:Name="LiveResolutionCombo" AutomationProperties.Name="{local:Loc Key=Ui.Live_resolution_changes}">
