@@ -69,7 +69,7 @@ tools/               Build helpers, setup and development utilities
 tests/               Preparation, runtime, input and renderer regressions
 third_party/         Shared native dependencies
 patches/             Community patch definitions
-licenses/            Upstream and third-party license notices
+THIRD_PARTY_NOTICES.txt  Upstream and third-party license notices
 builds/              Local output only; excluded from Git
 ```
 
