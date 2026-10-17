@@ -212,9 +212,16 @@ def main():
             print(f'Output {scaled_output}: live resolution changes (live_resolution=0: startup patch)')
         elif scaled_output:
             os.environ.update(BB_RENDER_RES=scaled_render, BB_OUTPUT_RES=scaled_output, BB_AUTO_RENDER_RES='1')
-            os.environ.setdefault('BB_DMEM_MB', '9152')
-            print(f'Output {scaled_output}: scene {scaled_render}, direct memory {os.environ["BB_DMEM_MB"]} MiB '
-                  '(live_resolution=1: live changes)')
+        phase('memory_preflight')
+        from memory_preflight import configure_memory
+        probe = ROOT / os.environ.get('BB_PROBE', out / 'bb-probe.exe')
+        try:
+            render,output=configure_memory(probe,os.environ,
+                os.environ.get('BB_RENDER_RES'),os.environ.get('BB_OUTPUT_RES'),live=='1')
+            if render:
+                os.environ['BB_RENDER_RES']=render
+        except (OSError,ValueError) as error:
+            sys.exit(f'Memory preflight: {error}')
         phase('patches')
         run([PYTHON, SCRIPTS / 'patches.py', '--out', out, '--fps', fps, '--extra', os.environ.get('BB_PATCHES', ''),
              '--settings', config, '--game-dir', merged, '--render-res', os.environ.get('BB_RENDER_RES', ''),

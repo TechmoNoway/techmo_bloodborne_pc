@@ -11,6 +11,7 @@
 #include "video_core/texture_cache/image_view.h"
 
 #include <deque>
+#include <chrono>
 #include <optional>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -162,7 +163,26 @@ public:
     BackingImage* backing{};
     /// bbport: gc tick of the last LRU touch; skips the LRU list (a cache miss) when current.
     mutable u64 lru_touched_tick = ~0ULL;
-    u64 tick_accessed_last{};
+    mutable u64 tick_accessed_last{};
+    mutable u64 last_use_ms{};
+    u64 LastUse() const {
+        return __atomic_load_n(&tick_accessed_last, __ATOMIC_RELAXED);
+    }
+    void NoteUse(u64 tick) const {
+        u64 old=LastUse();
+        while (old<tick) {
+            if (__atomic_compare_exchange_n(&tick_accessed_last,&old,tick,false,
+                                            __ATOMIC_RELAXED,__ATOMIC_RELAXED)) {
+                const u64 now=std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                u64 previous=__atomic_load_n(&last_use_ms,__ATOMIC_RELAXED);
+                while (previous<now && !__atomic_compare_exchange_n(&last_use_ms,&previous,now,false,
+                        __ATOMIC_RELAXED,__ATOMIC_RELAXED)) {}
+                break;
+            }
+        }
+    }
+    u64 LastUseMs() const { return __atomic_load_n(&last_use_ms,__ATOMIC_RELAXED); }
     ImageId depth_id{};
     u64 depth_uid{};
     u64 image_uid{};

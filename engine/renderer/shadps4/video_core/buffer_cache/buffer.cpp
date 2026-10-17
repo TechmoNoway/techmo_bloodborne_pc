@@ -175,6 +175,8 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         .sharingMode = vk::SharingMode::eExclusive,
     };
     // bbport: arenas are also read by the readback queue (BufferCache::DownloadMemory).
+    if (mem_type == MemoryType::Sparse && instance.GetPhysicalDevice().getFeatures().sparseResidencyAliased)
+        buffer_ci.flags |= vk::BufferCreateFlagBits::eSparseAliased;
     const std::array<u32, 2> families = {instance.GetGraphicsQueueFamilyIndex(),
                                          instance.GetReadbackQueueFamilyIndex()};
     if (mem_type == MemoryType::Sparse && instance.GetReadbackQueue()) {

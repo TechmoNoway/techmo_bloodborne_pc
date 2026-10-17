@@ -14,6 +14,7 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <malloc.h>
+#include "win32_low_alloc.h"
 /* pthread_exit unwinds guest frames that have no unwind data: see RUNTIME_RECOVER_SET. */
 #define EXIT_SET(buf) RUNTIME_RECOVER_SET(buf)
 #define EXIT_JUMP(buf) RUNTIME_RECOVER_JUMP(buf)
@@ -98,7 +99,12 @@ static void attach(GuestThread *t) {
     current=t;
 }
 static GuestThread *new_thread(void) {
+#ifdef _WIN32
+    /* A high heap fallback would truncate the guest's lock owner identity. */
+    GuestThread *t=win_low_alloc(sizeof(*t));
+#else
     GuestThread *t=calloc(1,sizeof(*t));
+#endif
     if (!t) return NULL;
     t->attr=(ThreadAttr){.magic=ATTR_MAGIC,.policy=1,.prio=DEFAULT_PRIO,.stack=DEFAULT_STACK,.affinity=0x7f};
     return t;

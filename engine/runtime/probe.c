@@ -669,7 +669,17 @@ static int loader_main(int argc, char **argv);
 static int main_argc;
 static char **main_argv;
 static unsigned __stdcall loader_thread(void *unused) { (void)unused; return (unsigned)loader_main(main_argc, main_argv); }
+#include "win32_memory.h"
 int main(int argc, char **argv) {
+    if (argc == 3 && !strcmp(argv[1],"--check-memory-pool")) {
+        char *end=NULL;
+        const uint64_t mb=strtoull(argv[2],&end,10);
+        if (!argv[2][0] || !end || *end || mb<5056 || mb>16384) return 2;
+        const int result=win_mem_probe_section((mb+1024)*UINT64_C(1024)*1024);
+        fprintf(result ? stderr : stdout,"Memory preflight: direct %llu MiB + flexible 1024 MiB: %s (Windows error %lu)\n",
+                (unsigned long long)mb,result ? "unavailable" : "available",result ? GetLastError() : 0);
+        return result ? 1 : 0;
+    }
     bb_diagnostics_init();
     timeBeginPeriod(1); /* 1 ms waits for timed locks and sleeps outside runtime_sleep_ns */
     /* No EcoQoS: Windows 11 otherwise moves the threads of an unfocused window to efficiency

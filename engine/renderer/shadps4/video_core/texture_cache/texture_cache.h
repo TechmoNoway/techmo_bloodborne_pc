@@ -103,8 +103,8 @@ public:
 
     /// bbport: FindImage's access tick for an image found by a memoized lookup. The LRU touch
     /// FindImage also does happens in UpdateImage (FindTexture), which every binding reaches.
-    void MarkFound(ImageId image_id) {
-        slot_images[image_id].tick_accessed_last = scheduler.CurrentTick();
+    void MarkFound(ImageId image_id) const {
+        slot_images[image_id].NoteUse(scheduler.CurrentTick());
     }
 
     TileManager& GetTileManager() noexcept {
@@ -154,6 +154,7 @@ public:
 
     /// bbport: whether UpdateImage has nothing to do for this image (its fast path).
     [[nodiscard]] bool IsUpToDate(ImageId image_id) const {
+        MarkFound(image_id);
         const Image& image = slot_images[image_id];
 #ifdef _LIBCPP_VERSION
         // libc++ has no std::atomic_ref<const T> yet.
@@ -171,6 +172,7 @@ public:
 
     /// Updates image contents if it was modified by CPU.
     void UpdateImage(ImageId image_id) {
+        MarkFound(image_id);
         // bbport: a clean image already tracked and touched in this GC period needs nothing.
         // Every texture binding comes here; the mutex (shared with the fault handlers of the
         // guest threads) was ~3% of the GPU thread. Flags are read atomically: an invalidation

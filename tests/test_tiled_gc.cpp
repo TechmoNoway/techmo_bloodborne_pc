@@ -81,6 +81,30 @@ template void PageManager::UpdatePageWatchersForRegion<false,true>(VAddr,RegionB
 template void PageManager::UpdatePageWatchersForRegion<false,false>(VAddr,RegionBits&) const;
 
 struct TiledWritebackTest {
+    static void Lifetime(TextureCache& cache) {
+        const auto id=Make(cache,Guest,128,0xff112233);
+        auto& image=cache.slot_images[id];
+        // Guest backing agrees with this now-clean image.
+        for (u64 i=0;i<image.info.guest_size;i+=4)
+            *reinterpret_cast<u32*>(Guest+i)=0xff112233;
+        image.flags &= ~ImageFlagBits::GpuModified;
+        const auto collect=[&] {
+            cache.gc_tick+=1000;cache.gc_tick_at_second.fill(cache.gc_tick-100);
+            cache.memory_sample_time={};cache.GarbageCollectImages();
+        };
+        cache.MarkFound(id); // Cached lookup does not touch the LRU list.
+        collect();CHECK(cache.gc_total_evictions==0); // Current/uncompleted use.
+        cache.scheduler.Record([](vk::CommandBuffer cmd) {
+            cmd.pipelineBarrier2({.memoryBarrierCount=0});
+        });
+        cache.scheduler.Finish();
+        CHECK(cache.scheduler.IsFree(image.LastUse()));
+        collect();CHECK(cache.gc_total_evictions==0); // Completed but recently used.
+        __atomic_store_n(&image.last_use_ms,u64{1},__ATOMIC_RELAXED); // Synthetic aging.
+        collect();CHECK(cache.gc_total_evictions==1); // Actually cold and completed.
+        cache.scheduler.Finish();
+        std::puts("PASS: cached texture use survives GC before completion and during wall-time grace; cold completed texture is collected");
+    }
     static ImageId Make(TextureCache& cache,VAddr address,u32 width,u32 color) {
         ImageInfo info{}; info.guest_address=address; info.type=AmdGpu::ImageType::Color2D;
         info.pixel_format=vk::Format::eR8G8B8A8Unorm; info.size={width,width,1};
@@ -202,7 +226,8 @@ int main(int argc,char** argv) {
     Vulkan::Instance instance{-1,false}; Vulkan::Scheduler scheduler{instance,true}; Vulkan::Runtime runtime{instance,scheduler};
     {
         Caches caches{instance,scheduler,runtime};
-        if (!std::strcmp(argv[1],"safety")) VideoCore::TiledWritebackTest::Safety(caches.textures);
+        if (!std::strcmp(argv[1],"lifetime")) VideoCore::TiledWritebackTest::Lifetime(caches.textures);
+        else if (!std::strcmp(argv[1],"safety")) VideoCore::TiledWritebackTest::Safety(caches.textures);
         else { CHECK(argc==3); VideoCore::TiledWritebackTest::Collect(caches.textures,enabled,argv[2]); }
         scheduler.Finish();
     }

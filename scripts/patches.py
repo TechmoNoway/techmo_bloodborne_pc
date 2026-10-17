@@ -45,6 +45,22 @@ EFFECTS={
 # PS4's AMD CPU, so a block the game gates on a computed flag never runs. The community fix runs
 # it always; on by default on Intel. BB_INTEL_TONEMAP_FIX=0/1 forces it off or on.
 INTEL_TONEMAP='Intel Black Tonemap Fix'
+# Adapted from Awakenchan/BloodBorneButPc 4f93643 (GPL-3.0-or-later).
+# Two frame scratch pools, allocated from the game's graphics heap.
+RENDER_POOL_SITES=(0x2195c09,0x2195c46)
+RENDER_POOL_CODE=bytes.fromhex('ba00000400')
+RENDER_POOL_SIZE=0x100000
+
+
+def render_pool_writes(elf, enabled=True):
+    """Patch both pools together, only when both instructions match the known code."""
+    if not enabled:
+        return []
+    from frame_rate import original_bytes
+    if any(original_bytes(elf,site,len(RENDER_POOL_CODE)) != RENDER_POOL_CODE for site in RENDER_POOL_SITES):
+        print('Patches: render pools unchanged: executable differs at the checked sites', flush=True)
+        return []
+    return [(site+1,struct.pack('<I',RENDER_POOL_SIZE)) for site in RENDER_POOL_SITES]
 
 
 def intel_cpu(cpuinfo='/proc/cpuinfo'):
@@ -287,12 +303,16 @@ def main():
         size=render_size(settings)
         if size: print(f'{size[0]}x{size[1]}')
         return
-    names=FPS_PRESETS[a.fps]+[n.strip() for n in a.extra.split(';') if n.strip()]
+    memory_safe=os.environ.get('BB_MEMORY_SAFE')=='1'
+    names=FPS_PRESETS[a.fps]+([] if memory_safe else [n.strip() for n in a.extra.split(';') if n.strip()])
     names+=[n for n in effect_patches(read_settings(a.settings)) if n not in names]
+    if memory_safe:
+        names=[n for n in names if n not in ('Increased Graphics Heap Sizes','Model LOD -2 (Highest)')]
     if intel_tonemap_fix() and INTEL_TONEMAP not in names:
         names.append(INTEL_TONEMAP)
     validate_patch_requirements(names,a.game_dir)
-    segments=eboot_segments((a.out/'eboot.elf').read_bytes())
+    elf=(a.out/'eboot.elf').read_bytes()
+    segments=eboot_segments(elf)
     writes=compile_patches(a.xml,names,a.app_version,segments)
     if a.fps == 'uncap':
         from frame_rate import adapt_high_frame_rate
@@ -304,15 +324,27 @@ def main():
     ui=OUTPUT_SIZE
     if size:
         writes+=resolution_writes(a.xml,size,a.app_version,segments,ui)
+        if memory_safe and size[0]*size[1]>OUTPUT_SIZE[0]*OUTPUT_SIZE[1]:
+            raise ValueError('Memory fallback cannot use a render size above 1080p')
         if size[0]*size[1]>OUTPUT_SIZE[0]*OUTPUT_SIZE[1]:
             heap='Increased Graphics Heap Sizes'
             writes+=compile_patches(a.xml,[heap],a.app_version,segments)
             names.append(heap)
         print(f'Patches: scene {size[0]}x{size[1]}; UI {ui[0]}x{ui[1]}')
-    if a.patches_dir:
+    if a.patches_dir and not memory_safe:
         # After the built-in ones: an external patch of the same bytes wins.
         writes+=compile_external(external_selection(external_patches(a.patches_dir,a.app_version,a.xml),
                                                     a.patches_config),segments)
+    pools=render_pool_writes(elf,os.environ.get('BB_RENDER_POOLS')!='0')
+    # Do not splice a pool immediate into a user's external patch of the instruction.
+    if pools:
+        ranges=[(site,site+len(RENDER_POOL_CODE)) for site in RENDER_POOL_SITES]
+        conflict=any(offset<end and start<offset+len(data) for offset,data in writes for start,end in ranges)
+        if conflict:
+            print('Patches: render pools unchanged: selected patch overlaps their instructions',flush=True)
+        else:
+            writes+=pools
+            print('Patches: two render scratch pools increased to 1 MiB each',flush=True)
     # BBPATCH2: the patch base, so the loader can rebase pointers the patches write into
     # relocated slots (60/90 FPS++ replace function pointers).
     blob=struct.pack('<8sQQ',b'BBPATCH2',EBOOT_BASE,len(writes))

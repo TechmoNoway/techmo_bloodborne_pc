@@ -7,6 +7,7 @@ on:
     branches: [main, "experiment/**"]
     paths:
       - "engine/runtime/**"
+      - "engine/address_space.h"
       - "engine/renderer/**"
       - "third_party/**"
       - "tests/**"
@@ -110,7 +111,7 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test
+          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test stable-arena-test
           out/gpu/record-data-test.exe --cpu-only
           out/gpu/memory-notifications-test.exe
           out/gpu/frame-pacing-test.exe
@@ -129,6 +130,8 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_prepare.py'
           python -m unittest discover -s tests -p 'test_patches.py'
+          python -m unittest discover -s tests -p 'test_render_pools.py'
+          python -m unittest discover -s tests -p 'test_memory_preflight.py'
           python -m unittest discover -s tests -p 'test_game_check.py'
           python -m unittest discover -s tests -p 'test_windows_frame_rate.py'
           python -m unittest discover -s tests -p 'test_high_frame_rate.py'

@@ -24,6 +24,7 @@
 #include <limits>
 #include "video_core/texture_cache/overlap_diagnostics.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include "video_core/texture_cache/image_lifetime.h"
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
@@ -271,9 +272,9 @@ bool TextureCache::WriteBackTiledImage(ImageId image_id) {
     }
     const auto& info = image.info;
     // Experimental path: tracked CPU writes and completed GPU use are mandatory.
-    if (!WriteTracking() || !image.IsTracked() || !image.tick_accessed_last ||
-        image.tick_accessed_last >= scheduler.CurrentTick() ||
-        !scheduler.IsFree(image.tick_accessed_last) || info.guest_size > (16ULL << 20)) return false;
+    if (!WriteTracking() || !image.IsTracked() || !image.LastUse() ||
+        image.LastUse() >= scheduler.CurrentTick() ||
+        !scheduler.IsFree(image.LastUse()) || info.guest_size > (16ULL << 20)) return false;
     if (!info.props.is_tiled || info.guest_address == 0 || info.guest_size == 0 ||
         !image.backing || image.backing->image.image_ci.format != info.pixel_format) {
         return false;
@@ -671,7 +672,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         // images to normal GC (which can write them back). Rejection must not lose GPU data.
         if (!cached.binding.is_bound && !cached.binding.is_target &&
             False(cached.flags & ImageFlagBits::GpuModified) &&
-            scheduler.CurrentTick() - cached.tick_accessed_last > NumFramesBeforeRemoval) {
+            scheduler.CurrentTick() - cached.LastUse() > NumFramesBeforeRemoval) {
             FreeImage(cache_image_id);
         }
         return {{}, -1, -1};
@@ -838,7 +839,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         cached.layout_key == info.LayoutKey() &&
         !BbToggle::Disabled(BbToggle::FindImageCache)) {
         Image& image = slot_images[cached.image_id];
-        image.tick_accessed_last = scheduler.CurrentTick();
+        image.NoteUse(scheduler.CurrentTick());
         TouchImage(image);
         if (cached.view_mip > 0) {
             desc.view_info.range.base.level += cached.view_mip;
@@ -915,7 +916,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     }
 
     Image& image = slot_images[image_id];
-    image.tick_accessed_last = scheduler.CurrentTick();
+    image.NoteUse(scheduler.CurrentTick());
     TouchImage(image);
 
     // If the image requested is a subresource of the image from cache record its location.
@@ -1455,6 +1456,15 @@ void TextureCache::GarbageCollectImages() {
             return true;
         }
         auto& image = slot_images[image_id];
+        const u64 now_ms=std::chrono::duration_cast<std::chrono::milliseconds>(
+            sample_now.time_since_epoch()).count();
+        const u64 use=image.LastUse();
+        if (!ImageLifetime::CanCollect(use,scheduler.CurrentTick(),
+                !use || scheduler.IsFree(use),image.LastUseMs(),now_ms)) {
+            lru_cache.Touch(image.lru_id,gc_tick);
+            BbStats::gc_kept_images.fetch_add(1,std::memory_order_relaxed);
+            return false;
+        }
         const bool download = image.SafeToDownload();
         const bool tiled = image.info.IsTiled();
         // Images whose GPU contents cannot be safely written back neither consume

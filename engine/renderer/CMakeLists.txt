@@ -206,6 +206,9 @@ if (WIN32)
 endif()
 
 # Explicit test targets never launch the game. record-data-test also has a GPU readback mode.
+add_executable(stable-arena-test EXCLUDE_FROM_ALL ../../tests/test_stable_arena.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(stable-arena-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(stable-arena-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
 add_executable(gc-policy-test EXCLUDE_FROM_ALL ../../tests/test_gc_policy.cpp)
 target_include_directories(gc-policy-test PRIVATE shadps4)
 add_executable(tiled-gc-test EXCLUDE_FROM_ALL ../../tests/test_tiled_gc.cpp)

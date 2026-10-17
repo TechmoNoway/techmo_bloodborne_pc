@@ -42,3 +42,9 @@ Stability/shader and opt-in tiled collection follow-up (2026-10-17):
   Shader binary versions are 9 (regular) and 10 (motion). Runtime mapping generations,
   owned temporary linear storage and default-off GC instrumentation are local adaptations.
   See ../../THIRD_PARTY_NOTICES.txt for identities and license terms.
+Guest-address and cache-lifetime stability follow-up (2026-10-17):
+  Checked 1 MiB render-pool patch sites from Awakenchan/BloodBorneButPc 4f93643.
+  Local implementations: low Windows thread handles, immutable overlapping sparse
+  windows with guest-VA hazard tracking, real section/view memory preflight and
+  coordinated temporary fallback, and GPU-completion/recent-use texture guards.
+  See ../../licenses/STABILITY-1-5-PORTS.md for attribution and scope.
