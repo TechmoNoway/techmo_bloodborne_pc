@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: fsr4cap.exe — runs AMD's FSR 4 upscaler DLL through the FidelityFX API on D3D12 (under
-// Wine/Proton with vkd3d-proton) on synthetic inputs, for recording what it does (docs/upscaler.md,
-// FSR 4.1.1). Step 1: list the upscaler versions, create a context with a chosen version, run
-// frames, read back the output.
+// Wine/Proton with vkd3d-proton) on synthetic inputs, for recording what FSR 4.1.1 does.
+// Step 1: list the upscaler versions, create a context with a chosen version, run frames,
+// read back the output.
 //
 //   fsr4cap.exe [version substring, default FSR4] [render WxH] [output WxH] [frames] [noise]
 // noise: the benchmark's pseudo-random inputs (tools/fsr4_bench.cpp, BENCH_NOISE) and the output

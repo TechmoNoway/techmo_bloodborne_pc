@@ -6,7 +6,7 @@
 
 Windows x64 · Vulkan · C# / WPF · English + Tiếng Việt
 
-[Build](docs/guides/BUILD.md) · [Project map](docs/ARCHITECTURE.md) · [Contribute](CONTRIBUTING.md) · [Tiếng Việt](README.vi.md)
+[Build launcher](tools/build-launcher.ps1) · [Build engine](tools/build-native.ps1) · [Contribute](CONTRIBUTING.md)
 
 </div>
 
@@ -18,8 +18,6 @@ The **Hunter’s Desk** interface pairs game artwork with launch controls, quick
 settings and expandable system details. The language selector stays available
 on every page, and smaller windows use a scrolling layout.
 
-![Techmo Bloodborne launcher](docs/assets/launcher.png)
-
 ## What you can configure
 
 - Click-to-bind keyboard/mouse controls with Shift/Ctrl/Alt combinations, Default / Dark Souls 3 / Custom presets
@@ -29,8 +27,7 @@ on every page, and smaller windows use a scrolling layout.
 - English or Vietnamese launcher UI, independent of the game's language.
 - Session exit reports, optional frame/GPU CSV recordings and native minidumps.
 
-For native builds and repeatable measurements, see the
-[diagnostics guide](docs/guides/DIAGNOSTICS.md). Recorded whole-session statistics
+Recorded whole-session statistics
 include loading screens and menus; use the same route for comparisons.
 
 In **Controls**, click a keyboard or mouse slot and press the desired input.
@@ -39,15 +36,6 @@ Custom bindings are retained when switching presets. For `Left Shift + Mouse1`,
 click the mouse slot, hold Left Shift and click the left mouse button. The same
 capture supports multiple side-specific modifiers, keyboard keys and the wheel.
 The new combination syntax requires an engine rebuilt from this source.
-
-<details>
-<summary>Preview the Controls page</summary>
-
-![Click-to-bind controls](docs/assets/controls.png)
-
-![Keyboard and mouse combinations](docs/assets/controls-chords.png)
-
-</details>
 
 Available graphics features depend on the GPU, driver and installed assets.
 Restructuring the project or changing the launcher does not by itself raise FPS.
@@ -67,7 +55,7 @@ From PowerShell in the repository root:
 Double-click `builds/TEST-LAUNCHER.cmd` to test the latest build. The executable
 is written to `builds/launcher/Techmo.Launcher.exe`; caches and previous local
 builds are grouped under `builds/_internal`.
-Build the engine separately using the [Windows build guide](docs/guides/BUILD.md),
+Build the engine separately with `./tools/build-native.ps1 -Test`,
 then open the launcher and select your game folder.
 
 ## A project with clear boundaries
@@ -81,7 +69,6 @@ tools/               Build helpers, setup and development utilities
 tests/               Preparation, runtime, input and renderer regressions
 third_party/         Shared native dependencies
 patches/             Community patch definitions
-docs/                Build guide, architecture and development notes
 licenses/            Upstream and third-party license notices
 builds/              Local output only; excluded from Git
 ```
@@ -101,7 +88,6 @@ validation are still pending for this Techmo version.
 
 The work ahead is practical: validate startup files, make saves atomic, test input
 release behavior, and measure frame times before tuning the renderer.
-See [development notes](docs/DEVELOPMENT.md).
 
 ## License and credits
 

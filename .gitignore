@@ -88,9 +88,9 @@ boot*.bin
 # Source art is explicit; local captures remain private
 *.png
 !apps/launcher/Assets/*.png
-!docs/assets/*.png
-/docs/archive/**/savedata_route/
-/docs/archive/**/route*.txt
-/docs/archive/**/ISSUE_ACTION_PLAN_*.md
 /1060/
 /bloodborne_upscalers_*.md
+
+# Local documentation and editor settings
+/docs/
+/.vscode/
