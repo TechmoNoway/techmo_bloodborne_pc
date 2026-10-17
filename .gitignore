@@ -5,6 +5,8 @@
 /package/
 /launcher-publish/
 /launcher-previews/
+/launcher-public-publish/
+/launcher-public-previews/
 /pgo/
 /build/
 /engine/renderer/build/

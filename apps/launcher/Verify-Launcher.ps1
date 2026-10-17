@@ -1,4 +1,4 @@
-param([string]$PreviewDirectory, [string]$PackageCache, [string]$SdlDll)
+param([string]$PreviewDirectory, [string]$PackageCache, [string]$SdlDll, [switch]$PublicRelease)
 $ErrorActionPreference = 'Stop'
 # Keep the verification host outside the repository: Play can only reach
 # synthetic fixtures, never the user's runtime, game dump or saved settings.
@@ -27,9 +27,16 @@ static class Program
 {
     static MainWindow window = null!;
     static int assertions;
+    static bool publicRelease = __PUBLIC_RELEASE__;
     static T Get<T>(string name) where T : class => (T)window.FindName(name);
     static void Call(string name, params object[] args) => typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, args);
     static void Check(bool value, string message) { if (!value) throw new Exception(message); assertions++; }
+    static void CheckSessionCard(string context) {
+        var card = Get<Border>("LastSessionCard");
+        Check(card.Visibility == (publicRelease ? Visibility.Collapsed : Visibility.Visible),
+            context + (publicRelease ? ": public release hides last session" : ": Actions build shows last session"));
+        if (publicRelease) Check(!card.IsVisible && card.ActualHeight == 0, context + ": hidden card takes no layout space");
+    }
     static string Tag(string name) => ((ComboBoxItem)Get<ComboBox>(name).SelectedItem).Tag?.ToString() ?? "";
     static void Select(string name, string tag) {
         var box = Get<ComboBox>(name);
@@ -510,13 +517,18 @@ static class Program
         string sessionDir=env.Split("\r\n").Single(line=>line.StartsWith("BB_SESSION_DIR=")).Substring("BB_SESSION_DIR=".Length);
         Check(Path.GetDirectoryName(env.Split("\r\n").Single(line=>line.StartsWith("BB_LOG_FILE=")).Substring("BB_LOG_FILE=".Length))==sessionDir,"Each launch log belongs to its unique session directory");
         Check(env.Split("\r\n").Contains("BB_GPU_PROFILE=1"),"GPU profiler switch reaches runtime");
-        Check(Get<Border>("LastSessionCard").Visibility==Visibility.Visible,"Session outcome shown on Home");
+        CheckSessionCard("After game exit");
         File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x0000008B\",\"outcome\":{\"category\":\"crash\",\"reason\":\"access_violation\"},\"performance\":{\"available\":true,\"average_fps\":59.5,\"one_percent_low_fps\":44.1,\"p99_frame_ms\":22.68}}");
         Call("ShowSessionReport",sessionDir,139);Pump();
+        CheckSessionCard("Crash report");
+        Get<Border>("LastSessionCard").Visibility=Visibility.Collapsed;
+        Call("LoadLatestSession");Pump();
+        CheckSessionCard("Restore previous session on startup");
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne stopped unexpectedly","Native crash is not reported as a normal close");
         Check(Get<TextBlock>("LastSessionDetail").Text.Contains("Memory access violation") && Get<TextBlock>("LastSessionDetail").Text.Contains("0x0000008B"),"Crash shows evidence and exit code");
         Check(Get<TextBlock>("LastSessionPerformance").Text.Contains("59.5") && Get<TextBlock>("LastSessionPerformance").Text.Contains("44.1"),"Measured FPS and 1% low displayed");
         Select("UiLanguageCombo","vi");Pump();
+        CheckSessionCard("Vietnamese session report");
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne dừng bất thường" && Get<TextBlock>("LastSessionDetail").Text.Contains("Lỗi truy cập bộ nhớ"),"Existing crash result translates to Vietnamese");
         ClickNav("Home");Render(Path.Combine(output,"session-crash-vi.png"));
         Select("UiLanguageCombo","en");
@@ -535,9 +547,11 @@ static class Program
         File.WriteAllText(Path.Combine(sessionDir,"session.json"),"truncated");
         Call("ShowSessionReport",sessionDir,139);Pump();
         Check(Get<TextBlock>("LastSessionPerformance").Text.Contains("could not be read"),"Truncated crash report has a usable fallback");
+        CheckSessionCard("Truncated report");
         File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000000\",\"outcome\":{\"category\":\"normal\",\"reason\":\"normal_exit\"}}");
         Call("ShowSessionReport",sessionDir,0);Pump();
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne closed","A successful runtime exit retains the normal close message");
+        CheckSessionCard("Normal exit report");
         File.WriteAllText(Path.Combine(root,"run.bat"),"@echo off\r\nset BB_ > launch-env.txt\r\n> \"%BB_SESSION_DIR%\\session.json\" echo {\"status\":\"finished\",\"exit_code_hex\":\"0x0000008B\",\"outcome\":{\"category\":\"crash\",\"reason\":\"access_violation\"}}\r\nping 127.0.0.1 -n 2 > nul\r\nexit /b 139\r\n");
         Get<CheckBox>("DeveloperModeCheck").IsChecked=false;
         Environment.SetEnvironmentVariable("BB_GPU_PROFILE","1");
@@ -546,6 +560,7 @@ static class Program
         for(int i=0;i<120 && !window.IsVisible;i++) { Thread.Sleep(50); Pump(); }
         Check(window.IsVisible && Get<Button>("PlayButton").IsEnabled,"Launcher recovers after a real synthetic nonzero process exit");
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne stopped unexpectedly" && Get<TextBlock>("LastSessionDetail").Text.Contains("Memory access violation"),"Exited handler reads the native outcome and shell exit code");
+        CheckSessionCard("Native process exit handler");
         string diagnosticEnv=File.ReadAllText(envPath);
         Check(diagnosticEnv.Split("\r\n").Contains("BB_FRAME_STATS=1"),"Frame recording works without Developer Mode");
         Check(!diagnosticEnv.Split("\r\n").Contains("BB_GPU_PROFILE=1"),"Disabled GPU profiling overrides an inherited profiler switch");
@@ -717,8 +732,10 @@ static class Program
 
 
 '@
+$program = $program.Replace('__PUBLIC_RELEASE__', $PublicRelease.IsPresent.ToString().ToLowerInvariant())
 Set-Content -Encoding utf8 -LiteralPath (Join-Path $verificationRoot 'Program.cs') -Value $program
 $arguments = @('run','--project',(Join-Path $verificationRoot 'LauncherChecks.csproj'),'--configuration','Release')
+$arguments += "--property:TechmoPublicRelease=$($PublicRelease.IsPresent.ToString().ToLowerInvariant())"
 if ($PackageCache) { $arguments += "--property:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
 if ($SdlDll) { & dotnet @arguments -- $PreviewDirectory ([IO.Path]::GetFullPath($SdlDll)) }
 else { & dotnet @arguments -- $PreviewDirectory }

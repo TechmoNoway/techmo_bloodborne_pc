@@ -11,6 +11,11 @@
     <Description>Windows launcher for the Techmo Bloodborne development fork.</Description>
     <RootNamespace>BloodborneLauncher</RootNamespace>
     <ApplicationIcon>Assets/bloodborne.ico</ApplicationIcon>
+    <Version>1.2.1</Version>
+    <TechmoPublicRelease Condition="'$(TechmoPublicRelease)' == ''">false</TechmoPublicRelease>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TechmoPublicRelease)' == 'true'">
+    <DefineConstants>$(DefineConstants);TECHMO_PUBLIC_RELEASE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets/*.png" />

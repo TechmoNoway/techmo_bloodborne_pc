@@ -8,6 +8,12 @@ namespace BloodborneLauncher;
 
 public partial class MainWindow
 {
+#if TECHMO_PUBLIC_RELEASE
+    static bool ShowLastSessionCard => false;
+#else
+    static bool ShowLastSessionCard => true;
+#endif
+
     string? latestSessionDirectory;
 
     void LoadLatestSession()
@@ -28,7 +34,7 @@ public partial class MainWindow
     void ShowSessionReport(string directory, int processExitCode)
     {
         latestSessionDirectory = directory;
-        LastSessionCard.Visibility = Visibility.Visible;
+        LastSessionCard.Visibility = ShowLastSessionCard ? Visibility.Visible : Visibility.Collapsed;
         string category = processExitCode == 0 ? "normal" : "abnormal_exit";
         string reason = processExitCode == 0 ? "normal_exit" : "unknown_exit";
         string code = $"0x{unchecked((uint)processExitCode):X8}";

@@ -10,6 +10,13 @@ Build the launcher with `./tools/build-launcher.ps1` and the native engine with
 tests. Keep game dumps, saves, credentials and captured game data outside version
 control. Development output belongs in `builds` or `out`.
 
+Actions uploads two Windows packages. `Techmo-Bloodborne-Windows-<SHA>` keeps
+the last-session card for testing. Publish GitHub releases using
+`Techmo-Bloodborne-Windows-Public-<SHA>`, whose launcher is built with
+`-p:TechmoPublicRelease=true` and hides that card. Session logs remain available
+in both builds. Run `apps/launcher/Verify-Launcher.ps1` with and without
+`-PublicRelease` to check both variants.
+
 For localization changes, keep the English/Vietnamese catalog keys and format
 placeholders identical. The launcher defaults to English. Preserve configuration
 IDs and input key names when translating labels.

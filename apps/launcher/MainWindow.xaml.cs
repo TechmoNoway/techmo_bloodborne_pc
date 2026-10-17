@@ -601,7 +601,7 @@ public partial class MainWindow : Window
                     RefreshStatusCore(detectGpu: false);
                     Activate();
                     ShowSessionReport(sessionDir, exitCode);
-                    if (exitCode != 0)
+                    if (exitCode != 0 && LastSessionCard.Visibility == Visibility.Visible)
                     {
                         Nav_Click(NavHome, new RoutedEventArgs());
                         LastSessionCard.BringIntoView();

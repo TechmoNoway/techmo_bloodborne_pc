@@ -169,6 +169,14 @@ jobs:
         shell: pwsh
         run: dotnet publish apps/launcher/Techmo.Launcher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o launcher-publish
 
+      - name: Verify public release launcher
+        shell: pwsh
+        run: ./apps/launcher/Verify-Launcher.ps1 -PublicRelease -PreviewDirectory launcher-public-previews
+
+      - name: Publish public release launcher
+        shell: pwsh
+        run: dotnet publish apps/launcher/Techmo.Launcher.csproj -c Release -r win-x64 --self-contained true -p:TechmoPublicRelease=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o launcher-public-publish
+
       - name: Setup portable Python
         uses: actions/setup-python@v5
         with:
@@ -233,6 +241,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Techmo-Bloodborne-Windows-${{ github.sha }}
+          path: package/
+          compression-level: 6
+          if-no-files-found: error
+
+      - name: Assemble public release package
+        shell: pwsh
+        run: Copy-Item launcher-public-publish/Techmo.Launcher.exe package/Techmo.Launcher.exe -Force
+
+      - name: Upload public Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Techmo-Bloodborne-Windows-Public-${{ github.sha }}
           path: package/
           compression-level: 6
           if-no-files-found: error
