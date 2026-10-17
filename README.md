@@ -6,7 +6,7 @@
 
 Windows x64 · Vulkan · C# / WPF · English + Tiếng Việt
 
-[Build](docs/guides/BUILD.md) · [Project map](docs/ARCHITECTURE.md) · [Contribute](CONTRIBUTING.md) · [Tiếng Việt](README.vi.md)
+[Build launcher](tools/build-launcher.ps1) · [Build engine](tools/build-native.ps1) · [Contribute](CONTRIBUTING.md)
 
 </div>
 
@@ -17,8 +17,6 @@ settings in one place. The interface starts in English and can switch to Vietnam
 The **Hunter’s Desk** interface pairs game artwork with launch controls, quick
 settings and expandable system details. The language selector stays available
 on every page, and smaller windows use a scrolling layout.
-
-![Techmo Bloodborne launcher](docs/assets/launcher.png)
 
 ## What you can configure
 
@@ -31,8 +29,7 @@ on every page, and smaller windows use a scrolling layout.
 - **Quit Game** on the title screen, with the game's own YES/NO confirmation.
   It uses the window-close path and saves completed pipeline-cache work before exiting.
 
-For native builds and repeatable measurements, see the
-[diagnostics guide](docs/guides/DIAGNOSTICS.md). Recorded whole-session statistics
+Recorded whole-session statistics
 include loading screens and menus; use the same route for comparisons.
 
 In **Controls**, click a keyboard or mouse slot and press the desired input.
@@ -41,15 +38,6 @@ Custom bindings are retained when switching presets. For `Left Shift + Mouse1`,
 click the mouse slot, hold Left Shift and click the left mouse button. The same
 capture supports multiple side-specific modifiers, keyboard keys and the wheel.
 The new combination syntax requires an engine rebuilt from this source.
-
-<details>
-<summary>Preview the Controls page</summary>
-
-![Click-to-bind controls](docs/assets/controls.png)
-
-![Keyboard and mouse combinations](docs/assets/controls-chords.png)
-
-</details>
 
 Available graphics features depend on the GPU, driver and installed assets.
 Restructuring the project or changing the launcher does not by itself raise FPS.

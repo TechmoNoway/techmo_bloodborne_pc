@@ -5,9 +5,10 @@ the problem, what the user sees afterward, and how that result was verified.
 
 ## Work locally
 
-Follow the [build guide](docs/guides/BUILD.md). Use synthetic fixtures for launcher
-and preparation tests. Keep game dumps, saves, credentials and captured game data
-outside version control. Development output belongs in `builds` or `out`.
+Build the launcher with `./tools/build-launcher.ps1` and the native engine with
+`./tools/build-native.ps1 -Test`. Use synthetic fixtures for launcher and preparation
+tests. Keep game dumps, saves, credentials and captured game data outside version
+control. Development output belongs in `builds` or `out`.
 
 For localization changes, keep the English/Vietnamese catalog keys and format
 placeholders identical. The launcher defaults to English. Preserve configuration
@@ -27,4 +28,3 @@ Avoid replacing upstream authorship when changing a file or renaming the project
 
 Run the checks relevant to your changes, explain any skipped checks, and include
 the corresponding source and notices when distributing a compiled build.
-Use [GitHub preparation](docs/guides/GITHUB.md) for a first publication.

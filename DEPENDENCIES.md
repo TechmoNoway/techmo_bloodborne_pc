@@ -27,7 +27,7 @@ preserve SPIRV-Headers' header-generation scripts in its source `bin` directory.
 
 CMake also fetches pinned versions of magic_enum (v0.9.7), miniz (3.1.0) and
 xbyak (v7.24.2) when missing. MSYS2 supplies the compiler, Vulkan, SDL3 and other
-system libraries listed in the [build guide](docs/guides/BUILD.md).
+system libraries installed by `tools/bootstrap-native.sh`.
 
 DLSS and FSR model downloads are optional runtime assets with their own notices;
 downloaded DLLs/model sets are excluded from this source repository.

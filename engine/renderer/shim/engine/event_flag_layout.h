@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SprjEventFlagMan's flag store as our source (docs/decomp.md): the four
+// SprjEventFlagMan's flag store as our source: the four
 // functions every event script, Lua binding, talk script and online update
 // reads and writes the world's state through - IsEventFlag (0x17cfc00),
 // SetEventFlag (0x17cfcc0), GetEventFlagValue (0x17cfd80),
