@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The editor controller/refcount lifecycle is adapted from bbhost, not the GPU renderer.
 #include "engine_hooks.h"
+#include "../frame_pacing.h"
 #include "camera.h"
 #include "widescreen.h"
 #include "../input/input.h"
@@ -164,11 +165,15 @@ std::int64_t __attribute__((sysv_abi)) FrameHook(std::uint64_t, const std::uint6
 } // namespace
 
 void Install(std::uint8_t* image, std::size_t size) {
+    // Always independent of the optional PC input/camera/editor features.
+    BbFramePacing::Initialize(image, size, std::getenv("BB_ENGINE_IMAGE_SHA256"));
     const char* asset = std::getenv("BB_DREAM_MIRROR_ASSET");
     const char* identity = std::getenv("BB_ENGINE_IMAGE_SHA256");
     const bool mirror = asset && *asset;
     const bool respec=std::getenv("BB_REBIRTH_ASSET");
-    if (!mirror && !respec && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
+    const char* menu_assets=std::getenv("BB_PC_MENU_ASSETS");
+    const bool native_menus=menu_assets && *menu_assets;
+    if (!mirror && !respec && !native_menus && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
     if (!identity || std::strcmp(identity, "071df19c8880086d97182dbc057bc8cb37badaca57d9112683836b24a0444c0a")) {
         Log("mirror disabled: executable identity was not verified"); return;
     }
@@ -180,7 +185,7 @@ void Install(std::uint8_t* image, std::size_t size) {
         !std::filesystem::equivalent(resolved, std::filesystem::path(original) / "dvdroot_ps4/map/mapstudio/m21_00_00_00.msb.dcx", error))) {
         Log("mirror disabled: a user mod owns the Dream layout");
         asset = nullptr;
-        if (!respec && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
+        if (!respec && !native_menus && !BbSettings::Get().camera_controls && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls && !BbSettings::Get().widescreen) return;
     }
     Hook hooks[2];
     if (!Prepare(hooks[0], image, size, 0x1c1cce0, kStepPrologue, StepHook) ||

@@ -78,7 +78,12 @@
   "Ui.Provider": "Công nghệ",
   "Ui.Upscaling_provider": "Công nghệ nâng độ phân giải",
   "Ui.FSR_4_v07_legacy": "FSR 4 v07 (thử nghiệm)",
-  "Ui.Quality_preset": "Mức chất lượng",
+  "Ui.Upscaling_mode": "Chế độ nâng độ phân giải",
+  "Ui.Disabled": "Không áp dụng",
+  "Diagnostics.Renderer_assertion": "Renderer dừng do một kiểm tra nội bộ thất bại; hãy xem log GPU và tệp crash dump.",
+  "Ui.Upscale_off_hint": "Đã tắt nâng độ phân giải. Các mức chất lượng không áp dụng.",
+  "Ui.Taa_native_hint": "TAA dùng độ phân giải đầu ra. Các mức chất lượng không áp dụng.",
+  "Ui.Upscale_mode_hint": "Chọn tỷ lệ render dành cho DLSS hoặc FSR.",
   "Ui.RCAS_sharpening": "Làm sắc nét bằng RCAS",
   "Ui.Live_resolution_changes": "Đổi độ phân giải trực tiếp",
   "Ui.Off_faster": "Tắt (nhanh hơn)",
@@ -335,5 +340,8 @@
   "Ui.Dlss_installed": "Đã có mô hình · kiểm tra driver khi chạy",
   "Ui.Dlss_invalid": "DLL mô hình không hợp lệ",
   "Ui.Fsr4_installed": "Đã có v07 · thử nghiệm",
-  "Ui.Fsr4_incomplete": "Dữ liệu thiếu hoặc bị hỏng"
+  "Ui.Fsr4_incomplete": "Dữ liệu thiếu hoặc bị hỏng",
+  "Ui.VSync_choice": "VSync",
+  "Ui.Unlimited": "Không giới hạn",
+  "Ui.Unlimited_hint": "Không giới hạn FPS là chế độ thử nghiệm. Màn hình tiêu đề và tải game giữ tối đa 60 FPS."
 }

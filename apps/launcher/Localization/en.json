@@ -78,7 +78,12 @@
   "Ui.Provider": "Provider",
   "Ui.Upscaling_provider": "Upscaling provider",
   "Ui.FSR_4_v07_legacy": "FSR 4 v07 (experimental)",
-  "Ui.Quality_preset": "Quality preset",
+  "Ui.Upscaling_mode": "Upscaling mode",
+  "Ui.Disabled": "Disabled",
+  "Diagnostics.Renderer_assertion": "The renderer stopped at an internal assertion; inspect the GPU log and crash dump.",
+  "Ui.Upscale_off_hint": "Upscaling is off. Quality modes do not apply.",
+  "Ui.Taa_native_hint": "TAA uses the output resolution. Quality modes do not apply.",
+  "Ui.Upscale_mode_hint": "Select the render scale used by DLSS or FSR.",
   "Ui.RCAS_sharpening": "RCAS sharpening",
   "Ui.Live_resolution_changes": "Live resolution changes",
   "Ui.Off_faster": "Off (faster)",
@@ -335,5 +340,8 @@
   "Ui.Dlss_installed": "Model installed · driver checked at launch",
   "Ui.Dlss_invalid": "Model DLL is invalid",
   "Ui.Fsr4_installed": "v07 installed · experimental",
-  "Ui.Fsr4_incomplete": "Assets incomplete or damaged"
+  "Ui.Fsr4_incomplete": "Assets incomplete or damaged",
+  "Ui.VSync_choice": "VSync",
+  "Ui.Unlimited": "Unlimited",
+  "Ui.Unlimited_hint": "Unlimited is experimental. Title and loading screens stay capped at 60 FPS."
 }

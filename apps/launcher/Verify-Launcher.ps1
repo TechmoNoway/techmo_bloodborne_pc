@@ -261,6 +261,40 @@ static class Program
         window.MinWidth=1000;window.MinHeight=680;
         Call("SaveSettings"); ClickNav("Home"); Render(Path.Combine(output,"launcher-home-before-checks.png"));
     }
+    static void VerifyUpscalingAvailability(string output,string root) {
+        Select("UpscalerCombo","dlss"); Select("PresetCombo","3");
+        foreach(string provider in new[]{"off","taa"}) {
+            if(provider=="off") Select("UpscalerCombo",provider);
+            else Get<ComboBox>("QuickUpscaler").SelectedIndex=4;
+            foreach(string language in new[]{"en","vi"}) {
+                Select("UiLanguageCombo",language); Pump();
+                string disabled=language=="en"?"Disabled":"Không áp dụng";
+                foreach(string name in new[]{"PresetCombo","QuickPreset"}) {
+                    var box=Get<ComboBox>(name); box.ApplyTemplate();
+                    var placeholder=(TextBlock)box.Template.FindName("DisabledSelection",box);
+                    Check(!box.IsEnabled && !box.IsDropDownOpen,provider+" disables "+name);
+                    Check(placeholder.Visibility==Visibility.Visible && placeholder.Text==disabled,"Disabled placeholder translates without replacing the selection: "+name);
+                    Check(box.SelectedIndex==3,provider+" preserves the previous Performance choice: "+name);
+                    Check(System.Windows.Automation.AutomationProperties.GetHelpText(box)==Get<TextBlock>("PresetUnavailableHint").Text,"Accessible explanation matches the provider: "+name);
+                }
+                Check(Get<TextBlock>("PresetUnavailableHint").Text.Contains(provider=="taa"?"TAA":language=="en"?"off":"Đã tắt"),"Provider-specific disabled explanation");
+                ClickNav("Graphics"); Render(Path.Combine(output,"quality-disabled-"+provider+"-"+language+".png"),1440,900);
+                if(provider=="taa") { ClickNav("Home"); Render(Path.Combine(output,"quality-disabled-home-"+language+".png"),1440,900); }
+            }
+            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi"); Pump();
+            Check(!Get<ComboBox>("PresetCombo").IsEnabled && !Get<ComboBox>("QuickPreset").IsEnabled && Tag("PresetCombo")=="3","Disabled state survives reload and retains the real preference");
+            Check(File.ReadAllLines(Path.Combine(root,"bbport.ini")).Contains("preset=3"),"Disabled is never written as a runtime preset");
+            Select("UpscalerCombo","dlss");
+        }
+        foreach(string provider in new[]{"dlss","fsr3","fsr4","fsr411"}) {
+            Select("UpscalerCombo",provider); Pump();
+            Check(Get<ComboBox>("PresetCombo").IsEnabled && Get<ComboBox>("QuickPreset").IsEnabled && Tag("PresetCombo")=="3" && Get<ComboBox>("QuickPreset").SelectedIndex==3,provider+" restores Performance in both selectors");
+            Check(Get<TextBlock>("PresetUnavailableHint").Visibility==Visibility.Collapsed,"Active upscaler hides the disabled explanation");
+        }
+        Select("PresetCombo","0"); Select("UpscalerCombo","off"); Select("UpscalerCombo","taa"); Select("UpscalerCombo","dlss");
+        Check(Tag("PresetCombo")=="0" && Get<ComboBox>("QuickPreset").SelectedIndex==0,"Native AA also survives Off and TAA transitions");
+        Select("UiLanguageCombo","en"); Select("UpscalerCombo","fsr411"); Select("PresetCombo","3");
+    }
     static bool FitsWithin(FrameworkElement child, FrameworkElement parent) {
         var bounds=child.TransformToAncestor(parent).TransformBounds(new Rect(0,0,child.ActualWidth,child.ActualHeight));
         return child.IsVisible && child.ActualWidth>0 && child.ActualHeight>0 && bounds.Left>=-1 && bounds.Top>=-1 && bounds.Right<=parent.ActualWidth+1 && bounds.Bottom<=parent.ActualHeight+1;
@@ -391,6 +425,7 @@ static class Program
             for(int i=0;i<detailed.Items.Count;i++) { detailed.SelectedIndex=i; Check(quick.SelectedIndex==i,pair.Item1+" to quick "+i); }
             for(int i=quick.Items.Count-1;i>=0;i--) { quick.SelectedIndex=i; Check(detailed.SelectedIndex==i,pair.Item2+" to detailed "+i); }
         }
+        VerifyUpscalingAvailability(output,root);
         Get<CheckBox>("FullscreenCheck").IsChecked=false; Check(Get<ComboBox>("QuickDisplay").SelectedIndex==1,"Display sync to quick");
         Get<ComboBox>("QuickDisplay").SelectedIndex=0; Check(Get<CheckBox>("FullscreenCheck").IsChecked==true,"Display sync from quick");
         Select("CameraFovCombo","1.25"); Select("CameraDistanceCombo","0.80"); Select("CameraHeightCombo","1.20");
@@ -485,6 +520,12 @@ static class Program
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne dừng bất thường" && Get<TextBlock>("LastSessionDetail").Text.Contains("Lỗi truy cập bộ nhớ"),"Existing crash result translates to Vietnamese");
         ClickNav("Home");Render(Path.Combine(output,"session-crash-vi.png"));
         Select("UiLanguageCombo","en");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000017\",\"outcome\":{\"category\":\"crash\",\"reason\":\"renderer_assertion\"}}");
+        Call("ShowSessionReport",sessionDir,23);Pump();
+        Check(Get<TextBlock>("LastSessionDetail").Text.Contains("internal assertion") && Get<TextBlock>("LastSessionDetail").Text.Contains("0x00000017"),"Renderer assertion is distinguished from a generic process exit");
+        Select("UiLanguageCombo","vi");Pump();
+        Check(Get<TextBlock>("LastSessionDetail").Text.Contains("kiểm tra nội bộ thất bại"),"Renderer assertion detail translates live");
+        Select("UiLanguageCombo","en");
         File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000001\",\"outcome\":{\"category\":\"startup_error\",\"reason\":\"preparation_failed\"}}");
         Call("ShowSessionReport",sessionDir,1);Pump();
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne could not start" && Get<TextBlock>("LastSessionDetail").Text.Contains("preparation failed"),"Preparation failure is distinguished from a native crash");
@@ -575,8 +616,34 @@ static class Program
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Tag("UpscalerCombo")=="fsr411" && Tag("FpsCombo")=="90" && Tag("PresetCombo")=="3","Settings reload");
         Check(Get<ComboBox>("QuickUpscaler").SelectedIndex==1 && Get<ComboBox>("QuickFps").SelectedIndex==2,"Quick settings reload");
-        Check(Get<ComboBox>("FpsCombo").Items.Count==3 && Get<ComboBox>("QuickFps").Items.Count==3,"Only supported FPS presets");
-        foreach(string legacy in new[]{"uncap","Unlimited","0","480","bad"}) {
+        Check(Get<ComboBox>("FpsCombo").Items.Count==4 && Get<ComboBox>("QuickFps").Items.Count==4,"30/60/90/Unlimited presets without 120 FPS");
+        foreach(string fps in new[]{"30","60","90","uncap"}) {
+            Select("FpsCombo",fps);
+            Select("PresentCombo","Immediate");
+            Check(Get<CheckBox>("VSyncCheck").IsChecked==false,"Immediate clears VSync at "+fps);
+            Get<CheckBox>("VSyncCheck").IsChecked=true;
+            Check(Tag("PresentCombo")=="Fifo","VSync selects FIFO at "+fps);
+            Get<CheckBox>("VSyncCheck").IsChecked=false;
+            Check(Tag("PresentCombo")=="Immediate","Disabling VSync restores user mode at "+fps);
+            Select("PresentCombo","FifoRelaxed");
+            Check(Get<CheckBox>("VSyncCheck").IsChecked==true,"Adaptive FIFO reflects VSync at "+fps);
+            Select("PresentCombo","");
+            Check(Get<CheckBox>("VSyncCheck").IsChecked==false,"Mailbox remains selectable at "+fps);
+            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
+            Check(Tag("FpsCombo")==fps && Tag("PresentCombo")=="" && Get<CheckBox>("VSyncCheck").IsChecked==false,"FPS and disabled VSync round trip at "+fps);
+            if(fps=="uncap") {
+                Get<Button>("NavGraphics").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+                Render(Path.Combine(output,"graphics-unlimited-vsync-off-en.png"),1440,900);
+                Select("UiLanguageCombo","vi");
+                Render(Path.Combine(output,"graphics-unlimited-vsync-off-vi.png"),1440,900);
+                Select("UiLanguageCombo","en");
+            }
+            Get<CheckBox>("VSyncCheck").IsChecked=true;
+            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
+            Check(Tag("FpsCombo")==fps && Tag("PresentCombo")=="Fifo" && Get<CheckBox>("VSyncCheck").IsChecked==true,"FPS and enabled VSync round trip at "+fps);
+        }
+        Select("FpsCombo","90"); Select("PresentCombo","FifoRelaxed"); Call("SaveSettings");
+        foreach(string legacy in new[]{"120","Unlimited","0","480","bad"}) {
             string saved=File.ReadAllText(Path.Combine(root,"launcher-settings.json"));
             File.WriteAllText(Path.Combine(root,"launcher-settings.json"),saved.Replace("\"Fps\": \"90\"","\"Fps\": \""+legacy+"\""));
             Call("LoadState"); Call("ApplyStateToUi");

@@ -308,15 +308,31 @@ static void run_job(Context *ctx, uint32_t id, Job *job) {
     if (control && CONTROL_RESAMPLE(f) && control+8<=control_end) control+=8;
     if (control && CONTROL_INITIALIZE(f) && control+8<=control_end) { memcpy(in->config,control,4); at9_reset(in); }
     uint64_t in_size=0;
-    for (int i=0;i<job->input_count;++i) in_size+=job->inputs[i].size;
+    for (int i=0;i<job->input_count;++i) {
+        if ((job->inputs[i].size && !job->inputs[i].address) ||
+            job->inputs[i].size>UINT64_MAX-in_size) {
+            flags_result|=RESULT_INVALID_PARAMETER;
+            break;
+        }
+        in_size+=job->inputs[i].size;
+    }
+    if (flags_result & RESULT_INVALID_PARAMETER) in_size=0;
     unsigned char *joined=NULL;
     const unsigned char *input=NULL;
     if (job->input_count==1) input=job->inputs[0].address;
-    else if (job->input_count>1) {
-        joined=malloc(in_size ? in_size : 1);
-        uint64_t at=0;
-        for (int i=0;i<job->input_count;++i) { memcpy(joined+at,job->inputs[i].address,job->inputs[i].size); at+=job->inputs[i].size; }
-        input=joined;
+    else if (job->input_count>1 && !(flags_result & RESULT_INVALID_PARAMETER)) {
+        /* bbport: bounded concatenation, adapted from DarkIzuku 4ee4e9ed39.
+         * Reject malformed lengths before allocation or touching their payloads. */
+        if (in_size<=64*UINT64_C(1024)*1024) joined=malloc(in_size ? (size_t)in_size : 1);
+        if (!joined) { flags_result|=RESULT_INVALID_PARAMETER; in_size=0; }
+        else {
+            uint64_t at=0;
+            for (int i=0;i<job->input_count;++i) {
+                if (job->inputs[i].size) memcpy(joined+at,job->inputs[i].address,job->inputs[i].size);
+                at+=job->inputs[i].size;
+            }
+            input=joined;
+        }
     }
     Output out={job->outputs,job->output_count,0,0};
     uint64_t in_start=in_size, out_start=output_room(&out);

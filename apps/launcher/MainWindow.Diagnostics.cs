@@ -78,6 +78,7 @@ public partial class MainWindow
             "divide_by_zero" => "An integer division by zero occurred.",
             "device_lost" => "Vulkan reported device lost; the log is needed to investigate why.",
             "device_memory_error" => "Vulkan could not allocate device memory.",
+            "renderer_assertion" => "The renderer stopped at an internal assertion; inspect the GPU log and crash dump.",
             "missing_dependency" => "A required native DLL could not be loaded.",
             "invalid_binary" => "Windows could not load a native executable or DLL.",
             "preparation_failed" => "Game preparation failed before the runtime started.",

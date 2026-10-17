@@ -28,6 +28,8 @@ on every page, and smaller windows use a scrolling layout.
 - Mods, community patches and optional shadNet connection settings.
 - English or Vietnamese launcher UI, independent of the game's language.
 - Session exit reports, optional frame/GPU CSV recordings and native minidumps.
+- **Quit Game** on the title screen, with the game's own YES/NO confirmation.
+  It uses the window-close path and saves completed pipeline-cache work before exiting.
 
 For native builds and repeatable measurements, see the
 [diagnostics guide](docs/guides/DIAGNOSTICS.md). Recorded whole-session statistics
@@ -51,57 +53,6 @@ The new combination syntax requires an engine rebuilt from this source.
 
 Available graphics features depend on the GPU, driver and installed assets.
 Restructuring the project or changing the launcher does not by itself raise FPS.
-
-## Start with the source
-
-You need Windows 10/11 x64, a Vulkan 1.3 capable GPU and your own **Bloodborne
-CUSA03173 v1.09** dump. Game files are not included. The launcher needs a .NET SDK
-to build; the native engine uses MSYS2 **CLANG64**.
-
-From PowerShell in the repository root:
-
-```powershell
-./tools/build-launcher.ps1
-```
-
-Double-click `builds/TEST-LAUNCHER.cmd` to test the latest build. The executable
-is written to `builds/launcher/Techmo.Launcher.exe`; caches and previous local
-builds are grouped under `builds/_internal`.
-Build the engine separately using the [Windows build guide](docs/guides/BUILD.md),
-then open the launcher and select your game folder.
-
-## A project with clear boundaries
-
-```text
-apps/launcher/       WPF interface, translations and launcher checks
-engine/runtime/      Game loader and Windows runtime
-engine/renderer/     Vulkan renderer, host shims and renderer dependencies
-scripts/             Game preparation, patching and Windows launch pipeline
-tools/               Build helpers, setup and development utilities
-tests/               Preparation, runtime, input and renderer regressions
-third_party/         Shared native dependencies
-patches/             Community patch definitions
-docs/                Build guide, architecture and development notes
-licenses/            Upstream and third-party license notices
-builds/              Local output only; excluded from Git
-```
-
-The renderer's vendored dependency layout stays intact so updates remain
-reviewable. A normal source checkout includes the pinned dependencies; there
-are no submodules to fetch. [DEPENDENCIES.md](DEPENDENCIES.md) records their origins.
-
-## Current development state
-
-The bilingual launcher has passed **485 behavior/UI and input compatibility
-checks**, using synthetic fixtures and SDL key-name validation. The
-Python suite passes **74 tests**; **28 native tests** are skipped until their
-engine binaries are built. The reorganized launcher is compiled locally.
-A full engine rebuild, an end-to-end game run, a full play-through and multiplayer
-validation are still pending for this Techmo version.
-
-The work ahead is practical: validate startup files, make saves atomic, test input
-release behavior, and measure frame times before tuning the renderer.
-See [development notes](docs/DEVELOPMENT.md).
 
 ## License and credits
 

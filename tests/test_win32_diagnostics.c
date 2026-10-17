@@ -13,6 +13,10 @@ int main(int argc, char **argv) {
     bb_diagnostics_init();
     SetUnhandledExceptionFilter(fault);
     if (argc == 2 && !strcmp(argv[1], "--normal")) return 0;
+    if (argc == 2 && !strcmp(argv[1], "--fatal")) {
+        bb_diagnostics_fatal("Synthetic \"assertion\"\\path\nsecond line");
+        ExitProcess(23);
+    }
     RaiseException(EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 0, NULL);
     return 1;
 }

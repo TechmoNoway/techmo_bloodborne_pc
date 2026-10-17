@@ -100,16 +100,16 @@ def settings_value(config, key):
 
 
 def configure_frame_rate(env):
-    """Windows supports the tested fixed-timestep presets, including old config migration.
+    """Resolve gameplay pace; the independent title/loading guard remains at 60.
 
-    Explicit limits also override inherited BB_VBLANK_HZ=0 / BB_FPS_LIMIT=0 so a
-    legacy uncapped launch cannot saturate the desktop during menus or loading.
+    The user's presentation choice is preserved for every frame-rate preset.
     """
     fps = env.get('BB_FPS', '60')
-    if fps not in ('30', '60', '90'):
+    if fps not in ('30', '60', '90', 'uncap'):
         print(f'Unsupported Windows FPS preset {fps!r}; using 60 FPS.', flush=True)
         fps = '60'
-    env.update(BB_FPS=fps, BB_FPS_LIMIT=fps, BB_VBLANK_HZ='90' if fps == '90' else '60')
+    env.update(BB_FPS=fps, BB_FPS_LIMIT='0' if fps == 'uncap' else fps,
+               BB_VBLANK_HZ='480' if fps == 'uncap' else '90' if fps == '90' else '60')
     return fps
 
 
@@ -163,33 +163,38 @@ def main():
         # Engine features are prepared locally and only mounted after runtime byte checks.
         for key in ('BB_DREAM_MIRROR_ASSET', 'BB_ENGINE_IMAGE_SHA256', 'BB_PC_MENU_ASSETS', 'BB_REBIRTH_ASSET'):
             os.environ.pop(key, None)
-        if (any(settings_value(config, key) == '1' for key in ('change_appearance', 'camera_controls', 'rebirth', 'graphics_controls'))
-            or any(settings_value(config, key) != '0' for key in ('pc_controls', 'widescreen'))):
+        # Quit Game is available with controller-only settings too; it does not depend
+        # on enabling camera, graphics or keyboard/mouse enhancements.
+        try:
+            from engine_assets import prepare_mirror, verify_executable, prepare_menu_assets
+            os.environ['BB_ENGINE_IMAGE_SHA256'] = verify_executable(out / 'eboot.elf')
+            if settings_value(config, 'change_appearance') == '1':
+                asset = prepare_mirror(merged, out / 'eboot.elf', data / 'engine-assets')
+                os.environ['BB_DREAM_MIRROR_ASSET'] = str(asset)
+                print(f'Engine: Dream mirror prepared locally: {asset}', flush=True)
             try:
-                from engine_assets import prepare_mirror, verify_executable
-                os.environ['BB_ENGINE_IMAGE_SHA256'] = verify_executable(out / 'eboot.elf')
-                if settings_value(config, 'change_appearance') == '1':
-                    asset = prepare_mirror(merged, out / 'eboot.elf', data / 'engine-assets')
-                    os.environ['BB_DREAM_MIRROR_ASSET'] = str(asset)
-                    print(f'Engine: Dream mirror prepared locally: {asset}', flush=True)
-                if (any(settings_value(config, key) == '1' for key in ('change_appearance', 'camera_controls', 'rebirth', 'graphics_controls'))
-                    or any(settings_value(config, key) != '0' for key in ('pc_controls', 'widescreen'))):
-                    from engine_assets import prepare_menu_assets
-                    try:
-                        menus = prepare_menu_assets(merged, out / 'eboot.elf', data / 'engine-assets',
-                                                    out / 'bb-engine-assets.exe', rebirth=settings_value(config, 'rebirth') == '1')
-                        os.environ['BB_PC_MENU_ASSETS'] = str(menus)
-                        print(f'Engine: native PC menus prepared locally: {menus}', flush=True)
-                        if settings_value(config, 'rebirth') == '1':
-                            os.environ['BB_REBIRTH_ASSET'] = str(menus / 'dvdroot_ps4/script/talk/m24_02_00_00.talkesdbnd.dcx')
-                    except (OSError, ValueError) as error:
-                        print(f'Engine: native PC menus disabled: {error}', flush=True)
-            except (OSError, ValueError, IndexError, struct.error, zlib.error) as error:
-                print(f'Engine: enhancement preparation skipped: {error}', flush=True)
+                menus = prepare_menu_assets(merged, out / 'eboot.elf', data / 'engine-assets',
+                                            out / 'bb-engine-assets.exe', rebirth=settings_value(config, 'rebirth') == '1')
+                os.environ['BB_PC_MENU_ASSETS'] = str(menus)
+                print(f'Engine: native PC menus prepared locally: {menus}', flush=True)
+                if settings_value(config, 'rebirth') == '1':
+                    os.environ['BB_REBIRTH_ASSET'] = str(menus / 'dvdroot_ps4/script/talk/m24_02_00_00.talkesdbnd.dcx')
+            except (OSError, ValueError) as error:
+                print(f'Engine: native PC menus disabled: {error}', flush=True)
+        except (OSError, ValueError, IndexError, struct.error, zlib.error) as error:
+            print(f'Engine: enhancement preparation skipped: {error}', flush=True)
         # Sizes chosen below for the previous launch are recomputed after an in-game restart.
         if os.environ.get('BB_AUTO_RENDER_RES') == '1':
             for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
                 os.environ.pop(key, None)
+        # The read-only title/loading guard works even when optional PC features or
+        # local menu asset preparation are disabled. Unknown images retain its 60 FPS ceiling.
+        if not os.environ.get('BB_ENGINE_IMAGE_SHA256'):
+            try:
+                from engine_assets import verify_executable
+                os.environ['BB_ENGINE_IMAGE_SHA256'] = verify_executable(out / 'eboot.elf')
+            except (OSError, ValueError, IndexError, struct.error) as error:
+                print(f'Frame pacing: unknown executable; retaining safe menu ceiling: {error}', flush=True)
         fps = configure_frame_rate(os.environ)
         scaled_render = scaled_output = None
         if not os.environ.get('BB_RENDER_RES'):

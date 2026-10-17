@@ -7,6 +7,36 @@ namespace BloodborneLauncher;
 
 public partial class MainWindow
 {
+    bool syncingVSync;
+    string lastNonVSyncMode = "";
+
+    void SyncVSyncChoice()
+    {
+        if (syncingVSync) return;
+        syncingVSync = true;
+        try
+        {
+            string mode = ComboTag(PresentCombo);
+            bool enabled = mode is "Fifo" or "FifoRelaxed";
+            if (!enabled) lastNonVSyncMode = mode;
+            VSyncCheck.IsChecked = enabled;
+        }
+        finally { syncingVSync = false; }
+    }
+
+    void PresentMode_Changed(object sender, SelectionChangedEventArgs e) => SyncVSyncChoice();
+
+    void VSyncChoice_Changed(object sender, RoutedEventArgs e)
+    {
+        if (syncingVSync || syncing) return;
+        syncingVSync = true;
+        try
+        {
+            SetComboTag(PresentCombo, VSyncCheck.IsChecked == true ? "Fifo" : lastNonVSyncMode);
+        }
+        finally { syncingVSync = false; }
+    }
+
     // Keep presentation events separate from configuration and launch contracts.
     void InitializePresentation()
     {
@@ -23,6 +53,9 @@ public partial class MainWindow
         FpsCombo.SelectionChanged += DetailedSetting_Changed;
         FullscreenCheck.Checked += DisplaySetting_Changed;
         FullscreenCheck.Unchecked += DisplaySetting_Changed;
+        PresentCombo.SelectionChanged += PresentMode_Changed;
+        VSyncCheck.Checked += VSyncChoice_Changed;
+        VSyncCheck.Unchecked += VSyncChoice_Changed;
 
         AddHandler(Selector.SelectionChangedEvent, new SelectionChangedEventHandler(SettingsSelection_Changed));
         AddHandler(ToggleButton.CheckedEvent, new RoutedEventHandler(SettingsToggle_Changed));
@@ -55,6 +88,22 @@ public partial class MainWindow
     void DetailedSetting_Changed(object sender, SelectionChangedEventArgs e) => SyncQuickSettings();
     void DisplaySetting_Changed(object sender, RoutedEventArgs e) => SyncQuickSettings();
 
+    void UpdateUpscalingModeAvailability()
+    {
+        string provider = ComboTag(UpscalerCombo);
+        bool available = provider is "dlss" or "fsr3" or "fsr4" or "fsr411";
+        PresetCombo.IsEnabled = QuickPreset.IsEnabled = available;
+        if (!available) PresetCombo.IsDropDownOpen = QuickPreset.IsDropDownOpen = false;
+        // Keep the saved selection: switching back to DLSS/FSR restores it.
+        PresetUnavailableHint.Visibility = available ? Visibility.Collapsed : Visibility.Visible;
+        L10n.SetText(PresetUnavailableHint, provider switch
+        {
+            "off" => "Upscaling is off. Quality modes do not apply.",
+            "taa" => "TAA uses the output resolution. Quality modes do not apply.",
+            _ => "Select the render scale used by DLSS or FSR."
+        });
+    }
+
     void SyncQuickSettings()
     {
         if (syncing) return;
@@ -65,9 +114,10 @@ public partial class MainWindow
             QuickDisplay.SelectedIndex = FullscreenCheck.IsChecked == true ? 0 : 1;
             SetQuickUpscaler(ComboTag(UpscalerCombo));
             QuickPreset.SelectedIndex = PresetCombo.SelectedIndex;
+            UpdateUpscalingModeAvailability();
             string fps = ComboTag(FpsCombo);
             SetQuickFps(fps);
-            FooterFps.Text = $"   |   {fps} FPS";
+            FooterFps.Text = "   |   " + FpsLabel(fps);
         }
         finally { syncing = false; }
     }

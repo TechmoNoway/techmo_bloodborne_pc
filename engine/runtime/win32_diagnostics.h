@@ -10,6 +10,15 @@ typedef struct {
     wchar_t directory[2048];
 } BbCrashRequest;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 void bb_diagnostics_init(void);
 void bb_diagnostics_fault(EXCEPTION_POINTERS *exception, int guest);
+/* Synthetic exception for fatal host assertions; returns after the bounded dump wait. */
+void bb_diagnostics_fatal(const char *reason);
+#define BB_RENDERER_ASSERT_EXCEPTION ((DWORD)0xe0424223)
+#ifdef __cplusplus
+}
+#endif
 #endif

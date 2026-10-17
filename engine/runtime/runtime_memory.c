@@ -124,7 +124,9 @@ static GpuRange hook_map, hook_unmap, hook_invalidate;
 static GpuRange hook_note_write; /* bbport: data written into GPU memory (runtime_memory_note_write) */
 enum { HOOK_MAP, HOOK_UNMAP, HOOK_INVALIDATE };
 typedef struct { int kind; uintptr_t address; uint64_t size; } PendingHook;
-static PendingHook pending[64]; static size_t pending_count;
+/* A batch can span more than 64 views. Owned by the region-table write lock;
+ * flushing copies one value before releasing it, never retaining array pointers. */
+static PendingHook *pending; static size_t pending_count, pending_capacity;
 static size_t allocations, maps, flexible_maps, protects, queries;
 static uint64_t live_bytes, flexible_bytes;
 
@@ -270,7 +272,15 @@ static void zero_phys(uint64_t phys, uint64_t size) { punch(phys,size); }
 static void queue_hook(int kind, uintptr_t address, uint64_t size) {
     GpuRange hook = kind==HOOK_MAP ? hook_map : kind==HOOK_UNMAP ? hook_unmap : hook_invalidate;
     if (!hook) return;
-    if (pending_count==sizeof(pending)/sizeof(*pending)) { fputs("STOP: GPU hook queue overflow\n",stderr); exit(21); }
+    if (pending_count==pending_capacity) {
+        if (pending_capacity > SIZE_MAX / sizeof(*pending) / 2) {
+            fputs("STOP: GPU notification capacity overflow\n",stderr); exit(21);
+        }
+        size_t capacity=pending_capacity ? pending_capacity*2 : 64;
+        PendingHook *next=realloc(pending,capacity*sizeof(*pending));
+        if (!next) { fputs("STOP: GPU notification allocation failed\n",stderr); exit(21); }
+        pending=next; pending_capacity=capacity;
+    }
     pending[pending_count++]=(PendingHook){kind,address,size};
 }
 /* Runs queued GPU notifications; callers invoke it after dropping the lock. */
@@ -503,10 +513,15 @@ static ABI int32_t direct_unmap(void *address, uint64_t size) {
     /* The GPU forgets the range before it disappears (as shadPS4's early GPU unmap). */
     if (hook_unmap && !((uintptr_t)address%PAGE) && size) hook_unmap((uintptr_t)address,align_up(size,PAGE));
     write_lock();
-    size_t before=pending_count;
+    size_t before=pending_count, kept=before;
     int32_t result=unmap_locked((uintptr_t)address,size);
-    pending_count=before; /* already notified above */
+    /* Only suppress UNMAP, already sent above. On Windows, splitting a section
+     * remaps surviving views and removes their GPU protection: keep INVALIDATE. */
+    for (size_t i=before;i<pending_count;++i)
+        if (pending[i].kind!=HOOK_UNMAP) pending[kept++]=pending[i];
+    pending_count=kept;
     write_unlock();
+    flush_hooks();
     return result;
 }
 static ABI int32_t direct_release(uint64_t start, uint64_t size) {
@@ -916,6 +931,32 @@ int runtime_memory_write_backing(uintptr_t address, const void *data, uint64_t s
     }
     read_unlock();
     return ok;
+}
+int runtime_memory_write_backing_if_generation(uintptr_t address, const void *data,
+                                               uint64_t size, uint64_t generation) {
+    if ((size && !data) || size>UINTPTR_MAX-address || (generation & 1)) return 0;
+    read_lock();
+    if (__atomic_load_n(&table_generation,__ATOMIC_ACQUIRE)!=generation) {
+        read_unlock(); return 0;
+    }
+    const uintptr_t end=address+size;
+    /* Validate every piece before writing any byte. An unmap/remap cannot pass
+     * between this check and the store while the read lock is held. */
+    for (uintptr_t at=address; at<end;) {
+        const size_t i=vma_index(at);
+        if (i==vma_count || vmas[i].start>at || vmas[i].kind==KIND_RESERVED) {
+            read_unlock(); return 0;
+        }
+        at=vmas[i].end<end ? vmas[i].end : end;
+    }
+    for (uintptr_t at=address; at<end;) {
+        const size_t i=vma_index(at);
+        const uint64_t n=(vmas[i].end<end ? vmas[i].end : end)-at;
+        store_once(backing_base+vmas[i].phys+(at-vmas[i].start),
+                   (const unsigned char *)data+(at-address),n);
+        at+=n;
+    }
+    read_unlock(); return 1;
 }
 /* Reads through the backing view: the host's copies of guest memory (uploads), which the GPU's
  * read protection (BB_READBACKS=2: GPU-written pages) must not stop. A fault there would ask the

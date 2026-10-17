@@ -105,6 +105,25 @@ jobs:
           out/gpu/liverpool-tasks-test.exe
           # The real Vulkan readback fixture is compiled here and run locally on a GPU.
 
+      - name: Build and run recording, memory and frame pacing regressions
+        # CPU ownership/remapping checks run on hosted Windows; GPU readback runs locally.
+        shell: msys2 {0}
+        run: |
+          set -e
+          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test
+          out/gpu/record-data-test.exe --cpu-only
+          out/gpu/memory-notifications-test.exe
+          out/gpu/frame-pacing-test.exe
+          for fps in 30 60 90 0; do
+            hz=60
+            if [ "$fps" = 90 ]; then hz=90; fi
+            if [ "$fps" = 0 ]; then hz=480; fi
+            for mode in Mailbox Immediate Fifo FifoRelaxed; do
+              BB_FPS_LIMIT="$fps" BB_VBLANK_HZ="$hz" BB_PRESENT_MODE="$mode" out/gpu/frame-pacing-test.exe --settings "$fps" "$mode"
+            done
+          done
+          # NGX fixture compiles here; fake/real feature lifecycle runs locally on Vulkan.
+
       - name: Verify preparation, patches, and mod safety
         shell: msys2 {0}
         run: |
@@ -112,7 +131,9 @@ jobs:
           python -m unittest discover -s tests -p 'test_patches.py'
           python -m unittest discover -s tests -p 'test_game_check.py'
           python -m unittest discover -s tests -p 'test_windows_frame_rate.py'
+          python -m unittest discover -s tests -p 'test_high_frame_rate.py'
           python -m unittest discover -s tests -p 'test_engine_assets.py'
+          python -m unittest discover -s tests -p 'test_mods.py'
           python -m unittest discover -s tests -p 'test_online.py'
           python -m unittest discover -s tests -p 'test_upscaler_assets.py'
           python -m unittest discover -s tests -p 'test_fsr4cap_dll_info.py'
@@ -175,6 +196,9 @@ jobs:
           cp -f apps/launcher/Assets/bloodborne.ico package/out/
           test ! -f out/nvngx_dlss.dll || cp -f out/nvngx_dlss.dll package/out/
           cp -rf scripts/* package/scripts/
+          mkdir -p package/tools/experiments package/docs/guides
+          cp -f tools/experiments/test-vram-writeback.cmd package/tools/experiments/
+          cp -f docs/guides/STABILITY_SHADER_GC.md package/docs/guides/
           test ! -d patches || cp -rf patches/* package/patches/
           test ! -d fsr4_shaders || cp -rf fsr4_shaders package/
           for document in LICENSE LICENSING.md NOTICE.md DEPENDENCIES.md; do

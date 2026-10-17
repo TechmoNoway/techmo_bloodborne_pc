@@ -36,6 +36,9 @@ void runtime_mutex_report(void);
 uintptr_t runtime_memory_resolve(const char *name);
 void runtime_memory_report(void);
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
+/* All-or-nothing store under the mapping lock, only for the same stable table generation. */
+int runtime_memory_write_backing_if_generation(uintptr_t address, const void *data,
+                                               uint64_t size, uint64_t generation);
 /* The CPU is about to write the range outside guest code (a file read): tells the GPU side. */
 void runtime_memory_note_write(uintptr_t address, uint64_t size);
 void runtime_memory_note_cpu_write(uintptr_t address, uint64_t size);

@@ -161,3 +161,34 @@ class ModTests(unittest.TestCase):
         self.assertEqual(mounted['content'], 'mod')
         self.assertFalse(Path(mounted['path']).exists())
         self.assertEqual((self.assets/'a.dcx').read_bytes(), b'original')
+
+    def test_controller_only_startup_still_prepares_title_quit_menu(self):
+        import engine_assets
+        config = self.root / 'bbport.ini'
+        config.write_text(''.join(f'{key}=0\n' for key in
+                          ('pc_controls', 'widescreen', 'camera_controls', 'graphics_controls',
+                           'change_appearance', 'rebirth')))
+        (self.root / 'out').mkdir()
+        (self.root / 'out/bb-probe.exe').write_bytes(b'synthetic runtime fixture')
+        menus = self.root / 'engine-assets/pc-menus'
+
+        def prepare(arguments, capture=False, check=True, env=None):
+            if Path(arguments[1]).name == 'mods.py':
+                return str(self.game)
+            return '' if capture else 0
+
+        def probe(command, **kwargs):
+            self.assertEqual(os.environ['BB_PC_MENU_ASSETS'], str(menus))
+            self.assertEqual(os.environ['BB_ENGINE_IMAGE_SHA256'], 'verified-image')
+            return 0
+
+        env = dict(BB_PREBUILT='1', BB_DATA_DIR=str(self.root), BB_GAME_DIR=str(self.game),
+                   BB_CONFIG=str(config))
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['run_windows.py']), \
+             patch.object(run_windows, 'run', side_effect=prepare), \
+             patch.object(run_windows.subprocess, 'call', side_effect=probe), \
+             patch.object(engine_assets, 'verify_executable', return_value='verified-image'), \
+             patch.object(engine_assets, 'prepare_menu_assets', return_value=menus) as prepare_menus:
+            self.assertEqual(run_windows.main(), 0)
+            prepare_menus.assert_called_once_with(self.game, self.root / 'out/eboot.elf',
+                self.root / 'engine-assets', self.root / 'out/bb-engine-assets.exe', rebirth=False)

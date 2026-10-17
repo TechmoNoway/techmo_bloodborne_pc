@@ -30,10 +30,15 @@ public:
     /// False when DLSS cannot run; Problem() says why.
     bool Record(const Fsr4Upscaler::Frame& frame);
 
+    /// Retire invalidated state before this frame's passes acquire a command buffer.
+    /// Returns true when temporal history must be reset.
+    bool OnFrameStart(bool invalidate);
+
     [[nodiscard]] const char* Problem() const noexcept;
     [[nodiscard]] bool Fatal() const noexcept;
 
 private:
+    friend struct DlssLifetimeTest;
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

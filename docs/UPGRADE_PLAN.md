@@ -11,6 +11,16 @@ pipeline misses to prioritized compiler workers. First-use waits and cold shader
 translation still require gameplay measurements.
 Further work in the stages below remains subject to measurement.
 
+A focused recording/mapping follow-up is implemented: deferred payloads may
+exceed 128 KiB with owned storage, the runtime notification queue grows past
+64 entries, and partial Windows unmaps retain surviving-view invalidations.
+See [recording and mapping checks](guides/RECORDING_MEMORY.md).
+
+The next focused batch implements [NGX lifetime and frame pacing](guides/NGX_FRAME_PACING.md):
+safe DLSS feature retirement, phase-preserving presentation/vblank, a verified
+title/loading guard, and user-selectable VSync with experimental Unlimited.
+No FIFO policy is imposed by the chosen FPS preset.
+
 The immediate crash follow-up is Windows guest red-zone store protection; see
 [implementation, coverage and tester acceptance](guides/RED_ZONE.md). It is
 enabled in guest preparation. Intel/RTX 3050 Ti gameplay verification remains

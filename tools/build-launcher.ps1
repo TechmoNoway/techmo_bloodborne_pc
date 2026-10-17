@@ -40,10 +40,16 @@ if not exist "%~dp0launcher\Techmo.Launcher.exe" (
 start "" /D "%~dp0.." "%~dp0launcher\Techmo.Launcher.exe"
 '@ | Set-Content -LiteralPath (Join-Path $buildRoot 'TEST-LAUNCHER.cmd') -Encoding ascii
 @'
+@echo off
+call "%~dp0..\tools\experiments\test-vram-writeback.cmd" %*
+'@ | Set-Content -LiteralPath (Join-Path $buildRoot 'TEST-VRAM-WRITEBACK.cmd') -Encoding ascii
+@'
 Techmo Bloodborne - local test builds
 
 Double-click TEST-LAUNCHER.cmd to open the latest launcher.
 You can also open launcher\Techmo.Launcher.exe directly.
+TEST-VRAM-WRITEBACK.cmd [off|on] runs the optional VRAM experiment (default on).
+Save launcher settings first. The normal launcher keeps this experiment off.
 
 launcher\   Latest Windows launcher and build information.
 _internal\  Build caches, backups, verification screenshots and diagnostics.
