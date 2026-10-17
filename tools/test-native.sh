@@ -10,8 +10,7 @@ cstd=(-std=gnu11 -D_FILE_OFFSET_BITS=64 -D_WIN32_WINNT=0x0A00)
 runtime=(engine/runtime/runtime*.c engine/runtime/win32_*.c)
 mapfile -t gpu < out/gpu/bbgpu_link.txt
 link=(-Wl,--disable-dynamicbase,--disable-high-entropy-va -lwinmm -lws2_32 -lpsapi -flto=thin)
-"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. tests/test_win32_diagnostics.c engine/runtime/win32_diagnostics.c -o out/diagnostics-test.exe
-python -m unittest discover -s tests -p 'test_native_crash_reporter.py'
+bash tools/test-runtime-guards.sh
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${includes[@]}" -I. -Iengine/runtime tests/test_pad.c engine/runtime/runtime_host.c "${libraries[@]}" -o out/pad-test.exe
 out/pad-test.exe
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -Iengine/runtime tests/test_host_clock.c engine/runtime/runtime_host.c -o out/host-clock-test.exe
@@ -24,3 +23,4 @@ out/file-mods-test.exe
 out/sema-test.exe
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror -I. -Iengine/runtime tests/test_content.c engine/runtime/runtime_content.c -o out/content-test.exe
 out/content-test.exe
+bash tools/test-shader-correctness.sh

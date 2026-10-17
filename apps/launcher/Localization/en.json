@@ -80,6 +80,7 @@
   "Ui.FSR_4_v07_legacy": "FSR 4 v07 (experimental)",
   "Ui.Upscaling_mode": "Upscaling mode",
   "Ui.Disabled": "Disabled",
+  "Diagnostics.Renderer_assertion": "The renderer stopped at an internal assertion; inspect the GPU log and crash dump.",
   "Ui.Upscale_off_hint": "Upscaling is off. Quality modes do not apply.",
   "Ui.Taa_native_hint": "TAA uses the output resolution. Quality modes do not apply.",
   "Ui.Upscale_mode_hint": "Select the render scale used by DLSS or FSR.",

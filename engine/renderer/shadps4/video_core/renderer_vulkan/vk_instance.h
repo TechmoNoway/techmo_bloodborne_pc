@@ -408,6 +408,8 @@ public:
     u32 MaxComputeSharedMemorySize() const {
         return properties.limits.maxComputeSharedMemorySize;
     }
+    u32 MaxComputeWorkGroupCountX() const { return properties.limits.maxComputeWorkGroupCount[0]; }
+    u32 MaxStorageBufferRange() const { return properties.limits.maxStorageBufferRange; }
 
     /// Returns the maximum sampler LOD bias.
     float MaxSamplerLodBias() const {

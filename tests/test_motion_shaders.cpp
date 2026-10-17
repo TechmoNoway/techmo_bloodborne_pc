@@ -49,10 +49,14 @@ static void CheckMetadata() {
         }
         return loaded;
     };
-    assert(!load(true, 7)); // Only baked-address motion binaries must be invalidated.
-    assert(load(true, 8));  // Restores without ObjectMotion or any Vulkan allocation.
-    assert(load(false, 7));
+    assert(!load(true, 7));
+    assert(!load(true, 8)); // Old motion binaries used the previous translator.
+    assert(!load(false, 7));
     assert(!load(false, 8));
+    assert(load(true, 10)); // Restores without ObjectMotion or any Vulkan allocation.
+    assert(load(false, 9));
+    assert(!load(true, 9));
+    assert(!load(false, 10));
     assert(!load(true, 99));
 }
 

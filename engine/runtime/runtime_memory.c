@@ -932,6 +932,32 @@ int runtime_memory_write_backing(uintptr_t address, const void *data, uint64_t s
     read_unlock();
     return ok;
 }
+int runtime_memory_write_backing_if_generation(uintptr_t address, const void *data,
+                                               uint64_t size, uint64_t generation) {
+    if ((size && !data) || size>UINTPTR_MAX-address || (generation & 1)) return 0;
+    read_lock();
+    if (__atomic_load_n(&table_generation,__ATOMIC_ACQUIRE)!=generation) {
+        read_unlock(); return 0;
+    }
+    const uintptr_t end=address+size;
+    /* Validate every piece before writing any byte. An unmap/remap cannot pass
+     * between this check and the store while the read lock is held. */
+    for (uintptr_t at=address; at<end;) {
+        const size_t i=vma_index(at);
+        if (i==vma_count || vmas[i].start>at || vmas[i].kind==KIND_RESERVED) {
+            read_unlock(); return 0;
+        }
+        at=vmas[i].end<end ? vmas[i].end : end;
+    }
+    for (uintptr_t at=address; at<end;) {
+        const size_t i=vma_index(at);
+        const uint64_t n=(vmas[i].end<end ? vmas[i].end : end)-at;
+        store_once(backing_base+vmas[i].phys+(at-vmas[i].start),
+                   (const unsigned char *)data+(at-address),n);
+        at+=n;
+    }
+    read_unlock(); return 1;
+}
 /* Reads through the backing view: the host's copies of guest memory (uploads), which the GPU's
  * read protection (BB_READBACKS=2: GPU-written pages) must not stop. A fault there would ask the
  * GPU thread for a readback while it waits for these very copies (a hang at start). Gaps read

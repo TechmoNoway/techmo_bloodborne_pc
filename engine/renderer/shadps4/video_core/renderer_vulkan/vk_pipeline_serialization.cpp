@@ -16,8 +16,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 7u; // bbport: interpolated integer fix (Pascal)
-static constexpr u32 MotionShaderBinaryVersion = 8u; // runtime address descriptor, set 1
+static constexpr u32 ShaderBinaryVersion = 9u; // bbport: UndefU64 and empty EXEC scope fixes
+static constexpr u32 MotionShaderBinaryVersion = 10u; // same fixes; runtime address descriptor
 static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
 static constexpr u32 PipelineKeyVersion = 6u; // pointer-free pipeline state + generated fragment
 } // namespace Serialization
@@ -129,8 +129,8 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
         return false;
     }
 
-    // Only old motion vertex binaries embed process-local addresses. Other v7 shaders remain
-    // reusable; v8 motion binaries load the current addresses from a renderer-owned descriptor.
+    // Both binary classes require the current translator. Motion binaries also load
+    // the current addresses from a renderer-owned descriptor instead of embedding them.
     const bool vertex_motion = info.hw_stage == Shader::HwStage::Vertex &&
                                spec.runtime_info.hw.vs.motion_vectors;
     if (binary_version != (vertex_motion ? Serialization::MotionShaderBinaryVersion

@@ -29,6 +29,7 @@ SAFE_ENV = {
     'BB_PIPELINE_PREP', 'BB_STAGING_REUSE_SLACK',
     'BB_COMPUTE_PREP', 'BB_PIPELINE_RETRY', 'BB_PREP_WORKERS',
     'BB_RED_ZONE',
+    'BB_IMAGE_WRITEBACK_GC', 'BB_WRITE_TRACKING',
 }
 
 
@@ -155,8 +156,13 @@ def memory_summary(path):
                         'tracked_image_bytes', 'guest_buffer_allocated_bytes',
                         'guest_buffer_unused_bytes', 'pending_image_bytes',
                         'gc_evicted_images', 'gc_written_back_images', 'gc_pressure', 'gc_critical')}
-                    for key in ('pending_buffer_bytes', 'buffer_evicted_bytes', 'buffer_freed_bytes'):
+                    for key in ('pending_buffer_bytes', 'buffer_evicted_bytes', 'buffer_freed_bytes',
+                                'gc_tiled_attempts', 'gc_tiled_writebacks', 'gc_tiled_bytes', 'gc_tiled_kept'):
                         values[key] = int(row[key]) if key in row else 0  # Older headers remain readable.
+                    for key in ('gc_tiled_ms', 'gc_tiled_max_ms'):
+                        values[key] = float(row[key]) if key in row else 0.0
+                        if not math.isfinite(values[key]):
+                            raise ValueError('invalid writeback timing')
                     if any(value < 0 for value in values.values()) or values['device_budget_bytes'] == 0:
                         raise ValueError('invalid memory sample')
                     if values['gc_pressure'] not in (0, 1) or values['gc_critical'] not in (0, 1):
@@ -184,7 +190,8 @@ def memory_summary(path):
     for name in ('tracked_image_bytes', 'guest_buffer_allocated_bytes', 'guest_buffer_unused_bytes',
                  'pending_image_bytes', 'pending_buffer_bytes'):
         result['peak_' + name] = max(row[name] for row in rows)
-    for name in ('buffer_evicted_bytes', 'buffer_freed_bytes'):
+    for name in ('buffer_evicted_bytes', 'buffer_freed_bytes', 'gc_tiled_attempts',
+                 'gc_tiled_writebacks', 'gc_tiled_bytes', 'gc_tiled_kept', 'gc_tiled_ms', 'gc_tiled_max_ms'):
         result[name] = max(row[name] for row in rows)
     return result
 
@@ -322,7 +329,8 @@ def classify_exit(code, phase, fault=None, log_tail=''):
         exception = found.group(1).lower() if found else ''
     if exception:
         reasons = {'0xc0000005': 'access_violation', '0xc000001d': 'illegal_instruction',
-                   '0xc00000fd': 'stack_overflow', '0xc0000094': 'divide_by_zero'}
+                   '0xc00000fd': 'stack_overflow', '0xc0000094': 'divide_by_zero',
+                   '0xe0424223': 'renderer_assertion'}
         return {'category': 'crash', 'reason': reasons.get(exception, 'native_exception'),
                 'exception_code': exception, 'evidence': 'native exception record'}
     unsigned = int(code) & 0xffffffff

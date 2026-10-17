@@ -42,6 +42,9 @@ class TileManager {
     };
 
 public:
+    // Overlay logical image texels over an existing tiled surface, preserving padding.
+    [[nodiscard]] std::unique_ptr<Buffer> TileImageOver(Image& in_image,
+        std::span<vk::BufferImageCopy> copies, const Buffer* out_buffer, u64 out_offset);
     explicit TileManager(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                          Vulkan::Runtime& runtime, StreamBuffer& stream_buffer);
     ~TileManager();

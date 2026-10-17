@@ -43,6 +43,7 @@ class PageManager;
 
 class TextureCache {
     friend struct TextureLookupTest;
+    friend struct TiledWritebackTest;
     // Default values for garbage collection
     static constexpr s64 DEFAULT_PRESSURE_GC_MEMORY = 1_GB + 512_MB;
     static constexpr s64 DEFAULT_CRITICAL_GC_MEMORY = 3_GB;
@@ -405,6 +406,7 @@ private:
     }
 
     void GarbageCollectImages();
+    bool WriteBackTiledImage(ImageId image_id);
     void GarbageCollectSamplers();
     void WriteMemorySample();
 
@@ -424,6 +426,8 @@ private:
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0; ///< bbport: pressure report
     u64 gc_total_evictions = 0, gc_total_downloads = 0;
+    u64 gc_tiled_attempts = 0, gc_tiled_writebacks = 0, gc_tiled_bytes = 0, gc_tiled_kept = 0;
+    double gc_tiled_ms = 0, gc_tiled_max_ms = 0;
     MemoryPressure memory_pressure;
     u64 driver_memory_budget = 0;
     u64 gc_memory_budget = 0;

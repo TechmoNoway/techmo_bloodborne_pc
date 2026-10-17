@@ -54,9 +54,35 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report['mean_compiles'], 0)
         self.assertAlmostEqual(report['mean_pipeline_wait_ms'], 17.5005)
 
+    def test_tiled_gc_counters_are_cumulative_and_old_headers_remain_compatible(self):
+        import csv
+        fields = ('t_s driver_available device_usage_bytes device_budget_bytes gc_budget_bytes '
+                  'tracked_image_bytes guest_buffer_allocated_bytes guest_buffer_unused_bytes '
+                  'pending_image_bytes gc_evicted_images gc_written_back_images gc_pressure gc_critical '
+                  'gc_tiled_attempts gc_tiled_writebacks gc_tiled_bytes gc_tiled_kept gc_tiled_ms gc_tiled_max_ms').split()
+        path = self.root / 'tiled.csv'
+        with path.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            for t in (1, 2):
+                row = dict.fromkeys(fields, 0)
+                row.update(t_s=t, driver_available=1, device_usage_bytes=512, device_budget_bytes=1024,
+                           gc_budget_bytes=1024, gc_tiled_attempts=3, gc_tiled_writebacks=2,
+                           gc_tiled_bytes=8192, gc_tiled_ms=4.5, gc_tiled_max_ms=3.0)
+                writer.writerow(row)
+        report = memory_summary(path)
+        self.assertEqual(report['gc_tiled_writebacks'], 2)
+        self.assertEqual(report['gc_tiled_bytes'], 8192)
+        self.assertEqual(report['gc_tiled_ms'], 4.5)
+        self.assertEqual(report['gc_tiled_max_ms'], 3.0)
+        # Corrupt timings must not turn into valid performance measurements.
+        path.write_text(path.read_text().replace('4.5', 'nan'))
+        self.assertFalse(memory_summary(path)['available'])
+
     def test_crash_evidence_has_priority_over_shell_exit_code(self):
         result = classify_exit(139, 'runtime', {'exception_code': '0xc0000005'})
         self.assertEqual(result['reason'], 'access_violation')
+        self.assertEqual(classify_exit(23, 'runtime', {'exception_code': '0xe0424223'})['reason'], 'renderer_assertion')
         self.assertEqual(classify_exit(139, 'runtime', log_tail='Host fault 0xc000001d at runtime')['reason'], 'illegal_instruction')
         self.assertEqual(classify_exit(-1073741819, 'runtime')['reason'], 'access_violation')
         self.assertEqual(classify_exit(1, 'runtime', log_tail='VK_ERROR_DEVICE_LOST')['reason'], 'device_lost')

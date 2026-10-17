@@ -207,14 +207,28 @@ struct Info : InfoPersistent {
         return *reinterpret_cast<const T*>(&FlatUserData()[sharp_idx]);
     }
 
+    // bbport: a table address occupies two dwords. Stage snapshots take precedence.
+    // Adapted from DarkIzuku dceac3f478 / Supermedo 2c4ddeba.
+    bool UdPointerNull(u32 ptr_index) const noexcept {
+        if (ptr_index == IR::NumScalarRegs) return false;
+        const auto ud = UserData();
+        if (ptr_index >= ud.size() || ud.size() - ptr_index < 2) return true;
+        u64 pointer;
+        std::memcpy(&pointer, &ud[ptr_index], sizeof(pointer));
+        return (pointer & 0xFFFFFFFFFFFFULL) < 0x10000;
+    }
+
     template <typename T>
     T ReadUdReg(u32 ptr_index, u32 dword_offset) const noexcept {
-        T data;
+        T data{};
         const auto ud = UserData();
         const u32* base = ud.data();
         if (ptr_index != IR::NumScalarRegs) {
+            if (UdPointerNull(ptr_index)) return data;
             std::memcpy(&base, &ud[ptr_index], sizeof(base));
             base = reinterpret_cast<const u32*>(VAddr(base) & 0xFFFFFFFFFFFFULL);
+        } else if (dword_offset > ud.size() || sizeof(T) > (ud.size() - dword_offset) * sizeof(u32)) {
+            return data;
         }
         std::memcpy(&data, base + dword_offset, sizeof(T));
         return data;
@@ -251,6 +265,10 @@ struct Info : InfoPersistent {
         auto buf = ReadUdReg<AmdGpu::Buffer>(static_cast<u32>(tess_consts_ptr_base),
                                              static_cast<u32>(tess_consts_dword_offset));
         VAddr tess_constants_addr = buf.base_address;
+        if (tess_constants_addr < 0x10000) {
+            tess_constants = {};
+            return;
+        }
         memcpy(&tess_constants,
                reinterpret_cast<TessellationDataConstantBuffer*>(tess_constants_addr),
                sizeof(tess_constants));

@@ -20,7 +20,7 @@ ParallelDownloads = 5
 Server = https://repo.msys2.org/mingw/clang64/
 EOF
 names=(clang lld libc++ cmake ninja pkgconf python sdl3 boost fmt glslang spirv-cross
-       spirv-headers vulkan-headers vulkan-loader vulkan-memory-allocator xxhash zydis
+       spirv-headers spirv-tools vulkan-headers vulkan-loader vulkan-memory-allocator xxhash zydis
        robin-map ffmpeg protobuf nlohmann-json openssl miniupnpc)
 packages=("${names[@]/#/mingw-w64-clang-x86_64-}")
 pacman --config "$base/pacman.conf" -Syw --noconfirm "${packages[@]}"

@@ -80,6 +80,7 @@
   "Ui.FSR_4_v07_legacy": "FSR 4 v07 (thử nghiệm)",
   "Ui.Upscaling_mode": "Chế độ nâng độ phân giải",
   "Ui.Disabled": "Không áp dụng",
+  "Diagnostics.Renderer_assertion": "Renderer dừng do một kiểm tra nội bộ thất bại; hãy xem log GPU và tệp crash dump.",
   "Ui.Upscale_off_hint": "Đã tắt nâng độ phân giải. Các mức chất lượng không áp dụng.",
   "Ui.Taa_native_hint": "TAA dùng độ phân giải đầu ra. Các mức chất lượng không áp dụng.",
   "Ui.Upscale_mode_hint": "Chọn tỷ lệ render dành cho DLSS hoặc FSR.",

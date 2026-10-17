@@ -35,3 +35,10 @@ NGX/pacing follow-up adapted from DarkIzuku (2026-10-16):
   Frame pacing in 4afaeece57, 998b75cbea, 49421402b1 and 58ee8f5451.
   User-controlled presentation is retained. No forced FIFO or 120 FPS option.
   See ../../licenses/NGX-PACING-PORTS.md for source identities and attribution.
+Stability/shader and opt-in tiled collection follow-up (2026-10-17):
+  DarkIzuku 4ee4e9ed39 audio/save allocation guards; dceac3f478 descriptor/tessellation
+  validation and bounded tiled overlay/writeback. Techmo retains its budget policy.
+  shadPS4 ab1dd384dc (#5366) UndefU64 and c34ca21f12 (#5220) empty EXEC scopes.
+  Shader binary versions are 9 (regular) and 10 (motion). Runtime mapping generations,
+  owned temporary linear storage and default-off GC instrumentation are local adaptations.
+  See ../../licenses/STABILITY-SHADER-GC-PORTS.md for identities and license terms.

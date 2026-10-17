@@ -70,6 +70,9 @@ int main(void) {
     surviving[1]=(uintptr_t)mapped+2*PAGE;
     *(uint32_t*)surviving[0]=0x12345678;
     *(uint32_t*)surviving[1]=0x87654321;
+    const uint64_t original_generation=__atomic_load_n(runtime_memory_generation(),__ATOMIC_ACQUIRE);
+    const uint32_t first_value=0x12345678;
+    assert(runtime_memory_write_backing_if_generation(surviving[0],&first_value,4,original_generation));
     DWORD previous;
     assert(VirtualProtect(mapped,length,PAGE_READONLY,&previous));
     invalidations=0;
@@ -92,8 +95,28 @@ int main(void) {
 #endif
     assert(pending_count==0);
     hook_unmap=ignore; hook_invalidate=ignore;
+    // A GPU readback captured before unmap must not overwrite a surviving or recycled view.
+    const uint32_t replacement=0xaabbccdd;
+    assert(!runtime_memory_write_backing_if_generation(surviving[0],&replacement,4,original_generation));
+    assert(*(uint32_t*)surviving[0]==first_value);
+    unsigned char *payload=malloc(length); assert(payload); memset(payload,0x5a,length);
+    uint64_t generation=__atomic_load_n(runtime_memory_generation(),__ATOMIC_ACQUIRE);
+    assert(!runtime_memory_write_backing_if_generation(surviving[0],payload,length,generation));
+    assert(*(uint32_t*)surviving[0]==first_value); // Full range validation before any store.
+    void *recycled=(void*)(surviving[0]+PAGE);
+    assert(direct_map(&recycled,PAGE,3,0x10,physical+PAGE,PAGE)==0);
+    assert((uintptr_t)recycled==surviving[0]+PAGE);
+    *(uint32_t*)recycled=0x10203040;
+    assert(!runtime_memory_write_backing_if_generation((uintptr_t)recycled,&replacement,4,generation));
+    assert(*(uint32_t*)recycled==0x10203040);
+    generation=__atomic_load_n(runtime_memory_generation(),__ATOMIC_ACQUIRE);
+    assert(runtime_memory_write_backing_if_generation(surviving[0],payload,length,generation));
+    assert(*(uint32_t*)surviving[0]==0x5a5a5a5a && *(uint32_t*)surviving[1]==0x5a5a5a5a);
+    assert(!runtime_memory_write_backing_if_generation(UINTPTR_MAX-2,payload,8,generation));
+    assert(!runtime_memory_write_backing_if_generation(surviving[0],payload,4,generation|1));
+    free(payload);
     assert(direct_release(physical,length)==0);
     free(pending); pending=NULL; pending_capacity=0;
     puts("PASS: 8194 ordered notifications, queue reuse, exactly one early unmap, "
-         "two surviving-view invalidations, preserved data and restored tracking protection");
+         "two surviving-view invalidations, restored tracking, generation-guarded unmap/remap and all-or-nothing backing stores");
 }

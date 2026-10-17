@@ -520,6 +520,12 @@ static class Program
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne dừng bất thường" && Get<TextBlock>("LastSessionDetail").Text.Contains("Lỗi truy cập bộ nhớ"),"Existing crash result translates to Vietnamese");
         ClickNav("Home");Render(Path.Combine(output,"session-crash-vi.png"));
         Select("UiLanguageCombo","en");
+        File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000017\",\"outcome\":{\"category\":\"crash\",\"reason\":\"renderer_assertion\"}}");
+        Call("ShowSessionReport",sessionDir,23);Pump();
+        Check(Get<TextBlock>("LastSessionDetail").Text.Contains("internal assertion") && Get<TextBlock>("LastSessionDetail").Text.Contains("0x00000017"),"Renderer assertion is distinguished from a generic process exit");
+        Select("UiLanguageCombo","vi");Pump();
+        Check(Get<TextBlock>("LastSessionDetail").Text.Contains("kiểm tra nội bộ thất bại"),"Renderer assertion detail translates live");
+        Select("UiLanguageCombo","en");
         File.WriteAllText(Path.Combine(sessionDir,"session.json"),"{\"status\":\"finished\",\"exit_code_hex\":\"0x00000001\",\"outcome\":{\"category\":\"startup_error\",\"reason\":\"preparation_failed\"}}");
         Call("ShowSessionReport",sessionDir,1);Pump();
         Check(Get<TextBlock>("LastSessionStatus").Text=="Bloodborne could not start" && Get<TextBlock>("LastSessionDetail").Text.Contains("preparation failed"),"Preparation failure is distinguished from a native crash");

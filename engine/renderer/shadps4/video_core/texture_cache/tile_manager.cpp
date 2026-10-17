@@ -339,4 +339,74 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
                          vk::AccessFlagBits2::eShaderWrite);
 }
 
+std::unique_ptr<Buffer> TileManager::TileImageOver(Image& in_image, std::span<vk::BufferImageCopy> buffer_copies,
+                                const VideoCore::Buffer* out_buffer, u64 out_offset) {
+    const auto& info = in_image.info;
+    ASSERT(info.props.is_tiled && !buffer_copies.empty() &&
+           buffer_copies.size() <= info.mips_layout.size());
+
+    TilingInfo params{};
+    params.bank_swizzle = info.bank_swizzle;
+    params.num_slices = info.props.is_volume ? info.size.depth : info.resources.layers;
+    params.num_mips = static_cast<u32>(buffer_copies.size());
+    for (u32 mip = 0; mip < params.num_mips; ++mip) {
+        auto& mip_info = params.mips[mip];
+        mip_info = info.mips_layout[mip];
+        if (info.props.is_block) {
+            mip_info.pitch = std::max((mip_info.pitch + 3) / 4, 1U);
+            mip_info.height = std::max((mip_info.height + 3) / 4, 1U);
+        }
+    }
+
+    const vk::DescriptorBufferInfo params_buffer_info{
+        .buffer = stream_buffer.Handle(),
+        .offset = stream_buffer.Copy(&params, sizeof(params), instance.UniformMinAlignment()),
+        .range = sizeof(params),
+    };
+
+    // This readback must not permanently grow the 16 MiB upload staging rings.
+    // The caller owns this temporary until the GPU finishes its final tiling read.
+    auto staging = std::make_unique<Buffer>(instance, 0, info.guest_size, MemoryType::DeviceLocal);
+
+    scheduler.EndRendering();
+    runtime.FlushBarriers();
+
+    const vk::DescriptorBufferInfo tiled_buffer_info{
+        .buffer = out_buffer->Handle(),
+        .offset = out_offset,
+        .range = info.guest_size,
+    };
+    const vk::DescriptorBufferInfo linear_buffer_info{
+        .buffer = staging.get()->Handle(),
+        .offset = 0,
+        .range = info.guest_size,
+    };
+    const auto dim_x = static_cast<u32>((info.guest_size / (info.num_bits / 8)) / 64);
+
+    // 1. The guest surface, detiled into the linear staging.
+    RecordTilingDispatch(GetTilingPipeline(info, false), tiled_buffer_info, linear_buffer_info,
+                         params_buffer_info, dim_x);
+    runtime.AccessBuffer(out_buffer, out_offset, info.guest_size,
+                         vk::PipelineStageFlagBits2::eComputeShader,
+                         vk::AccessFlagBits2::eShaderRead);
+    runtime.AccessBuffer(staging.get(), 0, info.guest_size,
+                         vk::PipelineStageFlagBits2::eComputeShader,
+                         vk::AccessFlagBits2::eShaderWrite);
+
+    // 2. The image over it (DownloadImage waits for the dispatch: a write to the same range).
+    runtime.DownloadImage(&in_image, staging.get(), buffer_copies);
+    runtime.FlushBarriers();
+
+    // 3. All of it tiled back into the guest surface.
+    RecordTilingDispatch(GetTilingPipeline(info, true), tiled_buffer_info, linear_buffer_info,
+                         params_buffer_info, dim_x);
+    runtime.AccessBuffer(staging.get(), 0, info.guest_size,
+                         vk::PipelineStageFlagBits2::eComputeShader,
+                         vk::AccessFlagBits2::eShaderRead);
+    runtime.AccessBuffer(out_buffer, out_offset, info.guest_size,
+                         vk::PipelineStageFlagBits2::eComputeShader,
+                         vk::AccessFlagBits2::eShaderWrite);
+    return staging;
+}
+
 } // namespace VideoCore
