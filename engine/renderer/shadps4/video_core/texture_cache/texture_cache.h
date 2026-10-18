@@ -266,17 +266,33 @@ public:
         HTile,
     };
 
+    struct MetaDataInfo {
+        MetaType type;
+        ImageId owner_id{};
+        u64 owner_uid{};
+        u32 num_samples = 1;
+        s32 clear_mask = -1;
+    };
+    std::optional<MetaDataInfo> GetMetaInfo(VAddr address) const {
+        const auto it = surface_metas.find(address);
+        if (it == surface_metas.end()) return std::nullopt;
+        const auto& meta = it->second;
+        if (!meta.owner_id || !slot_images.is_allocated(meta.owner_id)) return std::nullopt;
+        const auto& owner = slot_images[meta.owner_id];
+        if (owner.image_uid != meta.owner_uid || False(owner.flags & ImageFlagBits::Registered))
+            return std::nullopt;
+        return meta;
+    }
+
     /// Returns meta type if the specified address is a metadata surface.
     std::optional<MetaType> IsMeta(VAddr address) const {
-        auto it = surface_metas.find(address);
-        if (it != surface_metas.end()) {
-            return it->second.type;
-        }
+        if (const auto meta = GetMetaInfo(address)) return meta->type;
         return std::nullopt;
     }
 
     /// Returns true if a slice of the specified metadata surface has been cleared.
     bool IsMetaCleared(VAddr address, u32 slice) const {
+        if (slice >= 32 || !GetMetaInfo(address)) return false;
         const auto& it = surface_metas.find(address);
         if (it != surface_metas.end()) {
             return it.value().clear_mask & (1u << slice);
@@ -286,6 +302,7 @@ public:
 
     /// Clears all slices of the specified metadata surface.
     bool ClearMeta(VAddr address) {
+        if (!GetMetaInfo(address)) return false;
         auto it = surface_metas.find(address);
         if (it != surface_metas.end()) {
             it.value().clear_mask = u32(-1);
@@ -296,6 +313,7 @@ public:
 
     /// Updates the state of a slice of the specified metadata surface.
     bool TouchMeta(VAddr address, u32 slice, bool is_clear) {
+        if (slice >= 32 || !GetMetaInfo(address)) return false;
         auto it = surface_metas.find(address);
         if (it != surface_metas.end()) {
             if (is_clear) {
@@ -397,6 +415,9 @@ private:
     void MarkAsMaybeDirty(ImageId image_id, Image& image);
     static u64 MaybeDirtyHash(const Image& image);
 
+    void RegisterMeta(VAddr address, MetaDataInfo info);
+    void UnregisterMeta(VAddr address, u64 owner_uid);
+
     /// Removes the image and any views/surface metas that reference it.
     void DeleteImage(ImageId image_id);
 
@@ -426,7 +447,15 @@ private:
     ImageRecycler image_recycler;
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageView> slot_image_views;
-    tsl::robin_map<u64, Sampler> samplers;
+    tsl::robin_map<SamplerKey, Sampler, SamplerKeyHash> samplers;
+    struct SamplerMemo {
+        SamplerKey key{};
+        Sampler* sampler{};
+        u64 generation{};
+    };
+    std::array<SamplerMemo, 16> sampler_memo{};
+    u64 sampler_generation = 1;
+    u64 sampler_memo_hits = 0, sampler_memo_misses = 0;
     std::unordered_set<ImageId> download_images;
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0; ///< bbport: pressure report
@@ -453,7 +482,7 @@ private:
     u64 critical_gc_samplers = 0;
     u64 gc_tick = 0;
     Common::LeastRecentlyUsedCache<ImageId, u64> lru_cache;
-    Common::LeastRecentlyUsedCache<u64, u64> sampler_lru_cache;
+    Common::LeastRecentlyUsedCache<SamplerKey, u64> sampler_lru_cache;
     const bool readback_linear_images;
     PageTable page_table;
     std::mutex mutex;
@@ -479,10 +508,6 @@ private:
     std::mutex samplers_mutex;
     std::mutex download_images_mutex;
     std::atomic<bool> downloads_queued{false}; ///< download_images may be non-empty (checked without the lock)
-    struct MetaDataInfo {
-        MetaType type;
-        s32 clear_mask = -1;
-    };
     tsl::robin_map<VAddr, MetaDataInfo> surface_metas;
 };
 

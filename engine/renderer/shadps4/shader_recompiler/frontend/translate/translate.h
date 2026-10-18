@@ -62,6 +62,7 @@ using pk_type = std::pair<T, T>;
 static constexpr size_t MaxInterpVgpr = 16;
 
 class Translator {
+    friend struct RenderSemanticsTest;
 public:
     explicit Translator(Info& info, const RuntimeInfo& runtime_info, const Profile& profile);
 

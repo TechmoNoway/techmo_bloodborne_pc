@@ -60,6 +60,17 @@ struct StableArenaTest {
             CHECK(value==0x12345678u);
         }
         CHECK(old->Handle()==handle && old->BufferDeviceAddress()+old->Offset(Boundary-block)==address);
+        for(auto [stage,access]:{std::pair{vk::PipelineStageFlagBits2::eVertexAttributeInput,vk::AccessFlagBits2::eVertexAttributeRead},
+                                std::pair{vk::PipelineStageFlagBits2::eIndexInput,vk::AccessFlagBits2::eIndexRead},
+                                std::pair{vk::PipelineStageFlagBits2::eDrawIndirect,vk::AccessFlagBits2::eIndirectCommandRead}}) {
+            runtime.FlushBarriers();
+            runtime.AccessBuffer(old,old->Offset(Boundary-block),16,stage,access);
+            CHECK(runtime.IsBufferAccessed(cross,cross->Offset(Boundary-block),16,true));
+            CHECK(!runtime.IsBufferAccessed(cross,cross->Offset(Boundary-block),16,false));
+            CHECK(!runtime.IsBufferAccessed(right,right->Offset(Boundary),16,true));
+        }
+        runtime.FlushBarriers();
+        std::puts("PASS: vertex/index/indirect reads retain WAR hazards across sparse aliases without touching the adjacent page");
         std::puts("PASS: stable buffer/BDA across adjacent pages and distant ranges, alias hazards, actual sparse GPU roundtrip");
     }
     static void SmallPages(BufferCache& cache) {

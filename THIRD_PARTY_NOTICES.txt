@@ -1218,6 +1218,26 @@ shadps4-emu/shadPS4 sources, GPL-2.0-or-later:
 - `ab1dd384dc8a20c7faa3766324a27763768c59a3` (#5366): emit undefined U64.
 - `c34ca21f12153b6b61c30dcae38e638348841b61` (#5220): retain EXEC scope after an
   empty closing/opening instruction. The original source copyright notices remain.
+- `c09fa46a85773f3d2f8c86c0301d3db2f7366480` (#5262): buffer consumer tracking.
+  Techmo adapts the prepared/recording paths, explicit vertex/index/indirect
+  stages, spillable binding list, GDS hazards and indirect-command read mask.
+- `945dbc3cc3eee80ac3e053b438502ed936fa6bb2` (#5285): subgroup shared-memory
+  dependencies, preserving Techmo's divergent-loop workgroup-barrier guard.
+- `b08fd9bb41d78584e14b0f9b230635dc29be8d0b` (#5342): FP64 opcode detection.
+  These three adaptations were added on 2026-10-18 and retain original notices.
+- `7d28d2790bf1fffacb35a3035dddf9b9cccb84dc` (#5264): guest-requested early
+  fragment tests. Techmo retains the existing path when the shader exports depth.
+- `8e23388af83fe31ec6372a29e3940e2b459dfc6d` (#5219): reference for LRU/layout
+  improvements. Techmo uses a local stable-index LRU and equivalent BCn table;
+  generic layout rules, synchronization and mip-size field widths are preserved.
+  Full sampler-key equality, custom border capture, bounded memo invalidation
+  and GPU retirement checks are local adaptations.
+- `643c7997a5a0dfcb57959363b575b57a6257aa30` (#5348): indirect vertex/instance
+  IDs without mandatory SGPR copies. Techmo also corrects instance step-rate IDs.
+- `995e37e4e77ea9f3ec69367f9ec00867201ca191` (#5046): CMask expanded sample
+  patterns. Techmo adds live image ownership, unsupported/alignment rejection
+  and preserves the existing GPU buffer coherency protocol.
+  These four adaptations were added on 2026-10-18 and retain original notices.
 
 Local adaptations include the renderer assertion bridge to Techmo's prestarted
 Windows minidump reporter, concurrent-failure coordination, mapping-generation

@@ -17,19 +17,23 @@
 
 static void CheckMetadata() {
     using namespace Shader;
-    const auto load = [](bool motion, u32 version) {
+    const auto load = [](bool motion, u32 version, u32 metadata = 8, bool fragment = false) {
         Info original{};
-        original.hw_stage = HwStage::Vertex;
-        original.sw_stage = SwStage::Vertex;
+        original.hw_stage = fragment ? HwStage::Fragment : HwStage::Vertex;
+        original.sw_stage = fragment ? SwStage::Fragment : SwStage::Vertex;
         original.pgm_hash = 0x123456;
         StageSpecialization spec{};
         spec.info = &original;
         spec.runtime_info.Initialize(original.hw_stage, original.sw_stage);
-        spec.runtime_info.hw.vs.motion_vectors = motion;
+        if (fragment) spec.runtime_info.hw.fs.depth_before_shader = true;
+        else {
+            spec.runtime_info.hw.vs.motion_vectors = motion;
+            spec.runtime_info.sw.vs.is_indirect = true;
+        }
         const auto hash = HashCombine(original.pgm_hash, u64{2});
         Serialization::Archive output;
         Serialization::Writer writer{output};
-        writer.Write(u32{7}); // Unchanged metadata schema.
+        writer.Write(metadata);
         writer.Write(version);
         writer.Write(hash);
         writer.Write(size_t{2});
@@ -53,10 +57,17 @@ static void CheckMetadata() {
     assert(!load(true, 8)); // Old motion binaries used the previous translator.
     assert(!load(false, 7));
     assert(!load(false, 8));
-    assert(load(true, 10)); // Restores without ObjectMotion or any Vulkan allocation.
-    assert(load(false, 9));
-    assert(!load(true, 9));
-    assert(!load(false, 10));
+    assert(!load(false, 9));
+    assert(!load(true, 10)); // Before subgroup-memory/FP64 translation fixes.
+    assert(!load(true, 12));
+    assert(!load(false, 11));
+    assert(load(true, 14)); // Restores without ObjectMotion or any Vulkan allocation.
+    assert(load(false, 13));
+    assert(load(false, 13, 8, true));
+    assert(!load(false, 13, 7));
+    assert(!load(true, 14, 7));
+    assert(!load(true, 13));
+    assert(!load(false, 14));
     assert(!load(true, 99));
 }
 

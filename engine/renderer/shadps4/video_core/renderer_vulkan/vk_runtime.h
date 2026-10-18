@@ -116,6 +116,7 @@ public:
     }
 
 private:
+    friend struct BufferAccessTest;
     void (*image_access_hook)(void*) = nullptr;
     void* image_access_context = nullptr;
     const Instance& instance;

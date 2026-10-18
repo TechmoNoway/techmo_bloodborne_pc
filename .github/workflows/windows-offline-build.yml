@@ -101,11 +101,25 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 pipeline-precompiler-test pipeline-key-test liverpool-tasks-test pipeline-precompile-gpu-test
+          ninja -C out/gpu -j2 pipeline-precompiler-test pipeline-key-test liverpool-tasks-test pipeline-precompile-gpu-test buffer-access-test shader-memory-test
           out/gpu/pipeline-precompiler-test.exe
           out/gpu/pipeline-key-test.exe
           out/gpu/liverpool-tasks-test.exe
+          mkdir -p out/shader-memory-tests
+          out/gpu/shader-memory-test.exe out/shader-memory-tests
+          for file in out/shader-memory-tests/*.spv; do spirv-val --target-env vulkan1.3 "$file"; done
           # The real Vulkan readback fixture is compiled here and run locally on a GPU.
+
+      - name: Verify depth, indirect IDs and texture cache semantics
+        shell: msys2 {0}
+        run: |
+          set -e
+          ninja -C out/gpu -j2 render-semantics-test image-layout-cache-test lru-cache-test
+          mkdir -p out/render-semantics-tests
+          out/gpu/render-semantics-test.exe out/render-semantics-tests
+          out/gpu/image-layout-cache-test.exe
+          out/gpu/lru-cache-test.exe
+          for file in out/render-semantics-tests/*.spv; do spirv-val --target-env vulkan1.3 "$file"; done
 
       - name: Build and run recording, memory and frame pacing regressions
         # CPU ownership/remapping checks run on hosted Windows; GPU readback runs locally.

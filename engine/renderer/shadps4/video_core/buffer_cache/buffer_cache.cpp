@@ -976,7 +976,11 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         }
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+    // Texel buffers can read image/CMask data that has not been materialized in
+    // the arena yet. They must reach SynchronizeMemoryFromImage before deciding
+    // that guest RAM is current, even for a first binding smaller than 4 KiB.
+    if (!is_written && !is_texel_buffer && size <= STREAM_THRESHOLD &&
+        !IsRegionGpuModified(device_addr, size)) {
         BB_SECTION(ObtainStream);
         if (stats) {
             auto& region = Stats().regions[RegionKey(device_addr)];
@@ -2649,14 +2653,26 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
             NoteGpuWrite(device_addr, bytes);
         }
     };
-    if (auto type = texture_cache.IsMeta(device_addr)) {
-        if (*type == TextureCache::MetaType::HTile) {
+    if (const auto meta = texture_cache.GetMetaInfo(device_addr)) {
+        if (meta->type == TextureCache::MetaType::HTile) {
             static constexpr u32 ZmaskUncompressed = 0xf;
             runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
             note_transfer(size);
             return true;
+        } else if (meta->type == TextureCache::MetaType::CMask) {
+            std::optional<u32> expanded;
+            switch (meta->num_samples) {
+            case 1: case 8: expanded = 0xFFFFFFFFu; break;
+            case 2: expanded = 0xDDDDDDDDu; break;
+            case 4: expanded = 0xEEEEEEEEu; break;
+            default: break;
+            }
+            if (!expanded || (device_addr | size) % 4 != 0) return false;
+            runtime.FillBuffer(arena, arena->Offset(device_addr), size, *expanded);
+            note_transfer(size);
+            return true;
         } else {
-            LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(*type));
+            LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(meta->type));
         }
     }
     // bbport: most texel buffers alias no image; remember misses until images change.

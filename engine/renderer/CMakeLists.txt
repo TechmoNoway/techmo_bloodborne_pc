@@ -225,6 +225,24 @@ add_executable(shader-correctness-test EXCLUDE_FROM_ALL ../../tests/test_shader_
     ../../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(shader-correctness-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(shader-correctness-test PRIVATE bbgpu winmm ws2_32 psapi)
+add_executable(shader-memory-test EXCLUDE_FROM_ALL ../../tests/test_shader_memory.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(shader-memory-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(shader-memory-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+target_compile_options(shader-memory-test PRIVATE -UNDEBUG)
+set_source_files_properties(../../tests/test_shader_memory.cpp PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(render-semantics-test EXCLUDE_FROM_ALL ../../tests/test_render_semantics.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(render-semantics-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(render-semantics-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+target_compile_options(render-semantics-test PRIVATE -UNDEBUG)
+set_source_files_properties(../../tests/test_render_semantics.cpp PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(image-layout-cache-test EXCLUDE_FROM_ALL ../../tests/test_image_layout_cache.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(image-layout-cache-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(image-layout-cache-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+target_compile_options(image-layout-cache-test PRIVATE -UNDEBUG)
+set_source_files_properties(../../tests/test_image_layout_cache.cpp PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_executable(lru-cache-test EXCLUDE_FROM_ALL ../../tests/test_lru_cache.cpp)
+target_include_directories(lru-cache-test PRIVATE shadps4)
+target_compile_options(lru-cache-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_executable(frame-pacing-test EXCLUDE_FROM_ALL ../../tests/test_frame_pacing.cpp shim/frame_pacing.cpp)
 target_compile_options(frame-pacing-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(frame-pacing-test PRIVATE shim shadps4)
@@ -336,6 +354,18 @@ target_compile_options(pipeline-precompile-gpu-test PRIVATE -UNDEBUG)
 target_link_libraries(pipeline-precompile-gpu-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
 set_source_files_properties(../../tests/test_pipeline_precompile_gpu.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/buffer_access_vert.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/test_shaders
+    COMMAND ${GLSLANG_COMPILER} --target-env vulkan1.3 --vn BUFFER_ACCESS_VERT
+        -o ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/buffer_access_vert.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/shaders/buffer_access.vert
+    DEPENDS ${GLSLANG_COMPILER} ../../tests/shaders/buffer_access.vert VERBATIM)
+add_executable(buffer-access-test EXCLUDE_FROM_ALL ../../tests/test_buffer_access.cpp ../../tests/test_gpu_runtime_stubs.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/buffer_access_vert.h ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/pipeline_prep_comp.h)
+target_include_directories(buffer-access-test PRIVATE shim shadps4 third_party/gcn/include ${CMAKE_CURRENT_BINARY_DIR}/test_shaders)
+target_link_libraries(buffer-access-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+target_compile_options(buffer-access-test PRIVATE -UNDEBUG)
+set_source_files_properties(../../tests/test_buffer_access.cpp PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_compile_options(pipeline-cache-blob-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(pipeline-cache-blob-test PRIVATE ../..)
 add_executable(image-overlap-test EXCLUDE_FROM_ALL ../../tests/test_image_overlap.cpp ../../tests/test_gpu_runtime_stubs.cpp)

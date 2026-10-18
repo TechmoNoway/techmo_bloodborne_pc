@@ -404,7 +404,7 @@ private:
     void ResolveIndexBuffer(u32 index_offset, bool is_indirect = false);
     void EmitIndexBuffer();
 
-    void ResetBindings(bool is_compute);
+    void ResetBindings();
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline);
@@ -448,10 +448,12 @@ private:
     struct BoundBuffer {
         const VideoCore::Buffer* buffer;
         u64 offset;
-        u32 size;
-        bool is_written;
+        u64 size;
+        vk::PipelineStageFlags2 stage;
+        vk::AccessFlags2 access;
     };
-    boost::container::static_vector<BoundBuffer, Shader::NUM_BUFFERS> bound_buffers;
+    // Vertex/index/indirect bindings are additional to shader descriptors.
+    boost::container::small_vector<BoundBuffer, Shader::NUM_BUFFERS> bound_buffers;
 
     u32 set_write_index{};
     Pipeline::DescriptorWrites set_writes;
@@ -536,7 +538,6 @@ private:
         vk::IndexType type;
         u32 size;
     } index_bind{};
-    const VideoCore::Buffer* index_read_buffer{};
     /// The direct draw whose vertex/index buffers BindResources may resolve early.
     struct DrawInputs {
         const GraphicsPipeline* pipeline;

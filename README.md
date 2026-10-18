@@ -157,3 +157,51 @@ or repeated snapshots. This adds evidence without relaxing reuse safeguards or
 changing the global host-write epoch. It does not claim to have reduced hashing
 in the reported gameplay scenes. Cold guest shader translation remains on the
 requesting thread; useful preparation lead and native driver costs still matter.
+
+### Buffer consumers and shader ordering
+
+Vertex, index, indirect draw/dispatch and indirect-count bindings retain their
+actual Vulkan consumer stage and access type until the draw/dispatch is recorded.
+Shader descriptors retain graphics/compute read/write access, including GDS.
+The existing guest-address hazard domain still orders overlapping sparse aliases.
+Indirect-command reads participate in read-after-write/write-after-read checks;
+the binding list can spill beyond its inline shader-descriptor capacity.
+
+Shared-memory dependencies now emit subgroup memory barriers where appropriate,
+while the existing workgroup execution barriers preserve divergent if/loop safety.
+Shader collection detects FP64 arithmetic, comparisons and conversions as well as
+packing operations. Both changes require fresh translations: binary versions are
+13 (regular) and 14 (motion), with metadata schema 8. Old shader binaries are rejected without deleting
+the player's cache files, so the first visit to a scene can compile again.
+These correctness changes are not a measured FPS improvement.
+
+Headless checks: `buffer-access-test` queues actual vertex/index/indirect/count
+and indirect-dispatch consumers followed by immediate overwrites, then verifies
+GPU results. `shader-memory-test <existing-output-directory>` checks the production
+IR passes and writes SPIR-V fixtures for `spirv-val --target-env vulkan1.3`.
+
+### Depth, indirect IDs and texture cache lifetime
+
+Fragment shaders use early depth/stencil tests only when requested by the game.
+Shaders exporting depth keep the existing depth-export path. The early-test flag
+and direct/indirect draw distinction participate in shader specialization.
+Indirect vertex/instance IDs account for Vulkan base offsets even when the game
+does not copy those offsets into SGPRs; fetch shaders retain ownership of offsets
+they already handle. Instance step rates use the corrected ID as well.
+
+The LRU uses stable indices into contiguous storage and honors boolean callback
+termination. A precomputed BCn mip table covers equivalent, complete square
+layouts; other layouts retain Techmo's existing size/alignment calculations.
+Sampler keys compare descriptors, captured custom border colors, comparison mode
+and LOD bias. A bounded lookup memo is invalidated when the map moves values, and
+collection waits for GPU retirement without adding a synchronous GPU wait.
+
+CMask/HTile/FMask metadata belongs to a live image generation. Rebinding or
+deleting an older image cannot clear a newer owner's metadata. CMask reads expose
+the expanded 1/2/4/8-sample patterns through the existing GPU buffer coherency
+path; unsupported sample counts and misaligned CMask fills are rejected.
+
+`render-semantics-test`, `image-layout-cache-test` and `lru-cache-test` run without
+a game or Vulkan device. The `metadata` and `samplers` modes of `tiled-gc-test`
+exercise actual Vulkan fills/readbacks and cache retirement. These changes still
+require gameplay validation; no FPS or 4 GiB stability improvement is established.

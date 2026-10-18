@@ -8,6 +8,8 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
+#include <thread>
+#include <unordered_map>
 #include "bbport_toggles.h"
 #include "bbport_hash_reuse.h"
 #include "core/memory.h"
@@ -282,6 +284,103 @@ struct TiledWritebackTest {
         cache.scheduler.Finish();
         std::puts("PASS: cached texture use survives GC before completion and during wall-time grace; cold completed texture is collected");
     }
+    static void Metadata(TextureCache& cache) {
+        constexpr VAddr meta_address=Guest+(4<<20);constexpr u32 bytes=256;
+        auto first=Make(cache,Guest,64,0xff112233);
+        auto second=Make(cache,Guest+(1<<20),64,0xff445566);
+        TextureCache::ImageDesc desc{};desc.info=cache.slot_images[first].info;
+        desc.info.meta_info.cmask_addr=meta_address;
+        (void)cache.FindRenderTarget(first,desc);CHECK(cache.GetMetaInfo(meta_address)->owner_id==first);
+        CHECK(cache.TouchMeta(meta_address,0,false));CHECK(!cache.IsMetaCleared(meta_address,0));
+        (void)cache.FindRenderTarget(first,desc);CHECK(!cache.IsMetaCleared(meta_address,0));
+        CHECK(!cache.TouchMeta(meta_address,32,true));
+        std::memset(reinterpret_cast<void*>(meta_address),0x5a,bytes);
+        const auto [arena,offset]=cache.buffer_cache.ObtainBuffer(meta_address,bytes,false,true);
+        Buffer readback{cache.instance,0,bytes,MemoryType::HostCached};
+        const auto check=[&](u32 expected) {
+            const vk::BufferCopy copy{offset,0,bytes};cache.runtime.CopyBuffer(arena,&readback,std::span{&copy,1});
+            cache.scheduler.Finish();readback.Invalidate(0,bytes);
+            for(u32 i=0;i<bytes;i+=4) { u32 value;std::memcpy(&value,readback.mapped_data.data()+i,4);
+                if(value!=expected) std::fprintf(stderr,"CMask byte %u: actual %08x expected %08x\n",i,value,expected);
+                CHECK(value==expected); }
+            for(u32 i=0;i<bytes;++i) CHECK(reinterpret_cast<const u8*>(meta_address)[i]==0x5a);
+        };
+        check(0xffffffff);CHECK(cache.buffer_cache.IsRegionGpuModified(meta_address,bytes));
+        for(auto [samples,pattern]:{std::pair{1u,0xffffffffu},std::pair{2u,0xddddddddu},std::pair{4u,0xeeeeeeeeu},std::pair{8u,0xffffffffu}}) {
+            auto meta=*cache.GetMetaInfo(meta_address);meta.num_samples=samples;
+            cache.RegisterMeta(meta_address,meta);
+            CHECK(cache.buffer_cache.SynchronizeMemoryFromImage(arena,meta_address,bytes));check(pattern);
+        }
+        for(u32 samples:{0u,3u,16u}) {
+            auto meta=*cache.GetMetaInfo(meta_address);meta.num_samples=samples;cache.RegisterMeta(meta_address,meta);
+            cache.runtime.FillBuffer(arena,offset,bytes,0x12345678);
+            CHECK(!cache.buffer_cache.SynchronizeMemoryFromImage(arena,meta_address,bytes));check(0x12345678);
+        }
+        auto meta=*cache.GetMetaInfo(meta_address);meta.num_samples=1;cache.RegisterMeta(meta_address,meta);
+        CHECK(!cache.buffer_cache.SynchronizeMemoryFromImage(arena,meta_address,3));
+        desc.info=cache.slot_images[second].info;desc.info.meta_info.cmask_addr=meta_address;
+        (void)cache.FindRenderTarget(second,desc);meta=*cache.GetMetaInfo(meta_address);
+        CHECK(cache.IsMetaCleared(meta_address,0));cache.FreeImage(first);
+        CHECK(cache.GetMetaInfo(meta_address)->owner_id==second);
+        auto stale=meta;cache.FreeImage(second);CHECK(!cache.GetMetaInfo(meta_address));
+        cache.scheduler.Finish();cache.scheduler.PopPendingOperations();
+        CHECK(!cache.slot_images.is_allocated(first) && !cache.slot_images.is_allocated(second));
+        const auto third=Make(cache,Guest+(2<<20),64,0xff778899);
+        CHECK(third==first || third==second);
+        cache.surface_metas[meta_address]=stale;CHECK(!cache.GetMetaInfo(meta_address));
+        CHECK(!cache.ClearMeta(meta_address));CHECK(!cache.IsMetaCleared(meta_address,0));
+        meta.owner_id=third;meta.owner_uid=cache.slot_images[third].image_uid;cache.RegisterMeta(meta_address,meta);
+        cache.slot_images[third].info.meta_info.cmask_addr=meta_address;
+        desc.info=cache.slot_images[third].info;desc.info.meta_info.cmask_addr=meta_address+256;
+        (void)cache.FindRenderTarget(third,desc);CHECK(!cache.GetMetaInfo(meta_address));CHECK(cache.GetMetaInfo(meta_address+256));
+        desc.info.meta_info.cmask_addr=0;(void)cache.FindRenderTarget(third,desc);CHECK(!cache.GetMetaInfo(meta_address+256));
+        cache.FreeImage(third);cache.scheduler.Finish();
+        puts("PASS: real CMask fills/readbacks at 1/2/4/8 samples, unsupported/alignment guards, GPU ownership, preserved clear state and owner/address/slot reuse");
+    }
+    static void Samplers(TextureCache& cache) {
+        AmdGpu::Sampler sampler{};sampler.clamp_x.Assign(AmdGpu::ClampMode::ClampBorder);sampler.clamp_y.Assign(AmdGpu::ClampMode::ClampBorder);
+        sampler.border_color_type.Assign(AmdGpu::BorderColor::Custom);
+        constexpr VAddr colors=Guest+(20<<20);
+        AmdGpu::BorderColorBuffer border{};border.base_addr=colors>>8;
+        std::array<float,4> red{1,0,0,1},green{0,1,0,1};std::memcpy(reinterpret_cast<void*>(colors),red.data(),16);
+        const auto first=cache.GetSampler(sampler,border,false,0);
+        auto hits=cache.sampler_memo_hits;CHECK(cache.GetSampler(sampler,border,false,0)==first);CHECK(cache.sampler_memo_hits==hits+1);
+        const auto key=MakeSamplerKey(cache.instance,sampler,border,false,0);
+        std::memcpy(reinterpret_cast<void*>(colors),green.data(),16);
+        const auto changed=cache.GetSampler(sampler,border,false,0);
+        if(cache.instance.IsCustomBorderColorSupported()) CHECK(changed!=first);
+        std::memcpy(reinterpret_cast<void*>(colors+256),green.data(),16);auto alternate=border;alternate.base_addr=(colors+256)>>8;
+        CHECK(cache.GetSampler(sampler,alternate,false,0)==changed);
+        CHECK(cache.GetSampler(sampler,border,true,0));CHECK(cache.GetSampler(sampler,border,false,0.5f));
+        struct Collision { size_t operator()(const SamplerKey&)const { return 0; } };
+        std::unordered_map<SamplerKey,u32,Collision> collision;
+        auto other=key;other.border[0]^=1;collision[key]=1;collision[other]=2;CHECK(collision.size()==2 && collision.at(key)==1);
+        std::vector<std::thread> workers;
+        for(u32 t=0;t<4;++t) workers.emplace_back([&,t] {
+            for(u32 i=0;i<32;++i) {
+                CHECK(cache.GetSampler(sampler,border,false,float(1+t*32+i)/32));
+                CHECK(cache.GetSampler(sampler,border,false,0)==changed);
+            }
+        });
+        for(auto& worker:workers) worker.join();
+        const auto current=MakeSamplerKey(cache.instance,sampler,border,false,0);
+        CHECK(cache.samplers.at(current).last_gpu_tick==cache.scheduler.CurrentTick());
+        cache.trigger_gc_samplers=0;cache.pressure_gc_samplers=cache.critical_gc_samplers=~u64{0};cache.gc_tick=1000;
+        const auto count=cache.samplers.size();cache.GarbageCollectSamplers();CHECK(cache.samplers.size()==count);
+        Buffer probe{cache.instance,0,16,MemoryType::DeviceLocal};cache.runtime.FillBuffer(&probe,0,16,0);cache.scheduler.Finish();
+        CHECK(cache.GetSampler(sampler,border,false,0));hits=cache.sampler_memo_hits;
+        CHECK(cache.GetSampler(sampler,border,false,0));CHECK(cache.sampler_memo_hits==hits+1);
+        CHECK(cache.samplers.at(current).last_gpu_tick==cache.scheduler.CurrentTick());
+        cache.runtime.FillBuffer(&probe,0,16,0);cache.scheduler.Finish();
+        for(u32 pass=0;!cache.samplers.empty() && pass<64;++pass) {
+            cache.gc_tick+=100;const auto before=cache.samplers.size();cache.GarbageCollectSamplers();
+            CHECK(before-cache.samplers.size()<=10);
+        }
+        CHECK(cache.samplers.empty());const auto misses=cache.sampler_memo_misses;
+        CHECK(cache.GetSampler(sampler,border,false,0));CHECK(cache.sampler_memo_misses==misses+1);
+        cache.runtime.FillBuffer(&probe,0,16,0);cache.scheduler.Finish();
+        puts("PASS: full sampler keys/custom border updates, collision equality, concurrent memo/rehash, GPU retirement, bounded GC and stale-memo rejection");
+    }
     static ImageId Make(TextureCache& cache,VAddr address,u32 width,u32 color,u32 levels=1) {
         ImageInfo info{}; info.guest_address=address; info.type=AmdGpu::ImageType::Color2D;
         info.pixel_format=vk::Format::eR8G8B8A8Unorm; info.size={width,width,1};
@@ -404,7 +503,9 @@ int main(int argc,char** argv) {
     {
         Caches caches{instance,scheduler,runtime};
         scheduler.SetSubmitCallback([&](Vulkan::SubmitInfo& info) { runtime.FlushBarriers();caches.buffers.SubmitPendingArenaBinds(info); });
-        if (!std::strcmp(argv[1],"gpu-sync")) VideoCore::TiledWritebackTest::GpuSync(caches.textures);
+        if (!std::strcmp(argv[1],"metadata")) VideoCore::TiledWritebackTest::Metadata(caches.textures);
+        else if (!std::strcmp(argv[1],"samplers")) VideoCore::TiledWritebackTest::Samplers(caches.textures);
+        else if (!std::strcmp(argv[1],"gpu-sync")) VideoCore::TiledWritebackTest::GpuSync(caches.textures);
         else if (!std::strcmp(argv[1],"recycle")) VideoCore::TiledWritebackTest::Recycle(caches.textures);
         else if (!std::strcmp(argv[1],"refresh-large")) VideoCore::TiledWritebackTest::Refresh(caches.textures,1024);
         else if (!std::strcmp(argv[1],"refresh")) VideoCore::TiledWritebackTest::Refresh(caches.textures);

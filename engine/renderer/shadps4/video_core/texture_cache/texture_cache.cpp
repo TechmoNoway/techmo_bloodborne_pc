@@ -1015,6 +1015,24 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     return image.FindView(desc.view_info);
 }
 
+void TextureCache::RegisterMeta(VAddr address, MetaDataInfo info) {
+    if (!address) return;
+    const auto [it, inserted] = surface_metas.try_emplace(address, info);
+    if (inserted) return;
+    auto& current = it.value();
+    if (current.type != info.type || current.owner_uid != info.owner_uid) {
+        current = info;
+    } else {
+        current.owner_id = info.owner_id;
+        current.num_samples = info.num_samples;
+    }
+}
+
+void TextureCache::UnregisterMeta(VAddr address, u64 owner_uid) {
+    const auto it = surface_metas.find(address);
+    if (it != surface_metas.end() && it->second.owner_uid == owner_uid) surface_metas.erase(it);
+}
+
 ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc) {
     Image& image = slot_images[image_id];
     image.flags |= ImageFlagBits::GpuModified;
@@ -1027,17 +1045,21 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     UpdateImage(image_id);
 
     // Register meta data for this color buffer
-    if (desc.info.meta_info.cmask_addr) {
-        surface_metas.emplace(desc.info.meta_info.cmask_addr,
-                              MetaDataInfo{.type = MetaType::CMask});
-        image.info.meta_info.cmask_addr = desc.info.meta_info.cmask_addr;
+    const auto cmask = desc.info.meta_info.cmask_addr;
+    if (image.info.meta_info.cmask_addr != cmask) {
+        UnregisterMeta(image.info.meta_info.cmask_addr, image.image_uid);
+        image.info.meta_info.cmask_addr = cmask;
     }
+    RegisterMeta(cmask, {.type = MetaType::CMask, .owner_id = image_id,
+                         .owner_uid = image.image_uid, .num_samples = image.info.num_samples});
 
-    if (desc.info.meta_info.fmask_addr) {
-        surface_metas.emplace(desc.info.meta_info.fmask_addr,
-                              MetaDataInfo{.type = MetaType::FMask});
-        image.info.meta_info.fmask_addr = desc.info.meta_info.fmask_addr;
+    const auto fmask = desc.info.meta_info.fmask_addr;
+    if (image.info.meta_info.fmask_addr != fmask) {
+        UnregisterMeta(image.info.meta_info.fmask_addr, image.image_uid);
+        image.info.meta_info.fmask_addr = fmask;
     }
+    RegisterMeta(fmask, {.type = MetaType::FMask, .owner_id = image_id,
+                         .owner_uid = image.image_uid, .num_samples = image.info.num_samples});
 
     return image.FindView(desc.view_info, false);
 }
@@ -1049,12 +1071,14 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     UpdateImage(image_id);
 
     // Register meta data for this depth buffer
-    if (desc.info.meta_info.htile_addr) {
-        surface_metas.emplace(desc.info.meta_info.htile_addr,
-                              MetaDataInfo{.type = MetaType::HTile,
-                                           .clear_mask = image.info.meta_info.htile_clear_mask});
-        image.info.meta_info.htile_addr = desc.info.meta_info.htile_addr;
+    const auto htile = desc.info.meta_info.htile_addr;
+    if (image.info.meta_info.htile_addr != htile) {
+        UnregisterMeta(image.info.meta_info.htile_addr, image.image_uid);
+        image.info.meta_info.htile_addr = htile;
     }
+    RegisterMeta(htile, {.type = MetaType::HTile, .owner_id = image_id,
+                         .owner_uid = image.image_uid, .num_samples = image.info.num_samples,
+                         .clear_mask = image.info.meta_info.htile_clear_mask});
 
     // If there is a stencil attachment, link depth and stencil.
     if (desc.info.stencil_addr != 0) {
@@ -1281,19 +1305,29 @@ vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
                                      AmdGpu::BorderColorBuffer border_color_base,
                                      const bool is_depth, float extra_lod_bias) {
     // Compare and plain uses of one S# need separate samplers; so do extra LOD biases.
-    const u64 hash = HashCombine(HashCombine(XXH3_64bits(&sampler, sizeof(sampler)), is_depth),
-                                 u64(std::bit_cast<u32>(extra_lod_bias)));
+    const auto key = MakeSamplerKey(instance, sampler, border_color_base, is_depth, extra_lod_bias);
 
     std::scoped_lock lock{samplers_mutex};
-    const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base,
-                                                        is_depth, extra_lod_bias);
-    if (new_sampler) {
-        samplers.at(hash).lru_id = sampler_lru_cache.Insert(hash, gc_tick);
-    } else {
-        sampler_lru_cache.Touch(it->second.lru_id, gc_tick);
+    const auto use = [&](Sampler& value) {
+        sampler_lru_cache.Touch(value.lru_id, gc_tick);
+        value.last_gpu_tick = std::max(value.last_gpu_tick, scheduler.CurrentTick());
+        return value.Handle();
+    };
+    auto& memo = sampler_memo[(key.descriptor[0] ^ key.descriptor[2] ^ key.lod_bias ^ unsigned(key.compare)) % sampler_memo.size()];
+    if (memo.sampler && memo.generation == sampler_generation && memo.key == key) {
+        ++sampler_memo_hits;
+        return use(*memo.sampler);
     }
-
-    return it->second.Handle();
+    ++sampler_memo_misses;
+    auto it = samplers.find(key);
+    if (it == samplers.end()) {
+        // Invalidate pointer memos before any operation that can relocate values.
+        ++sampler_generation;
+        it = samplers.try_emplace(key, instance, key).first;
+        it.value().lru_id = sampler_lru_cache.Insert(key, gc_tick);
+    }
+    memo = {key, &it.value(), sampler_generation};
+    return use(it.value());
 }
 
 void TextureCache::RegisterImage(ImageId image_id) {
@@ -1716,11 +1750,11 @@ void TextureCache::WriteMemorySample() {
 }
 
 void TextureCache::GarbageCollectSamplers() {
+    std::scoped_lock lock{samplers_mutex};
     total_used_samplers = samplers.size();
     if (total_used_samplers < trigger_gc_samplers) {
         return;
     }
-    std::scoped_lock lock{samplers_mutex};
     bool pressured = false;
     bool aggresive = false;
     u64 ticks_to_destroy = 0;
@@ -1733,14 +1767,22 @@ void TextureCache::GarbageCollectSamplers() {
         ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
     };
-    const auto clean_up = [&](u64 hash) {
+    const auto clean_up = [&](const SamplerKey& key) {
         if (num_deletions == 0) {
             return true;
         }
+        auto& sampler = samplers.at(key);
+        if (sampler.last_gpu_tick >= scheduler.CurrentTick() ||
+            !scheduler.IsFree(sampler.last_gpu_tick)) {
+            sampler_lru_cache.Touch(sampler.lru_id, gc_tick);
+            return false;
+        }
         --num_deletions;
-        const size_t lru_id = samplers.at(hash).lru_id;
-        samplers.erase(hash);
+        const size_t lru_id = sampler.lru_id;
+        ++sampler_generation; // Erase can also relocate other mapped values.
+        samplers.erase(key);
         sampler_lru_cache.Free(lru_id);
+        total_used_samplers = samplers.size();
         return false;
     };
 
@@ -1780,13 +1822,13 @@ void TextureCache::DeleteImage(ImageId image_id) {
     // Remove any registered meta areas.
     const auto& meta_info = image.info.meta_info;
     if (meta_info.cmask_addr) {
-        surface_metas.erase(meta_info.cmask_addr);
+        UnregisterMeta(meta_info.cmask_addr, image.image_uid);
     }
     if (meta_info.fmask_addr) {
-        surface_metas.erase(meta_info.fmask_addr);
+        UnregisterMeta(meta_info.fmask_addr, image.image_uid);
     }
     if (meta_info.htile_addr) {
-        surface_metas.erase(meta_info.htile_addr);
+        UnregisterMeta(meta_info.htile_addr, image.image_uid);
     }
 
     {

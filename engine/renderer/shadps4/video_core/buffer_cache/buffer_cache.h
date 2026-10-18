@@ -66,6 +66,7 @@ public:
 
 class BufferCache {
     friend struct StableArenaTest;
+    friend struct TiledWritebackTest;
     static constexpr u64 ADDRESS_SPACE_BITS = 40;
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 
