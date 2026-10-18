@@ -18,7 +18,12 @@ public:
         float gamma = 1.0f;
         u32 hdr = 0;
         u32 srgb_input = 0;
+        u32 sdr_to_hdr = 0;
+        float hdr_white = 203.0f;
+        float hdr_peak = 1000.0f;
+        float hdr_expand = 0.0f;
     };
+    static_assert(sizeof(Settings) == 28, "Post-process push constants must match GLSL");
 
     void Create(vk::Device device, vk::Format surface_format);
 

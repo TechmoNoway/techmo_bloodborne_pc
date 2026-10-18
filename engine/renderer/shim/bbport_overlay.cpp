@@ -7,11 +7,15 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
+#include "core/emulator_settings.h"
+#include "hdr_output.h"
+#include "performance_monitor.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -51,6 +55,7 @@ namespace {
 
 std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
 bool initialized = false;
+bool hdr_output = false;
 std::atomic<bool> menu_open{false};
 bool l3_down = false, r3_down = false;
 bool dirty = false; // settings changed while open: saved on close
@@ -65,6 +70,7 @@ std::string prompt_title, prompt_text;
 // Present rate for the FPS counter.
 std::chrono::steady_clock::time_point last_present{};
 float frame_ms_avg = 0.0f;
+std::unique_ptr<PerformanceMonitor::Monitor> performance_monitor;
 
 float PixelDensity(SDL_WindowID id);
 
@@ -501,6 +507,8 @@ void Menu() {
 
     ImGui::SeparatorText(BbSettings::MenuText("Other", "Прочее"));
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
+    Checkbox("CPU usage in corner (system)", s.show_cpu);
+    Checkbox("GPU usage in corner (active adapter)", s.show_gpu);
 
     ImGui::Spacing();
     if (ImGui::Button(BbSettings::MenuText("Close", "Закрыть"))) {
@@ -515,7 +523,7 @@ void Menu() {
     }
 }
 
-void FpsCounter() {
+void PerformanceCounter() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float pad = 12.0f * base_scale;
     ImGui::SetNextWindowPos(
@@ -527,8 +535,10 @@ void FpsCounter() {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
     const auto& s = BbSettings::Get();
-    ImGui::Text("%.0f FPS  %.1f ms  %s", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
-                frame_ms_avg, BbSettings::UpscalerName(s.upscaler));
+    const auto text=PerformanceMonitor::OverlayText(s.show_fps,s.show_cpu,s.show_gpu,
+        frame_ms_avg>0.0f?1000.0f/frame_ms_avg:0.0f,frame_ms_avg,
+        BbSettings::UpscalerName(s.upscaler),performance_monitor?performance_monitor->Read():PerformanceMonitor::Snapshot{});
+    ImGui::TextUnformatted(text.c_str());
     ImGui::End();
 }
 
@@ -568,6 +578,7 @@ void SetTextPrompt(bool active, const std::string& prompt, const std::string& te
 }
 
 void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) {
+    hdr_output = format == vk::Format::eA2B10G10R10UnormPack32;
     std::scoped_lock lock{imgui_mutex};
     if (initialized) {
         return;
@@ -624,6 +635,14 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
         return;
     }
     initialized = true;
+    const auto properties=instance.GetPhysicalDevice().getProperties2<
+        vk::PhysicalDeviceProperties2,vk::PhysicalDeviceIDProperties>();
+    const auto& identity=properties.get<vk::PhysicalDeviceIDProperties>();
+    PerformanceMonitor::Adapter adapter{.node_mask=identity.deviceNodeMask,.valid=bool(identity.deviceLUIDValid)};
+    static_assert(sizeof(adapter.low)+sizeof(adapter.high)==VK_LUID_SIZE);
+    std::memcpy(&adapter.low,identity.deviceLUID.data(),sizeof(adapter.low));
+    std::memcpy(&adapter.high,identity.deviceLUID.data()+sizeof(adapter.low),sizeof(adapter.high));
+    performance_monitor=std::make_unique<PerformanceMonitor::Monitor>(adapter);
     std::printf("Overlay: menu ready (Insert or L3+R3)\n");
 }
 
@@ -733,7 +752,8 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps);
+    const auto& s=BbSettings::Get();
+    return initialized && (menu_open || prompt_active || s.show_fps || s.show_cpu || s.show_gpu);
 }
 
 bool MenuOpen() {
@@ -774,13 +794,29 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (menu_open) {
         Menu();
     }
-    if (BbSettings::Get().show_fps && !menu_open) {
-        FpsCounter();
+    const auto& settings=BbSettings::Get();
+    if(performance_monitor)performance_monitor->Request(settings.show_cpu,settings.show_gpu);
+    if ((settings.show_fps || settings.show_cpu || settings.show_gpu) && !menu_open) {
+        PerformanceCounter();
     }
     if (prompt_active && !menu_open) {
         TextPrompt();
     }
     ImGui::Render();
+
+    // Font/UI white must be reference white, not PQ 1.0 (10,000 nits).
+    // Draw lists are rebuilt each frame; preserve alpha and never expand UI highlights.
+    if (hdr_output) {
+        for (auto* list : ImGui::GetDrawData()->CmdLists) {
+            for (auto& vertex : list->VtxBuffer) {
+                const auto c = ImGui::ColorConvertU32ToFloat4(vertex.col);
+                const auto pq = HdrOutput::Convert({HdrOutput::SrgbToLinear(c.x),
+                    HdrOutput::SrgbToLinear(c.y), HdrOutput::SrgbToLinear(c.z)},
+                    EmulatorSettings.GetHdrReferenceWhite(), EmulatorSettings.GetHdrPeak(), false);
+                vertex.col = ImGui::ColorConvertFloat4ToU32(ImVec4(pq[0], pq[1], pq[2], c.w));
+            }
+        }
+    }
 
     const vk::RenderingAttachmentInfo attachment{
         .imageView = view,

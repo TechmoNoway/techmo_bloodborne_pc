@@ -19,15 +19,25 @@ public partial class MainWindow : Window
         public string Resolution { get; set; } = "1920x1080";
         public bool Fullscreen { get; set; } = true;
         public bool ShowFps { get; set; }
+        public bool ShowCpu { get; set; }
+        public bool ShowGpu { get; set; }
         public string PresentMode { get; set; } = "";
+        // Physical-display calibration is shared by all gameplay profiles.
+        public bool HdrOutput { get; set; }
+        public string HdrWhite { get; set; } = "203";
+        public string HdrPeak { get; set; } = "1000";
+        public bool HdrExpand { get; set; }
         public string Upscaler { get; set; } = "fsr3";
         public string Preset { get; set; } = "1";
         public string Fps { get; set; } = "60";
         public string Language { get; set; } = "1";
         public string UiLanguage { get; set; } = "en";
+        public string UiTheme { get; set; } = "dark";
+        public bool ReducedMotion { get; set; }
         public string LiveResolution { get; set; } = "0";
         public string ModelLod { get; set; } = "0";
         public bool Sharpen { get; set; } = true;
+        public double Sharpness { get; set; } = 0.3;
         public bool Chromatic { get; set; } = true;
         public bool Dof { get; set; } = true;
         public bool MotionBlur { get; set; } = true;
@@ -50,6 +60,7 @@ public partial class MainWindow : Window
         public string CameraHeight { get; set; } = "1.00";
         public bool ChangeAppearance { get; set; }
         public bool Rebirth { get; set; }
+        // Derived from individual lighting/color overrides; retained for v1 profile compatibility.
         public bool GraphicsControls { get; set; }
         public bool GraphicsVignette { get; set; } = true;
         public string GraphicsAo { get; set; } = "1.00";
@@ -91,13 +102,17 @@ public partial class MainWindow : Window
         statePath = Path.Combine(root, "launcher-settings.json");
         ModsFolderText.Text = Path.Combine(root, "mods");
         ConfigureCameraChoices();
-        ConfigureGraphicsChoices();
         LoadState();
         ApplyStateToUi();
         InitializePresentation();
         LoadHeroImage();
         RefreshStatus();
         LoadLatestSession();
+        InitializeHub();
+        InitializeProfiles();
+        InitializeSaves();
+        InitializeMods();
+        InitializeUndo();
     }
 
     static string FindProjectRoot()
@@ -128,16 +143,22 @@ public partial class MainWindow : Window
         // Migrate retired or malformed frame-rate selections before displaying or launching.
         state.Fps = NormalizeFps(state.Fps);
         state.UiLanguage = Localization.Normalize(state.UiLanguage);
+        if (ReadIniValue("show_fps") is string showFps) state.ShowFps = showFps == "1";
+        if (ReadIniValue("show_cpu") is string showCpu) state.ShowCpu = showCpu == "1";
+        if (ReadIniValue("show_gpu") is string showGpu) state.ShowGpu = showGpu == "1";
+        if (ReadIniValue("sharpen") is string sharpen) state.Sharpen = sharpen == "1";
+        state.Sharpness = double.TryParse(ReadIniValue("sharpness"), NumberStyles.Float, CultureInfo.InvariantCulture, out double sharpness)
+            ? NormalizeSharpness(sharpness) : NormalizeSharpness(state.Sharpness);
         string? mirror = ReadIniValue("change_appearance");
         if (mirror != null) state.ChangeAppearance = mirror == "1";
         string? rebirth = ReadIniValue("rebirth");
         if (rebirth != null) state.Rebirth = rebirth == "1";
-        if (ReadIniValue("graphics_controls") is string graphics) state.GraphicsControls = graphics == "1";
         if (ReadIniValue("graphics_vignette") is string vignette) state.GraphicsVignette = vignette == "1";
         state.GraphicsAo = GraphicsScale(ReadIniValue("graphics_ao_strength") ?? state.GraphicsAo, 0, 2);
         state.GraphicsShadows = GraphicsScale(ReadIniValue("graphics_shadow_scale") ?? state.GraphicsShadows, 1, 3);
         state.GraphicsBloom = GraphicsScale(ReadIniValue("graphics_bloom") ?? state.GraphicsBloom, 0, 1);
         state.GraphicsSaturation = GraphicsScale(ReadIniValue("graphics_saturation") ?? state.GraphicsSaturation, 0, 2);
+        state.GraphicsControls = HasCustomLighting(state);
         // Native pages and the legacy overlay use this same configuration.
         if (ReadIniValue("output_res") is string output) state.Resolution = output;
         if (ReadIniValue("effect_game_aa") is string aa) state.GameAa = aa == "1";
@@ -152,6 +173,7 @@ public partial class MainWindow : Window
         state.CameraHeight = CameraScale(ReadIniValue("camera_height_scale") ?? state.CameraHeight, 0.5);
         LoadInputState();
         LoadOnlineState();
+        LoadModSettings();
     }
 
     static string NormalizeFps(string? value) => value is "30" or "60" or "90" or "uncap" ? value : "60";
@@ -177,15 +199,6 @@ public partial class MainWindow : Window
     {
         if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) || !double.IsFinite(value)) value = 1;
         return Math.Clamp(value, min, max).ToString("0.00", CultureInfo.InvariantCulture);
-    }
-    void ConfigureGraphicsChoices()
-    {
-        foreach (var (box, min, step) in new[] { (GraphicsAoCombo, 0.0, 0.2), (GraphicsShadowsCombo, 1.0, 0.2), (GraphicsBloomCombo, 0.0, 0.1), (GraphicsSaturationCombo, 0.0, 0.2) })
-            for (int i = 0; i <= 10; i++)
-            {
-                double value = min + i * step;
-                box.Items.Add(new ComboBoxItem { Tag = value.ToString("0.00", CultureInfo.InvariantCulture), Content = $"{value * 100:0}%" });
-            }
     }
     static void SetCameraScale(ComboBox box, string value)
     {
@@ -213,24 +226,30 @@ public partial class MainWindow : Window
         Localization.Current.SetLanguage(state.UiLanguage);
         PathBox.Text = state.GamePath;
         SetComboContent(ResolutionCombo, state.Resolution);
-        SetComboContent(QuickResolution, state.Resolution);
         SetComboTag(PresentCombo, state.PresentMode);
-        SyncVSyncChoice();
+        UpdatePresentModeDescription();
         FullscreenCheck.IsChecked = state.Fullscreen;
-        QuickDisplay.SelectedIndex = state.Fullscreen ? 0 : 1;
         ShowFpsCheck.IsChecked = state.ShowFps;
+        ShowCpuCheck.IsChecked = state.ShowCpu;
+        ShowGpuCheck.IsChecked = state.ShowGpu;
+        HdrOutputCheck.IsChecked = state.HdrOutput;
+        SetComboTag(HdrWhiteCombo, state.HdrWhite);
+        SetComboTag(HdrPeakCombo, state.HdrPeak);
+        HdrExpandCheck.IsChecked = state.HdrExpand;
+        UpdateHdrControls();
 
         SetComboTag(UpscalerCombo, state.Upscaler);
-        SetQuickUpscaler(state.Upscaler);
         SetComboTag(PresetCombo, state.Preset);
-        QuickPreset.SelectedIndex = int.TryParse(state.Preset, out int p) ? Math.Clamp(p, 0, 4) : 1;
         SetComboTag(FpsCombo, state.Fps);
-        SetQuickFps(state.Fps);
 
         SetComboTag(UiLanguageCombo, state.UiLanguage);
+        SetComboTag(ThemeCombo, state.UiTheme);
+        ReducedMotionCheck.IsChecked = state.ReducedMotion;
         SetComboTag(LiveResolutionCombo, state.LiveResolution);
         SetComboTag(ModelLodCombo, state.ModelLod);
         SharpenCheck.IsChecked = state.Sharpen;
+        SharpnessSlider.Value = state.Sharpness;
+        UpdateSharpnessUi();
         ChromaticCheck.IsChecked = state.Chromatic;
         DofCheck.IsChecked = state.Dof;
         MotionBlurCheck.IsChecked = state.MotionBlur;
@@ -242,12 +261,7 @@ public partial class MainWindow : Window
         ChangeAppearanceCheck.IsChecked = state.ChangeAppearance;
         RebirthCheck.IsChecked = state.Rebirth;
         ApplyInputUi();
-        GraphicsControlsCheck.IsChecked = state.GraphicsControls;
-        GraphicsVignetteCheck.IsChecked = state.GraphicsVignette;
-        SetCameraScale(GraphicsAoCombo, state.GraphicsAo);
-        SetCameraScale(GraphicsShadowsCombo, state.GraphicsShadows);
-        SetCameraScale(GraphicsBloomCombo, state.GraphicsBloom);
-        SetCameraScale(GraphicsSaturationCombo, state.GraphicsSaturation);
+        ApplyLightingUi();
         CameraControlsCheck.IsChecked = state.CameraControls;
         SetCameraScale(CameraFovCombo, state.CameraFov);
         SetCameraScale(CameraDistanceCombo, state.CameraDistance);
@@ -261,9 +275,11 @@ public partial class MainWindow : Window
         GpuProfileCheck.IsChecked = state.GpuProfile;
         AudioStatsCheck.IsChecked = state.AudioStats;
         FsrProfileCheck.IsChecked = state.FsrProfile;
-        syncing = false;
         UpdateUpscalingModeAvailability();
         ApplyOnlineUi();
+        ApplyAppearance();
+        UpdateHubSummary();
+        syncing = false;
     }
 
     void CollectUi()
@@ -272,14 +288,23 @@ public partial class MainWindow : Window
         state.Resolution = ComboText(ResolutionCombo, "1920x1080");
         state.Fullscreen = FullscreenCheck.IsChecked == true;
         state.ShowFps = ShowFpsCheck.IsChecked == true;
+        state.ShowCpu = ShowCpuCheck.IsChecked == true;
+        state.ShowGpu = ShowGpuCheck.IsChecked == true;
         state.PresentMode = ComboTag(PresentCombo);
+        state.HdrOutput = HdrOutputCheck.IsChecked == true;
+        state.HdrWhite = ComboTag(HdrWhiteCombo, "203");
+        state.HdrPeak = ComboTag(HdrPeakCombo, "1000");
+        state.HdrExpand = HdrExpandCheck.IsChecked == true;
         state.Upscaler = ComboTag(UpscalerCombo, "fsr3");
         state.Preset = ComboTag(PresetCombo, "1");
         state.Fps = NormalizeFps(ComboTag(FpsCombo, "60"));
         state.UiLanguage = Localization.Normalize(ComboTag(UiLanguageCombo, "en"));
+        state.UiTheme = ComboTag(ThemeCombo, "dark");
+        state.ReducedMotion = ReducedMotionCheck.IsChecked == true;
         state.LiveResolution = ComboTag(LiveResolutionCombo, "0");
         state.ModelLod = ComboTag(ModelLodCombo, "0");
         state.Sharpen = SharpenCheck.IsChecked == true;
+        state.Sharpness = NormalizeSharpness(SharpnessSlider.Value);
         state.Chromatic = ChromaticCheck.IsChecked == true;
         state.Dof = DofCheck.IsChecked == true;
         state.MotionBlur = MotionBlurCheck.IsChecked == true;
@@ -290,12 +315,7 @@ public partial class MainWindow : Window
         state.SkipIntro = SkipIntroCheck.IsChecked == true;
         state.ChangeAppearance = ChangeAppearanceCheck.IsChecked == true;
         state.Rebirth = RebirthCheck.IsChecked == true;
-        state.GraphicsControls = GraphicsControlsCheck.IsChecked == true;
-        state.GraphicsVignette = GraphicsVignetteCheck.IsChecked == true;
-        state.GraphicsAo = ComboTag(GraphicsAoCombo);
-        state.GraphicsShadows = ComboTag(GraphicsShadowsCombo);
-        state.GraphicsBloom = ComboTag(GraphicsBloomCombo);
-        state.GraphicsSaturation = ComboTag(GraphicsSaturationCombo);
+        CollectLightingUi();
         state.CameraControls = CameraControlsCheck.IsChecked == true;
         state.CameraFov = CameraScale(ComboTag(CameraFovCombo), 1);
         state.CameraDistance = CameraScale(ComboTag(CameraDistanceCombo), 0.5);
@@ -317,8 +337,10 @@ public partial class MainWindow : Window
         try
         {
         CollectUi();
+        if (!profilesUnavailable && activeProfile is not null) ValidateProfile(CaptureProfile(activeProfile.Name, activeProfile.Id));
+        ValidateModSettings();
         Directory.CreateDirectory(Path.Combine(root, "out"));
-        File.WriteAllText(statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+        AtomicSettingsFile.Write(statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
         if (!string.IsNullOrWhiteSpace(state.GamePath))
             File.WriteAllText(Path.Combine(root, "out", "game_dir.txt"), state.GamePath);
 
@@ -327,7 +349,10 @@ public partial class MainWindow : Window
             ["upscaler"] = state.Upscaler,
             ["preset"] = state.Preset,
             ["sharpen"] = state.Sharpen ? "1" : "0",
+            ["sharpness"] = state.Sharpness.ToString("0.00", CultureInfo.InvariantCulture),
             ["show_fps"] = state.ShowFps ? "1" : "0",
+            ["show_cpu"] = state.ShowCpu ? "1" : "0",
+            ["show_gpu"] = state.ShowGpu ? "1" : "0",
             ["output_res"] = state.Resolution,
             ["fullscreen"] = state.Fullscreen ? "1" : "0",
             ["live_resolution"] = state.LiveResolution,
@@ -356,13 +381,20 @@ public partial class MainWindow : Window
         SaveInputSettings(ini);
         RewriteIni(Path.Combine(root, "bbport.ini"), ini);
         SaveOnlineSettings();
+        SaveActiveProfile();
+        SaveModSettings();
+        RememberAppliedSettings();
+        hasUnsavedChanges = false;
+        UpdateSaveState();
         L10n.SetText(FooterMessage, "Settings saved");
         RefreshStatus();
         return true;
         }
         catch (Exception error)
         {
-            L10n.SetText(FooterMessage, "Could not save settings: {0}", error.Message);
+            hasUnsavedChanges = true;
+            UpdateSaveState();
+            SetFooterMessage("Could not save settings: {0}", error.Message);
             L10n.SetText(OnlineStatus, FooterMessage.Text);
             return false;
         }
@@ -387,7 +419,7 @@ public partial class MainWindow : Window
         if (lines.Count == 0) lines.Add("# Techmo Bloodborne settings");
         foreach (var kv in values)
             if (!written.Contains(kv.Key)) lines.Add(kv.Key + "=" + kv.Value);
-        File.WriteAllText(path, string.Join("\r\n", lines) + "\r\n");
+        AtomicSettingsFile.Write(path, string.Join("\r\n", lines) + "\r\n");
     }
 
     void RefreshStatus() => RefreshStatusCore(detectGpu: true);
@@ -408,7 +440,7 @@ public partial class MainWindow : Window
         L10n.SetText(PathValidationText, valid ? "Game dump detected · {0}" : "Choose the folder containing eboot.bin and sce_sys.", valid ? new object[] { version } : Array.Empty<object>());
         string probe = Path.Combine(root, "out", "bb-probe.exe");
         bool nativeReady = File.Exists(probe);
-        PlayButton.IsEnabled = valid && nativeReady && !gameRunning;
+        PlayButton.IsEnabled = valid && nativeReady && !gameRunning && !saveDataBusy;
         L10n.SetText(PlayHint, !valid ? "Select a valid Bloodborne dump before playing." : !nativeReady ?
             "Build the native runtime before playing." : "Ready. Settings are saved automatically when Play is pressed.");
         L10n.SetText(RuntimeStatus, File.Exists(probe) ? "Ready" : "Not built");
@@ -520,10 +552,10 @@ public partial class MainWindow : Window
 
     void Play_Click(object sender, RoutedEventArgs e)
     {
-        if(gameRunning) return;
+        if(gameRunning || saveDataBusy) return;
         if (!File.Exists(Path.Combine(root, "out", "bb-probe.exe")))
         {
-            L10n.SetText(FooterMessage, "Build the native runtime before playing.");
+            SetFooterMessage("Build the native runtime before playing.");
             RefreshStatusCore(detectGpu: false);
             return;
         }
@@ -566,10 +598,13 @@ public partial class MainWindow : Window
             psi.Environment["BB_LANGUAGE"] = state.Language;
             psi.Environment["BB_GAMEPAD_INDEX"] = state.GamepadIndex.ToString();
             psi.Environment["BB_MODS_ENABLED"] = state.ModsEnabled ? "1" : "0";
+            psi.Environment["BB_MODS_DIR"] = modsDirectory;
+            psi.Environment["BB_MODS_CONFIG"] = modsConfigPath;
             psi.Environment["BB_LOG_FILE"] = logPath;
             psi.Environment["BB_SESSION_DIR"] = sessionDir;
             psi.Environment["PYTHONUNBUFFERED"] = "1";
             psi.Environment["BB_PRESENT_MODE"] = string.IsNullOrEmpty(state.PresentMode) ? "Mailbox" : state.PresentMode;
+            ConfigureHdrLaunch(psi);
             if (state.DeveloperMode && state.DetailedLogs)
             {
                 psi.Environment["BB_DLSS_LOG"] = "1";
@@ -598,7 +633,9 @@ public partial class MainWindow : Window
                     WindowState = WindowState.Normal;
                     LoadState();
                     ApplyStateToUi();
+                    RememberAppliedSettings();
                     RefreshStatusCore(detectGpu: false);
+                    RefreshSaveLists();
                     Activate();
                     ShowSessionReport(sessionDir, exitCode);
                     if (exitCode != 0)
@@ -612,7 +649,7 @@ public partial class MainWindow : Window
             gameRunning=true;
             PlayButton.IsEnabled=false;
             if(!gameProcess.Start()) throw new InvalidOperationException(L10n.Text("Could not start the game."));
-            L10n.SetText(FooterMessage, "Started · log: {0}", Path.GetFileName(logPath));
+            SetFooterMessage("Started · log: {0}", Path.GetFileName(logPath));
             Hide();
         }
         catch (Exception ex)
@@ -641,9 +678,14 @@ public partial class MainWindow : Window
 
     void OpenMods_Click(object sender, RoutedEventArgs e)
     {
-        string mods = Path.Combine(root, "mods");
-        Directory.CreateDirectory(mods);
-        Process.Start(new ProcessStartInfo("explorer.exe", mods) { UseShellExecute = true });
+        string mods = modsDirectory;
+        try
+        {
+            Directory.CreateDirectory(mods);
+            Process.Start(new ProcessStartInfo(mods) { UseShellExecute = true });
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        { L10n.SetText(ModScanStatus, "Could not open mod folder: {0}", error.Message); }
     }
 
     void OpenLogs_Click(object sender, RoutedEventArgs e)
@@ -656,56 +698,7 @@ public partial class MainWindow : Window
     void Nav_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button) return;
-        string page = button.CommandParameter?.ToString() ?? "Home";
-        foreach (var b in new[] { NavHome, NavGeneral, NavGraphics, NavPerformance, NavController, NavOnline, NavMods, NavAdvanced }) b.Tag = null;
-        button.Tag = "active";
-        HomePage.Visibility = page == "Home" ? Visibility.Visible : Visibility.Collapsed;
-        SettingsScrim.Visibility = page == "Home" ? Visibility.Collapsed : Visibility.Visible;
-        GeneralPage.Visibility = page == "General" ? Visibility.Visible : Visibility.Collapsed;
-        GraphicsPage.Visibility = page == "Graphics" ? Visibility.Visible : Visibility.Collapsed;
-        PerformancePage.Visibility = page == "Performance" ? Visibility.Visible : Visibility.Collapsed;
-        ControllerPage.Visibility = page == "Controller" ? Visibility.Visible : Visibility.Collapsed;
-        ModsPage.Visibility = page == "Mods" ? Visibility.Visible : Visibility.Collapsed;
-        OnlinePage.Visibility = page == "Online" ? Visibility.Visible : Visibility.Collapsed;
-        AdvancedPage.Visibility = page == "Advanced" ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    void QuickResolution_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (syncing || QuickResolution.SelectedItem is not ComboBoxItem item) return;
-        SetComboContent(ResolutionCombo, item.Content?.ToString() ?? "1920x1080");
-    }
-    void QuickDisplay_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (syncing) return;
-        FullscreenCheck.IsChecked = QuickDisplay.SelectedIndex == 0;
-    }
-    void QuickUpscaler_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (syncing) return;
-        string[] values = { "dlss", "fsr411", "fsr4", "fsr3", "taa", "off" };
-        if (QuickUpscaler.SelectedIndex >= 0) SetComboTag(UpscalerCombo, values[QuickUpscaler.SelectedIndex]);
-    }
-    void QuickPreset_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (syncing || !QuickPreset.IsEnabled || QuickPreset.SelectedIndex < 0) return;
-        if (QuickPreset.SelectedIndex >= 0) SetComboTag(PresetCombo, QuickPreset.SelectedIndex.ToString());
-    }
-    void QuickFps_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (syncing || QuickFps.SelectedItem is not ComboBoxItem item) return;
-        string v = NormalizeFps(item.Tag?.ToString() ?? item.Content?.ToString());
-        SetComboTag(FpsCombo, v);
-        FooterFps.Text = "   |   " + FpsLabel(v);
-    }
-
-    void SetQuickUpscaler(string value)
-    {
-        QuickUpscaler.SelectedIndex = value switch { "dlss" => 0, "fsr411" => 1, "fsr4" => 2, "fsr3" => 3, "taa" => 4, _ => 5 };
-    }
-    void SetQuickFps(string value)
-    {
-        QuickFps.SelectedIndex = value switch { "30" => 0, "90" => 2, "uncap" => 3, _ => 1 };
+        NavigateHub(button.CommandParameter?.ToString() ?? "Home");
     }
 
     static string ComboTag(ComboBox box, string fallback = "") =>

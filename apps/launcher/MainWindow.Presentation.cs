@@ -7,35 +7,7 @@ namespace BloodborneLauncher;
 
 public partial class MainWindow
 {
-    bool syncingVSync;
-    string lastNonVSyncMode = "";
-
-    void SyncVSyncChoice()
-    {
-        if (syncingVSync) return;
-        syncingVSync = true;
-        try
-        {
-            string mode = ComboTag(PresentCombo);
-            bool enabled = mode is "Fifo" or "FifoRelaxed";
-            if (!enabled) lastNonVSyncMode = mode;
-            VSyncCheck.IsChecked = enabled;
-        }
-        finally { syncingVSync = false; }
-    }
-
-    void PresentMode_Changed(object sender, SelectionChangedEventArgs e) => SyncVSyncChoice();
-
-    void VSyncChoice_Changed(object sender, RoutedEventArgs e)
-    {
-        if (syncingVSync || syncing) return;
-        syncingVSync = true;
-        try
-        {
-            SetComboTag(PresentCombo, VSyncCheck.IsChecked == true ? "Fifo" : lastNonVSyncMode);
-        }
-        finally { syncingVSync = false; }
-    }
+    void PresentMode_Changed(object sender, SelectionChangedEventArgs e) => UpdatePresentModeDescription();
 
     // Keep presentation events separate from configuration and launch contracts.
     void InitializePresentation()
@@ -53,13 +25,16 @@ public partial class MainWindow
         FpsCombo.SelectionChanged += DetailedSetting_Changed;
         FullscreenCheck.Checked += DisplaySetting_Changed;
         FullscreenCheck.Unchecked += DisplaySetting_Changed;
-        PresentCombo.SelectionChanged += PresentMode_Changed;
-        VSyncCheck.Checked += VSyncChoice_Changed;
-        VSyncCheck.Unchecked += VSyncChoice_Changed;
 
         AddHandler(Selector.SelectionChangedEvent, new SelectionChangedEventHandler(SettingsSelection_Changed));
         AddHandler(ToggleButton.CheckedEvent, new RoutedEventHandler(SettingsToggle_Changed));
         AddHandler(ToggleButton.UncheckedEvent, new RoutedEventHandler(SettingsToggle_Changed));
+        AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler((_, _) => MarkSettingsChanged()));
+        AddHandler(PasswordBox.PasswordChangedEvent, new RoutedEventHandler((_, _) => MarkSettingsChanged()));
+        // ScrollBar also inherits RangeBase: scrolling is navigation, not a setting edit.
+        AddHandler(RangeBase.ValueChangedEvent, new RoutedPropertyChangedEventHandler<double>((_, e) =>
+        { if (e.OriginalSource is Slider) MarkSettingsChanged(); }));
+        PreviewMouseWheel += Settings_MouseWheel;
         SizeChanged += (_, _) => UpdateDeskLayout();
         UpdateDeskLayout();
         StateChanged += (_, _) => MaximizeButton.Content = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
@@ -68,32 +43,51 @@ public partial class MainWindow
     void UpdateDeskLayout()
     {
         // Stack the poster above launch controls when two readable columns will not fit.
-        bool narrow = ActualWidth < 1050;
+        double width = ActualWidth > 0 ? ActualWidth : Width;
+        bool narrow = width < 900;
         PosterColumn.Width = new GridLength(1, GridUnitType.Star);
-        LaunchColumn.Width = narrow ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        LaunchColumn.Width = narrow ? new GridLength(0) : new GridLength(300);
         Grid.SetColumn(LaunchPanel, narrow ? 0 : 1);
         Grid.SetRow(LaunchPanel, narrow ? 1 : 0);
-        GamePoster.MinHeight = narrow ? 260 : 480;
-        GamePoster.Height = narrow ? 260 : double.NaN;
-        GamePoster.Margin = narrow ? new Thickness(0, 0, 0, 20) : new Thickness(0, 0, 24, 0);
-        QuickSettingsGrid.Columns = ActualWidth < 850 ? 2 : ActualWidth < 1250 ? 3 : 5;
-        SidebarColumn.Width = new GridLength(ActualWidth < 850 ? 160 : 188);
-        SidebarArt.Height = ActualHeight < 800 ? 54 : 100;
-        LanguageLabel.Visibility = ActualWidth < 850 ? Visibility.Collapsed : Visibility.Visible;
-        KeyBindingsGrid.Height = Math.Clamp(ActualHeight - 470, 190, 440);
+        GamePoster.MinHeight = narrow ? 290 : 350;
+        GamePoster.Height = narrow ? 290 : 350;
+        GamePoster.Margin = narrow ? new Thickness(0, 0, 0, 16) : new Thickness(0, 0, 18, 0);
+        SidebarColumn.Width = new GridLength(width < 850 ? 150 : 174);
+        SidebarArt.Visibility = ActualHeight < 600 ? Visibility.Collapsed : Visibility.Visible;
+        Breadcrumb.Visibility = width < 1050 ? Visibility.Collapsed : Visibility.Visible;
+        ProfileLabel.Visibility = width < 800 ? Visibility.Collapsed : Visibility.Visible;
+        ProfileCombo.Width = width < 800 ? 158 : 200;
+        KeyBindingsGrid.Height = Math.Clamp(ActualHeight - 390, 230, 490);
+        bool stack = width < 1120;
+        GraphicsSideColumn.Width = stack ? new GridLength(0) : new GridLength(238);
+        Grid.SetColumn(GraphicsSidebar, stack ? 0 : 1);
+        Grid.SetRow(GraphicsSidebar, stack ? 1 : 0);
+        GraphicsSidebar.Margin = stack ? new Thickness(0, 0, 0, 16) : new Thickness(16, 0, 0, 0);
+        ControlsPreviewColumn.Width = stack ? new GridLength(0) : new GridLength(220);
+        Grid.SetColumn(BindingsPanel, stack ? 0 : 1);
+        Grid.SetRow(BindingsPanel, stack ? 1 : 0);
+        Grid.SetColumnSpan(BindingsPanel, stack ? 2 : 1);
+        Grid.SetColumnSpan(ControlsPreview, stack ? 2 : 1);
+        ControlsPreview.MaxWidth = stack ? 340 : double.PositiveInfinity;
+        ControlsPreview.HorizontalAlignment = stack ? HorizontalAlignment.Left : HorizontalAlignment.Stretch;
+        ControlsPreview.Margin = stack ? new Thickness(0) : new Thickness(0, 0, 16, 0);
+        ProviderGrid.Columns = width < 800 ? 2 : 3;
+        LightingGrid.Columns = width < 900 ? 1 : 2;
+        EffectsGrid.Columns = width < 900 ? 1 : 2;
     }
 
     void ConfigureGraphics_Click(object sender, RoutedEventArgs e) => Nav_Click(NavGraphics, e);
 
-    void DetailedSetting_Changed(object sender, SelectionChangedEventArgs e) => SyncQuickSettings();
-    void DisplaySetting_Changed(object sender, RoutedEventArgs e) => SyncQuickSettings();
+    void DetailedSetting_Changed(object sender, SelectionChangedEventArgs e) => SyncDisplaySummary();
+    void DisplaySetting_Changed(object sender, RoutedEventArgs e) => SyncDisplaySummary();
 
     void UpdateUpscalingModeAvailability()
     {
         string provider = ComboTag(UpscalerCombo);
         bool available = provider is "dlss" or "fsr3" or "fsr4" or "fsr411";
-        PresetCombo.IsEnabled = QuickPreset.IsEnabled = available;
-        if (!available) PresetCombo.IsDropDownOpen = QuickPreset.IsDropDownOpen = false;
+        PresetCombo.IsEnabled = available;
+        UpdateSharpnessUi();
+        if (!available) PresetCombo.IsDropDownOpen = false;
         // Keep the saved selection: switching back to DLSS/FSR restores it.
         PresetUnavailableHint.Visibility = available ? Visibility.Collapsed : Visibility.Visible;
         L10n.SetText(PresetUnavailableHint, provider switch
@@ -104,32 +98,31 @@ public partial class MainWindow
         });
     }
 
-    void SyncQuickSettings()
+    void SyncDisplaySummary()
     {
         if (syncing) return;
         syncing = true;
         try
         {
-            SetComboContent(QuickResolution, ComboText(ResolutionCombo));
-            QuickDisplay.SelectedIndex = FullscreenCheck.IsChecked == true ? 0 : 1;
-            SetQuickUpscaler(ComboTag(UpscalerCombo));
-            QuickPreset.SelectedIndex = PresetCombo.SelectedIndex;
             UpdateUpscalingModeAvailability();
             string fps = ComboTag(FpsCombo);
-            SetQuickFps(fps);
             FooterFps.Text = "   |   " + FpsLabel(fps);
+            UpdateHubSummary();
         }
         finally { syncing = false; }
     }
 
     void SettingsSelection_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if(updatingBindings || e.OriginalSource==BindingGroupCombo)return;
-        if (!syncing && e.OriginalSource is ComboBox) L10n.SetText(FooterMessage, "Unsaved changes");
+        if(updatingBindings || e.OriginalSource==BindingGroupCombo || e.OriginalSource==ProfileCombo || e.OriginalSource==SaveSetCombo)return;
+        if (!syncing && e.OriginalSource is ComboBox) MarkSettingsChanged();
     }
 
     void SettingsToggle_Changed(object sender, RoutedEventArgs e)
     {
-        if (!syncing && e.OriginalSource is CheckBox) L10n.SetText(FooterMessage, "Unsaved changes");
+        // Mod rows report edits from their model. Binding/virtualization must not
+        // turn a freshly displayed checked row into an unsaved settings change.
+        if (e.OriginalSource is CheckBox { DataContext: ModRow }) return;
+        if (!syncing && e.OriginalSource is CheckBox) MarkSettingsChanged();
     }
 }

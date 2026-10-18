@@ -14,18 +14,23 @@ Techmo brings the launcher, native runtime and renderer into one Windows-focused
 workspace. Pick your game folder, configure controls and graphics, and keep your
 settings in one place. The interface starts in English and can switch to Vietnamese.
 
-The **Hunter’s Desk** interface pairs game artwork with launch controls, quick
-settings and expandable system details. The language selector stays available
-on every page, and smaller windows use a scrolling layout.
+The **Control Hub** interface separates Play, Display, Graphics, Controls, Saves & mods,
+Online, Diagnostics and Settings. Play focuses on launching the game; graphics
+settings live in Upscaling, Effects and Camera tabs. Choose English or Vietnamese,
+a dark/light/system theme and reduced motion in Settings.
 
 ## What you can configure
 
 - Click-to-bind keyboard/mouse controls with Shift/Ctrl/Alt combinations, Default / Dark Souls 3 / Custom presets
   and controller selection.
-- Render/output resolution, 30 / 60 / 90 FPS presets and available upscalers.
+- Output resolution, 30 / 60 / 90 FPS or experimental Unlimited, present mode and available upscalers.
+- Named display/graphics/input profiles with Save a copy, rename and delete.
+- Save backups, restore with a safety backup, and Techmo backup ZIP import/export.
+- Experimental SDR-to-HDR10 output conversion with display brightness controls.
 - Mods, community patches and optional shadNet connection settings.
 - English or Vietnamese launcher UI, independent of the game's language.
 - Session exit reports, optional frame/GPU CSV recordings and native minidumps.
+- Optional in-game FPS, CPU usage and active GPU usage overlay counters.
 - **Quit Game** on the title screen, with the game's own YES/NO confirmation.
   It uses the window-close path and saves completed pipeline-cache work before exiting.
 
@@ -33,11 +38,24 @@ Recorded whole-session statistics
 include loading screens and menus; use the same route for comparisons.
 
 In **Controls**, click a keyboard or mouse slot and press the desired input.
-Esc cancels, **×** clears one slot, and **Save settings** keeps the changes.
+Esc cancels, **×** clears one slot, and **Apply changes** keeps the changes.
 Custom bindings are retained when switching presets. For `Left Shift + Mouse1`,
 click the mouse slot, hold Left Shift and click the left mouse button. The same
 capture supports multiple side-specific modifiers, keyboard keys and the wheel.
 The new combination syntax requires an engine rebuilt from this source.
+
+The profile selector is available on every page. **Apply changes** (`Ctrl+S`)
+saves the current setup to the selected profile and runtime configuration.
+**Save a copy** (`Ctrl+Shift+S`) creates a new named profile. Switching profiles
+stages their settings until Apply or Play; unsaved changes prompt before switching
+or closing. The first run imports the current configuration as **My setup**.
+Profiles stay local in `user/launcher/profiles.json`, with atomic replacement and
+a previous-file backup. Game paths, launcher preferences and online accounts are
+shared and excluded from profile data. See [launcher details](apps/launcher/README.md).
+
+**Display → Present mode** is the single presentation choice: Mailbox, FIFO,
+FIFO Relaxed or Immediate. There is no separate VSync checkbox. Each mode has
+an explanation; the selection stays independent of the FPS limit.
 
 Available graphics features depend on the GPU, driver and installed assets.
 Restructuring the project or changing the launcher does not by itself raise FPS.

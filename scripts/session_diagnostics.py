@@ -16,7 +16,7 @@ SAFE_SETTINGS = {
     'effect_chromatic_aberration', 'graphics_controls', 'camera_controls', 'widescreen',
     'graphics_vignette', 'graphics_ao_strength', 'graphics_shadow_scale', 'graphics_bloom',
     'graphics_saturation', 'camera_fov_scale', 'camera_distance_scale', 'camera_height_scale',
-    'show_fps', 'mouse_sensitivity',
+    'show_fps', 'show_cpu', 'show_gpu', 'mouse_sensitivity',
 }
 SAFE_ENV = {
     'BB_FPS', 'BB_FPS_LIMIT', 'BB_VBLANK_HZ', 'BB_RENDER_RES', 'BB_OUTPUT_RES',

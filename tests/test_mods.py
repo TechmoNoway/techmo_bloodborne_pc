@@ -137,6 +137,88 @@ class ModTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mods.selected(self.moddir, config)
 
+    def test_read_only_catalog_uses_runtime_layout_and_reports_bad_entries(self):
+        self.mod('Costume', file='a.dcx')
+        self.mod('Lighting', file='a.dcx')
+        self.mod('Lighting', file='new.dcx')
+        (self.moddir / 'NotAMod/stuff').mkdir(parents=True)
+        (self.moddir / 'Download.zip').write_bytes(b'not extracted')
+        catalog = mods.inspect_mods(self.game, self.moddir)
+        rows = {row['name']: row for row in catalog['mods']}
+        self.assertEqual(rows['Costume']['files'], ['dvdroot_ps4/chr/a.dcx'])
+        self.assertEqual(set(rows['Lighting']['files']), {'dvdroot_ps4/chr/a.dcx', 'dvdroot_ps4/chr/new.dcx'})
+        self.assertEqual(rows['NotAMod']['error'], 'layout')
+        self.assertEqual(rows['Download.zip']['error'], 'archive')
+        self.assertFalse((self.root / 'out').exists())
+        self.assertEqual((self.assets / 'a.dcx').read_bytes(), b'original')
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/mods.py'), str(self.game),
+            '--mods-dir', str(self.moddir), '--inspect'], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), catalog)
+
+    def test_catalog_direct_and_legacy_match_runtime_and_can_be_disabled(self):
+        root = self.moddir / 'dvdroot_ps4/chr'
+        root.mkdir(parents=True)
+        (root / 'a.dcx').write_bytes(b'direct')
+        legacy = Path(str(self.game) + '-mods') / 'dvdroot_ps4/chr'
+        legacy.mkdir(parents=True)
+        (legacy / 'a.dcx').write_bytes(b'legacy')
+        catalog = mods.inspect_mods(self.game, self.moddir)
+        self.assertTrue(catalog['direct'])
+        self.assertEqual([row['kind'] for row in catalog['mods']], ['legacy', 'direct'])
+        config = self.root / 'mods.json'
+        for direct, sibling, expected in [(True, True, b'direct'), (False, True, b'legacy'), (False, False, b'original')]:
+            config.write_text(json.dumps({'direct_enabled': direct, 'legacy_enabled': sibling}))
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/mods.py'), str(self.game),
+                '--mods-dir', str(self.moddir), '--out', str(self.root / 'out'), '--config', str(config)],
+                capture_output=True, text=True, check=True)
+            self.assertEqual((Path(result.stdout.strip()) / 'dvdroot_ps4/chr/a.dcx').read_bytes(), expected)
+
+    def test_disabled_invalid_link_does_not_block_other_mods(self):
+        self.mod('Good')
+        linked = self.moddir / 'Linked'
+        if os.name == 'nt':
+            import _winapi
+            _winapi.CreateJunction(str(self.moddir / 'Good'), str(linked))
+        else:
+            linked.symlink_to(self.moddir / 'Good', target_is_directory=True)
+        catalog = mods.inspect_mods(self.game, self.moddir)
+        self.assertEqual(next(row for row in catalog['mods'] if row['name'] == 'Linked')['error'], 'invalid')
+        config = self.root / 'mods.json'
+        config.write_text(json.dumps({'order': ['Linked', 'Good'], 'disabled': ['Linked']}))
+        self.assertEqual(mods.selected(self.moddir, config), ['Good'])
+        result = mods.build_overlay(self.game, self.root / 'out', [('Good', self.moddir / 'Good')])
+        self.assertEqual((result / 'dvdroot_ps4/chr/a.dcx').read_bytes(), b'mod')
+        mods.remove_overlay(linked)
+
+    def test_catalog_rejects_nested_junction_and_executable_replacement(self):
+        bad = self.mod('Executable')
+        (bad / 'eboot.bin').write_bytes(b'unsupported')
+        linked = self.mod('NestedLink') / 'dvdroot_ps4/escape'
+        if os.name == 'nt':
+            import _winapi
+            _winapi.CreateJunction(str(self.assets), str(linked))
+        else:
+            linked.symlink_to(self.assets, target_is_directory=True)
+        try:
+            rows = mods.inspect_mods(self.game, self.moddir)['mods']
+            self.assertTrue(all(row['error'] == 'invalid' for row in rows))
+            self.assertEqual((self.assets / 'a.dcx').read_bytes(), b'original')
+        finally:
+            mods.remove_overlay(linked)
+
+    def test_invalid_config_is_preserved_and_global_disable_bypasses_it(self):
+        self.mod('A')
+        config = self.root / 'mods.json'
+        for content in ['[]', '{"order":null}', '{"legacy_enabled":1}', '{bad']:
+            config.write_text(content)
+            with self.assertRaises((ValueError, TypeError)):
+                mods.load_config(config)
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/mods.py'), str(self.game),
+                '--mods-dir', str(self.moddir), '--out', str(self.root / 'out'), '--config', str(config), '--enabled', '0'],
+                capture_output=True, text=True, check=True)
+            self.assertEqual(Path(result.stdout.strip()), self.game)
+            self.assertEqual(config.read_text(), content)
+
     def test_run_uses_overlay_propagates_exit_and_cleans_view(self):
         self.mod('A')
         mounted = {}

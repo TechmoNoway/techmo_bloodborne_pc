@@ -12,6 +12,8 @@ out/gpu/render-semantics-test.exe "$root"
 out/gpu/image-layout-cache-test.exe
 out/gpu/lru-cache-test.exe
 out/gpu/gc-policy-test.exe
+ninja -C out/gpu -j "${BB_BUILD_JOBS:-2}" hdr-output-test
+out/gpu/hdr-output-test.exe
 out/gpu/memory-notifications-test.exe
 for shader in "$root"/*.spv; do spirv-val --target-env vulkan1.3 "$shader"; done
 echo 'PASS: SPIR-V validation and current/obsolete plain/motion shader cache versions'
