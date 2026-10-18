@@ -25,6 +25,7 @@ VK_DEFINE_HANDLE(VmaAllocation)
 VK_DEFINE_HANDLE(VmaAllocator)
 
 namespace VideoCore {
+class ImageRecycler;
 
 enum ImageFlagBits : u32 {
     Empty = 0,
@@ -48,7 +49,7 @@ struct UniqueImage {
     UniqueImage& operator=(const UniqueImage&) = delete;
 
     UniqueImage(UniqueImage&& other)
-        : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
+        : device{other.device}, allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
           image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
           size_bytes{std::exchange(other.size_bytes, 0)} {}
@@ -87,7 +88,8 @@ public:
 
 struct Image {
     explicit Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime,
-                   Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info);
+                   Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info,
+                   ImageRecycler* recycler = nullptr);
     ~Image();
 
     Image(const Image&) = delete;
@@ -211,6 +213,16 @@ public:
     };
     std::deque<BackingImage> backing_images;
     boost::container::static_vector<u64, 16> mip_hashes{};
+    // Hashes describe the bytes uploaded into this specific backing/layout.
+    u16 uploaded_mips = 0;
+    const BackingImage* mip_hash_backing = nullptr;
+    std::array<u32, 6> mip_hash_layout{};
+    u64 cpu_hash_mapping = ~0ULL, cpu_hash_backing_epoch = ~0ULL;
+    u32 hash_reuse_last_blockers = 0;
+    u64 hash_reuse_candidates = 0, hash_reuse_hits = 0;
+    // Per-object diagnosis, reset with a new guest image. Never used to skip work.
+    u64 gpu_write_count = 0, gpu_write_address = 0, gpu_write_size = 0;
+    u64 refresh_count = 0, refresh_source_bytes = 0;
     u64 lru_id{};
     u64 hash{};
 

@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "common/singleton.h"
 #include "core/address_space.h"
+#include "bbport_write_epoch.h"
 
 namespace Vulkan { class Rasterizer; }
 
@@ -20,6 +21,7 @@ public:
     void CopySparseMemory(VAddr source, u8* dest, u64 size);
     bool TryWriteBacking(void* address, const void* data, u64 size);
     u64 MappingGeneration() const;
+    u64 BackingWriteGeneration() const { return backing_writes.Snapshot(); }
     void ReadBacking(VAddr address, void* data, u64 size);
     bool TryWriteBackingUnchanged(VAddr address, const void* data, u64 size, u64 generation);
     /// CPU wrote guest memory outside page tracking (e.g. decoded video frames).
@@ -27,6 +29,7 @@ public:
     Vulkan::Rasterizer* GetRasterizer() const { return rasterizer; }
 
 private:
+    BbBackingWriteEpoch backing_writes;
     AddressSpace impl;
     Vulkan::Rasterizer* rasterizer{};
 };

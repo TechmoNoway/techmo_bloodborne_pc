@@ -30,6 +30,7 @@ SAFE_ENV = {
     'BB_COMPUTE_PREP', 'BB_PIPELINE_RETRY', 'BB_PREP_WORKERS',
     'BB_RED_ZONE',
     'BB_IMAGE_WRITEBACK_GC', 'BB_WRITE_TRACKING', 'BB_MEMORY_SAFE', 'BB_AUTO_DMEM', 'BB_RENDER_POOLS',
+    'BB_KEEP_MIP_HASHES', 'BB_PARALLEL_IMAGE_HASH', 'BB_DETILE_SCRATCH_REUSE', 'BB_COMPUTE_SCAN', 'BB_GRAPHICS_SCAN', 'BB_GRAPHICS_SCAN_SPREAD', 'BB_FIRST_USE_PIPELINE', 'BB_PIPELINE_EARLY_FRONTEND', 'BB_REUSE_GPU_SOURCE_HASH', 'BB_IMAGE_RECYCLE_MB',
 }
 
 
@@ -157,7 +158,7 @@ def memory_summary(path):
                         'guest_buffer_unused_bytes', 'pending_image_bytes',
                         'gc_evicted_images', 'gc_written_back_images', 'gc_pressure', 'gc_critical')}
                     for key in ('pending_buffer_bytes', 'buffer_evicted_bytes', 'buffer_freed_bytes',
-                                'gc_tiled_attempts', 'gc_tiled_writebacks', 'gc_tiled_bytes', 'gc_tiled_kept'):
+                                'gc_tiled_attempts', 'gc_tiled_writebacks', 'gc_tiled_bytes', 'gc_tiled_kept', 'image_recycle_bytes'):
                         values[key] = int(row[key]) if key in row else 0  # Older headers remain readable.
                     for key in ('gc_tiled_ms', 'gc_tiled_max_ms'):
                         values[key] = float(row[key]) if key in row else 0.0
@@ -188,7 +189,7 @@ def memory_summary(path):
         'note': 'Independent low-frequency samples can miss peaks. Tracked images, guest buffers and pending frees overlap; do not add them to driver usage. Shared VMA block slack, upscaler internals and driver allocations are not individually attributed.',
     }
     for name in ('tracked_image_bytes', 'guest_buffer_allocated_bytes', 'guest_buffer_unused_bytes',
-                 'pending_image_bytes', 'pending_buffer_bytes'):
+                 'pending_image_bytes', 'pending_buffer_bytes', 'image_recycle_bytes'):
         result['peak_' + name] = max(row[name] for row in rows)
     for name in ('buffer_evicted_bytes', 'buffer_freed_bytes', 'gc_tiled_attempts',
                  'gc_tiled_writebacks', 'gc_tiled_bytes', 'gc_tiled_kept', 'gc_tiled_ms', 'gc_tiled_max_ms'):
@@ -199,14 +200,17 @@ def memory_summary(path):
 def compilation_summary(path):
     """Stream bounded compile evidence; slow events do not count all compilations."""
     patterns = (
-        ('foreground', re.compile(r'Compile stall: (shader module|graphics pipeline|compute pipeline) (\w+) (\d+(?:\.\d+)?) ms \(foreground\)')),
+        ('foreground', re.compile(r'Compile stall: (shader module|graphics pipeline|graphics frontend|compute pipeline) (\w+) (\d+(?:\.\d+)?) ms \(foreground\)')),
         ('background', re.compile(r'Pipeline prepared: (gfx|compute) (\w+) (\d+(?:\.\d+)?) ms \(background\)')),
         ('wait', re.compile(r'Pipeline preparation wait: (gfx|compute) (\w+) (\d+(?:\.\d+)?) ms')),
     )
-    counts = {'shader module': 0, 'graphics pipeline': 0, 'compute pipeline': 0}
+    counts = {'shader module': 0, 'graphics pipeline': 0, 'graphics frontend': 0, 'compute pipeline': 0}
     foreground_ms = background_ms = wait_ms = 0.0
     background_events = wait_events = failures = skipped = 0
     largest = []
+    timelines = []
+    timeline_count = 0
+    frontend_events = []
     required_reasons = {stage: {reason: 0 for reason in ('cold_shader', 'new_permutation', 'not_prepared')}
                         for stage in ('graphics pipeline', 'compute pipeline')}
     result = {'available': False,
@@ -241,7 +245,61 @@ def compilation_summary(path):
                     stage = 'graphics pipeline' if reason[1] == 'gfx' else 'compute pipeline'
                     required_reasons[stage][reason[2]] += 1
                     result['available'] = True
+                enabled = re.search(r'Pipeline early frontend: (on|off),', line)
+                if enabled: result.update(early_frontend_enabled=enabled[1] == 'on', available=True)
+                ready = re.search(r'Pipeline early ready: gfx (0x[0-9a-fA-F]+) metadata_ms=([\d.]+)', line)
+                if ready:
+                    try:
+                        if math.isfinite(float(ready[2])):
+                            result['early_frontends_published'] = result.get('early_frontends_published', 0) + 1
+                    except ValueError: skipped += 1
+                front = re.search(r'Pipeline frontend: gfx (0x[0-9a-fA-F]+) total_ms=([\d.]+) descriptor_ms=([\d.]+) layout_ms=([\d.]+) state_ms=([\d.]+) snapshot_ms=([\d.]+) enqueue_ms=([\d.]+)', line)
+                if front:
+                    try:
+                        durations = [float(v) for v in front.groups()[1:]]
+                        if any(not math.isfinite(v) or v < 0 for v in durations): raise ValueError('invalid frontend')
+                        event = dict(zip(('total_ms', 'descriptor_ms', 'layout_ms', 'state_ms', 'snapshot_ms', 'enqueue_ms'), durations))
+                        event.update(hash=front[1], log_line=line_number)
+                        frontend_events.append(event);frontend_events.sort(key=lambda v: v['total_ms'], reverse=True);del frontend_events[20:]
+                        result['available'] = True
+                    except ValueError: skipped += 1
+                if re.search(r'Pipeline first use: gfx (?:0x)?[0-9a-fA-F]+ native queued; wait at bind', line):
+                    result['first_use_deferred'] = result.get('first_use_deferred', 0) + 1
+                    result['available'] = True
+                seed = re.search(r'Pipeline native cache: (\d+) compatible seed bytes', line)
+                saved = re.search(r'Pipeline native cache: saved (\d+) payload bytes', line)
+                if seed: result['native_cache_seed_bytes'] = int(seed[1])
+                if saved: result['native_cache_saved_bytes'] = int(saved[1])
+                warm = re.search(r'Pipeline warmup: (\d+) loaded, (\d+) rejected, (\d+) records', line)
+                if warm: result['warmup'] = dict(loaded=int(warm[1]), rejected=int(warm[2]), records=int(warm[3]))
+                timeline = re.search(r'Pipeline timeline: (gfx_frontend|gfx_bind|gfx|compute) (0x[0-9a-fA-F]+) origin=(required|lookahead) queued=([\d.]+) start=([\d.]+) need=([\d.]+) queue_ms=([\d.]+) compile_ms=([\d.]+) lead_ms=(-?[\d.]+) remaining_ms=([\d.]+)', line)
+                if timeline:
+                    try:
+                        values = list(map(float, timeline.groups()[3:]))
+                        if any(not math.isfinite(v) for v in values) or any(v < 0 for i, v in enumerate(values) if i != 5):
+                            raise ValueError('invalid timeline')
+                        timeline_count += 1
+                        event = dict(zip(('queued_at_ms', 'started_at_ms', 'needed_at_ms', 'queue_ms', 'compile_ms', 'lead_ms', 'remaining_ms'), values))
+                        event.update(stage=timeline[1], hash=timeline[2], origin=timeline[3], log_line=line_number)
+                        capacity = re.search(r'capacity_ms=([\d.]+)', line)
+                        if capacity:
+                            value = float(capacity[1])
+                            if math.isfinite(value) and value >= 0: event['capacity_wait_ms'] = value
+                        admission = re.search(r'admission_ms=([\d.]+)', line)
+                        if admission:
+                            value = float(admission[1])
+                            if math.isfinite(value) and value >= 0: event['admission_wait_ms'] = value
+                        timelines.append(event)
+                        timelines.sort(key=lambda e: e['remaining_ms'], reverse=True)
+                        del timelines[20:]
+                        result['available'] = True
+                    except ValueError:
+                        skipped += 1
                 retries = re.search(r'Pipeline retries: (\d+) passes, (\d+) draws recovered', line)
+                scan = re.search(r'(Compute|Graphics) lookahead: (\d+) scanner attempts, (\d+) known selections', line)
+                if scan and int(scan[3]) <= int(scan[2]):
+                    result[scan[1].lower() + '_lookahead'] = {'attempts': int(scan[2]), 'known_selections': int(scan[3])}
+                    result['available'] = True
                 if retries:
                     result['retries'] = {'passes': int(retries[1]), 'recovered_draws': int(retries[2])}
                     result['available'] = True
@@ -282,7 +340,100 @@ def compilation_summary(path):
                   logged_wait_events=wait_events, logged_wait_ms=wait_ms,
                   preparation_failures=failures, skipped_events=skipped, largest_events=largest)
     result['required_miss_reasons'] = required_reasons
+    result['timeline_events'] = timeline_count
+    result['timeline_largest'] = timelines
+    result['frontend_largest'] = frontend_events
     return result
+
+
+def resource_work_summary(path):
+    """Optional CPU-side timing/counter columns; older captures stay readable."""
+    fields = ('hash_ms hash_snapshot_ms hash_mb hash_reused_mb unchanged_mip_mb '
+              'hash_parallel_jobs detile_ms upload_record_ms host_copy_ms detile_scratch_reuses').split()
+    totals = dict.fromkeys(fields, 0.0)
+    peaks = dict.fromkeys(fields, 0.0)
+    samples = skipped = 0
+    try:
+        with Path(path).open(encoding='utf-8') as stream:
+            reader = csv.DictReader(stream)
+            if not set(fields) <= set(reader.fieldnames or ()):
+                return {'available': False}
+            optional = ('image_alloc_ms', 'image_view_ms', 'image_format_ms', 'image_recycle_hits')
+            for key in optional:
+                if key in (reader.fieldnames or ()):
+                    fields.append(key); totals[key] = peaks[key] = 0.0
+            for row in reader:
+                try:
+                    values = {key: float(row[key]) for key in fields}
+                    frame_ms = float(row['frame_ms'])
+                    if not math.isfinite(frame_ms) or frame_ms <= 0 or any(not math.isfinite(v) or v < 0 for v in values.values()):
+                        raise ValueError('invalid resource-work sample')
+                except (KeyError, TypeError, ValueError):
+                    skipped += 1
+                    continue
+                samples += 1
+                for key, value in values.items():
+                    totals[key] += value
+                    peaks[key] = max(peaks[key], value)
+    except OSError:
+        return {'available': False}
+    return {'available': bool(samples), 'samples': samples, 'skipped_rows': skipped,
+            'totals': totals, 'peaks': peaks,
+            'note': 'CPU operation wall times can overlap/nest; do not add them to frame time. Detile/upload timings are CPU command setup, not GPU transfer duration. MB is decimal.'}
+
+
+def texture_activity_summary(path):
+    """Bounded sampled evidence; cumulative counters for an object are not summed."""
+    objects, creates = {}, []
+    reuse_summary = {}
+    events = 0
+    try:
+        with Path(path).open(encoding='utf-8', errors='replace') as stream:
+            for line_number, line in enumerate(stream, 1):
+                match = re.search(r'Texture refresh: uid=(\d+) address=(0x[0-9a-fA-F]+) size=(\d+) count=(\d+) flags=(\d+) new_backing=([01]) source_total_mb=([\d.]+) uploaded_mb=([\d.]+) unchanged_mb=([\d.]+) outcome=(uploaded|whole_match|mips_match)', line)
+                if match:
+                    uid, address, size, count, flags, backing, source, uploaded, unchanged, outcome = match.groups()
+                    numbers = [float(source), float(uploaded), float(unchanged)]
+                    if any(not math.isfinite(n) or n < 0 for n in numbers): continue
+                    events += 1
+                    if uid in objects or len(objects) < 256:
+                        objects[uid] = dict(uid=int(uid), address=address, size_bytes=int(size), refresh_count=int(count),
+                            flags=int(flags), new_backing=bool(int(backing)), source_total_mb=numbers[0],
+                            uploaded_mb=numbers[1], unchanged_mb=numbers[2], outcome=outcome, log_line=line_number)
+                        gpu = re.search(r'gpu_source=([01]) gpu_writes=(\d+) write_address=(0x[0-9a-fA-F]+|0) write_size=(\d+) hash_reused_mb=([\d.]+)', line)
+                        if gpu and math.isfinite(float(gpu[5])):
+                            objects[uid].update(gpu_source=bool(int(gpu[1])), gpu_write_count=int(gpu[2]),
+                                gpu_write_address=gpu[3], gpu_write_size=int(gpu[4]), hash_reused_mb=float(gpu[5]))
+                        check = re.search(r'hash_check=([01]) hash_blockers=(0x[0-9a-fA-F]+|0) hash_candidates=(\d+) hash_hits=(\d+)', line)
+                        if check:
+                            names = ('disabled tracking_off not_gpu_dirty not_gpu_source backing_changed mips_missing cpu_dirty '
+                                     'not_fully_tracked tracking_gap mapping_busy mapping_changed host_write_busy host_reference_invalid host_write_changed').split()
+                            mask = int(check[2], 0)
+                            objects[uid].update(hash_reuse_checked=bool(int(check[1])), hash_blockers=mask,
+                                hash_block_reasons=[name for bit,name in enumerate(names) if mask & (1 << bit)],
+                                hash_candidates=int(check[3]), hash_hits=int(check[4]))
+                summary = re.search(r'GPU hash reuse: candidates=(\d+) reused=(\d+)', line)
+                if summary and int(summary[2]) <= int(summary[1]):
+                    names = ('disabled tracking_off not_gpu_dirty not_gpu_source backing_changed mips_missing cpu_dirty '
+                             'not_fully_tracked tracking_gap mapping_busy mapping_changed host_write_busy host_reference_invalid host_write_changed').split()
+                    counts = {name: re.search(r'\b' + name + r'=(\d+)\b', line) for name in names}
+                    if all(counts.values()) and int(summary[1]) >= reuse_summary.get('candidates', 0):
+                        reuse_summary = dict(candidates=int(summary[1]), reused=int(summary[2]),
+                            blocked={name: int(value[1]) for name,value in counts.items()}, log_line=line_number,
+                            note='Cumulative multi-cause counts, sampled across threads; do not sum reasons or repeated snapshots.')
+                created = re.search(r'Texture create: uid=(\d+) address=(0x[0-9a-fA-F]+) size=(\d+) width=(\d+) height=(\d+) format=(\d+) ms=([\d.]+)', line)
+                if created:
+                    ms = float(created[7])
+                    if not math.isfinite(ms) or ms < 0: continue
+                    creates.append(dict(uid=int(created[1]), address=created[2], size_bytes=int(created[3]),
+                        width=int(created[4]), height=int(created[5]), format=int(created[6]), wall_ms=ms, log_line=line_number))
+                    creates.sort(key=lambda event: event['wall_ms'], reverse=True)
+                    del creates[20:]
+    except OSError:
+        pass
+    return dict(available=bool(events or creates or reuse_summary), hash_reuse=reuse_summary, sampled_refresh_events=events,
+                repeated_images=sorted(objects.values(), key=lambda event: event['source_total_mb'], reverse=True)[:20],
+                slow_creates=creates, note='Sampled per-object cumulative evidence. Do not sum snapshots or infer all invalidations. Dirty flags overlap; new_backing also covers layout changes.')
 
 
 def upload_summary(path):
@@ -420,6 +571,8 @@ class Session:
                            gpu_performance=gpu_summary(self.directory / 'gpu.csv'),
                            compilation=compilation_summary(self.env['BB_LOG_FILE']),
                            resource_uploads=upload_summary(self.directory / 'frames.csv'),
+                           resource_work=resource_work_summary(self.directory / 'frames.csv'),
+                           texture_activity=texture_activity_summary(self.env['BB_LOG_FILE']),
                            memory=memory_summary(self.directory / 'vram.csv'), native_fault=fault)
         self.report['minidump'] = read_json(self.directory / 'minidump.json')
         self.report['artifacts'] = [path.name for path in self.directory.iterdir() if path.is_file() and not path.name.endswith('.tmp')]
@@ -449,6 +602,14 @@ class Session:
                 retries = compilation['retries']
                 text += [f"Preparation retries: {retries['passes']} passes; {retries['recovered_draws']} draws recovered"]
         uploads = self.report['resource_uploads']
+        work = self.report['resource_work']
+        if work.get('available'):
+            totals = work['totals']
+            text += [f"Image hashing: {totals['hash_mb']:.1f} MB in {totals['hash_ms']:.2f} ms; snapshot {totals['hash_snapshot_ms']:.2f} ms; {totals['hash_parallel_jobs']:.0f} parallel jobs",
+                     f"Unchanged mips avoided: {totals['unchanged_mip_mb']:.1f} MB; detile scratch reuses: {totals['detile_scratch_reuses']:.0f}"]
+        if work.get('available') and 'image_alloc_ms' in work['totals']:
+            totals = work['totals']
+            text += [f"Image setup CPU: allocation {totals['image_alloc_ms']:.2f} ms; views {totals.get('image_view_ms', 0):.2f} ms; format queries {totals.get('image_format_ms', 0):.2f} ms; retired-image reuses {totals.get('image_recycle_hits', 0):.0f}"]
         if uploads.get('available'):
             text += [f"Upload peaks per flip: image {uploads['peak_image_mb_per_flip']:.2f} MB; buffer {uploads['peak_buffer_mb_per_flip']:.2f} MB (separate stages)",
                      f"Large upload flips >=64 MB: {uploads['flips_with_upload_counter_at_least_64_mb']}; also >33.33 ms: {uploads['large_upload_flips_over_33_33_ms']}"]

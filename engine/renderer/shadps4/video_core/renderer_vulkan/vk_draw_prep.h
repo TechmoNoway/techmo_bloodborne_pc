@@ -92,6 +92,7 @@ struct PreparedDraw {
 };
 
 class DrawPreparation {
+    friend struct PipelinePrecompileTest;
 public:
     // Graphics queue replay, including its private compute-register shadow.
     static void ApplyPreparationRegisters(AmdGpu::Regs& regs, const AmdGpu::PM4Header* header,
@@ -172,6 +173,8 @@ private:
     u32 worker_count = 0; ///< fixed before the worker threads start
     bool retry_enabled = false;
     std::atomic<u64> retry_passes{0}, retry_draws{0};
+    std::atomic<u64> compute_scan_attempts{0}, compute_scan_ready{0};
+    std::atomic<u64> graphics_scan_attempts{0}, graphics_scan_ready{0};
     std::jthread scanner;
     std::vector<std::jthread> workers;
 };

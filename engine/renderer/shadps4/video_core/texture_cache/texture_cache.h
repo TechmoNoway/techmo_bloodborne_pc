@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "video_core/texture_cache/image_recycler.h"
+
 #include <string>
 #include <atomic>
 #include <chrono>
@@ -421,6 +423,7 @@ private:
     PageManager& tracker;
     BlitHelper blit_helper;
     TileManager tile_manager;
+    ImageRecycler image_recycler;
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageView> slot_image_views;
     tsl::robin_map<u64, Sampler> samplers;

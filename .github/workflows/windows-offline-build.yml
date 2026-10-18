@@ -101,8 +101,9 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 pipeline-precompiler-test liverpool-tasks-test pipeline-precompile-gpu-test
+          ninja -C out/gpu -j2 pipeline-precompiler-test pipeline-key-test liverpool-tasks-test pipeline-precompile-gpu-test
           out/gpu/pipeline-precompiler-test.exe
+          out/gpu/pipeline-key-test.exe
           out/gpu/liverpool-tasks-test.exe
           # The real Vulkan readback fixture is compiled here and run locally on a GPU.
 
@@ -111,7 +112,9 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test stable-arena-test
+          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test stable-arena-test image-hash-test tiled-writeback-test tiled-gc-test
+          BB_COPY_THREADS=0 out/gpu/image-hash-test.exe
+          BB_COPY_THREADS=2 out/gpu/image-hash-test.exe
           out/gpu/record-data-test.exe --cpu-only
           out/gpu/memory-notifications-test.exe
           out/gpu/frame-pacing-test.exe

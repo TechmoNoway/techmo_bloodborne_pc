@@ -10,10 +10,76 @@ from unittest.mock import patch
 
 from session_diagnostics import (Session, classify_exit, frame_summary, gpu_summary, memory_summary,
                                  compilation_summary, upload_summary)
+from session_diagnostics import resource_work_summary, texture_activity_summary
 import run_windows
 
 
 class SessionDiagnosticsTests(unittest.TestCase):
+    def test_pipeline_timeline_keeps_queue_compile_and_overlap_separate(self):
+        path = self.root / 'timeline.log'
+        lines = ['Pipeline native cache: 123 compatible seed bytes',
+                 'Pipeline native cache: saved 456 payload bytes',
+                 'Graphics lookahead: 40 scanner attempts, 20 known selections']
+        lines += [f'Pipeline timeline: gfx 0xabc origin=required queued=10 start=12 need=9 queue_ms=2 compile_ms={i} lead_ms=-1 remaining_ms={i+3}' for i in range(30)]
+        lines += ['Pipeline timeline: gfx 0xabc origin=required queued=nan',
+                  'Pipeline timeline: gfx 0xabc origin=required queued=10 start=12 need=9 queue_ms=2 compile_ms=.. lead_ms=-1 remaining_ms=2']
+        path.write_text('\n'.join(lines))
+        result=compilation_summary(path)
+        self.assertEqual(result['timeline_events'],30)
+        self.assertEqual(len(result['timeline_largest']),20)
+        self.assertEqual(result['timeline_largest'][0]['remaining_ms'],32)
+        self.assertEqual(result['timeline_largest'][0]['lead_ms'],-1)
+        self.assertEqual(result['logged_wait_ms'],0)
+        self.assertEqual(result['native_cache_seed_bytes'],123)
+        self.assertEqual(result['native_cache_saved_bytes'],456)
+        self.assertEqual(result['graphics_lookahead']['known_selections'],20)
+
+    def test_texture_snapshots_keep_latest_object_and_bound_evidence(self):
+        path=self.root/'textures.log'
+        line='Texture refresh: uid=1 address=0x100000 size=4096 count={} flags=3 new_backing=0 source_total_mb={} uploaded_mb=0 unchanged_mb=1 outcome=mips_match'
+        path.write_text(line.format(64,64)+'\n'+line.format(128,128)+'\n'+
+            'Texture create: uid=2 address=0x200000 size=4096 width=32 height=32 format=37 ms=174.2\n'+
+            'Texture refresh: uid=3 address=0x100000 size=4096 count=64 flags=3')
+        result=texture_activity_summary(path)
+        self.assertEqual(result['sampled_refresh_events'],2)
+        self.assertEqual(len(result['repeated_images']),1)
+        self.assertEqual(result['repeated_images'][0]['source_total_mb'],128)
+        self.assertEqual(result['slow_creates'][0]['wall_ms'],174.2)
+        self.assertFalse(texture_activity_summary(self.root/'missing')['available'])
+
+    def test_resource_work_columns_keep_cpu_timings_separate_and_accept_old_captures(self):
+        path=self.root/'work.csv'
+        path.write_text('t_s,frame_ms\n0,16\n')
+        self.assertFalse(resource_work_summary(path)['available'])
+        fields='hash_ms hash_snapshot_ms hash_mb hash_reused_mb unchanged_mip_mb hash_parallel_jobs detile_ms upload_record_ms host_copy_ms detile_scratch_reuses'.split()
+        path.write_text('frame_ms,'+','.join(fields)+'\n16,'+','.join(['2']*len(fields))+'\n17,'+','.join(['3']*len(fields))+'\n18,nan,'+','.join(['1']*(len(fields)-1))+'\n')
+        result=resource_work_summary(path)
+        self.assertEqual((result['samples'],result['skipped_rows']),(2,1))
+        self.assertEqual(result['totals']['hash_ms'],5)
+        self.assertEqual(result['peaks']['detile_ms'],3)
+        self.assertIn('not GPU transfer',result['note'])
+
+    def test_optional_image_setup_columns_keep_old_samples_readable(self):
+        path=self.root/'setup.csv'
+        fields=('hash_ms hash_snapshot_ms hash_mb hash_reused_mb unchanged_mip_mb '
+                'hash_parallel_jobs detile_ms upload_record_ms host_copy_ms detile_scratch_reuses '
+                'image_alloc_ms image_view_ms image_format_ms image_recycle_hits').split()
+        path.write_text('frame_ms,'+','.join(fields)+'\n16,'+','.join(['2']*len(fields))+'\n')
+        report=resource_work_summary(path)
+        self.assertEqual(report['totals']['image_alloc_ms'],2)
+        self.assertEqual(report['totals']['image_recycle_hits'],2)
+        path.write_text('frame_ms,'+','.join(fields)+'\n16,'+','.join(['2']*(len(fields)-1))+'\n')
+        self.assertFalse(resource_work_summary(path)['available'])
+
+    def test_compute_scanner_report_is_distinct_from_required_work(self):
+        path=self.root/'scanner.log'
+        path.write_text('Compute lookahead: 15 scanner attempts, 7 known selections\nPipeline required submissions: compute 2\n')
+        result=compilation_summary(path)
+        self.assertEqual(result['compute_lookahead'],{'attempts':15,'known_selections':7})
+        self.assertEqual(result['required_compute_submissions'],2)
+        path.write_text('Compute lookahead: 1 scanner attempts, 2 known selections\n')
+        self.assertNotIn('compute_lookahead',compilation_summary(path))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -156,6 +222,50 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report['preparation']['foreground_wait_ms'], 3.12)
         self.assertEqual(report['preparation_failures'], 1)
         self.assertEqual(report['largest_events'][0]['kind'], 'background')
+
+    def test_early_frontend_timing_and_native_capacity_are_separate(self):
+        path = self.root / 'early.log'
+        path.write_text('Pipeline early frontend: on, native continuation on same worker\n'
+                        'Pipeline early ready: gfx 0x123 metadata_ms=1.000\n'
+                        'Pipeline frontend: gfx 0x123 total_ms=46.000 descriptor_ms=1.000 layout_ms=2.000 state_ms=3.000 snapshot_ms=1.000 enqueue_ms=39.000\n'
+                        'Pipeline timeline: gfx_frontend 0x123 origin=lookahead queued=1 start=2 need=3 queue_ms=1 compile_ms=1 lead_ms=2 remaining_ms=0 capacity_ms=0\n'
+                        'Pipeline timeline: gfx_bind 0x123 origin=lookahead queued=1 start=3 need=4 queue_ms=2 compile_ms=200 lead_ms=3 remaining_ms=199 capacity_ms=39 admission_ms=2\n')
+        report = compilation_summary(path)
+        self.assertTrue(report['early_frontend_enabled'])
+        self.assertEqual(report['early_frontends_published'], 1)
+        self.assertEqual(report['frontend_largest'][0]['enqueue_ms'], 39)
+        self.assertEqual(report['timeline_largest'][0]['capacity_wait_ms'], 39)
+        self.assertEqual(report['timeline_largest'][0]['admission_wait_ms'], 2)
+        self.assertEqual(report['timeline_events'], 2)
+
+    def test_hash_block_reasons_keep_cumulative_multicauses_and_ignore_truncation(self):
+        path = self.root / 'hash-reasons.log'
+        names = ('disabled tracking_off not_gpu_dirty not_gpu_source backing_changed mips_missing cpu_dirty '
+                 'not_fully_tracked tracking_gap mapping_busy mapping_changed host_write_busy host_reference_invalid host_write_changed').split()
+        counts = ' '.join(name + '=7' for name in names)
+        path.write_text('GPU hash reuse: candidates=10 reused=2 ' + counts + '\n' +
+                        'GPU hash reuse: candidates=10 reused=2 ' + counts + '\n' +
+                        'GPU hash reuse: candidates=11 reused=2 disabled=7\n' +
+                        'Texture refresh: uid=79 address=0x106a4d0000 size=9437184 count=64 flags=68 new_backing=0 source_total_mb=600.000 uploaded_mb=9.437 unchanged_mb=0.000 outcome=uploaded gpu_source=1 gpu_writes=80 write_address=0x106a4d1000 write_size=4096 hash_reused_mb=0.000 hash_check=1 hash_blockers=0x2400 hash_candidates=64 hash_hits=0\n')
+        report = texture_activity_summary(path)
+        self.assertEqual(report['hash_reuse']['candidates'], 10)
+        self.assertEqual(report['hash_reuse']['blocked']['mapping_changed'], 7)
+        image = report['repeated_images'][0]
+        self.assertEqual(image['hash_block_reasons'], ['mapping_changed', 'host_write_changed'])
+        self.assertEqual(image['hash_candidates'], 64)
+
+    def test_deferred_bind_and_gpu_source_evidence(self):
+        path = self.root / 'session.log'
+        path.write_text('Pipeline first use: gfx 0x12 native queued; wait at bind\n'
+                        'Pipeline timeline: gfx_bind 0x12 origin=required queued=10.000 start=11.000 need=30.000 queue_ms=1.000 compile_ms=80.000 lead_ms=20.000 remaining_ms=61.000\n'
+                        'Texture refresh: uid=79 address=0x106a4d0000 size=9437184 count=64 flags=68 new_backing=0 source_total_mb=600.000 uploaded_mb=9.437 unchanged_mb=0.000 outcome=uploaded gpu_source=1 gpu_writes=80 write_address=0x106a4d1000 write_size=4096 hash_reused_mb=9.437\n')
+        report = compilation_summary(path)
+        self.assertEqual(report['first_use_deferred'], 1)
+        self.assertEqual(report['timeline_largest'][0]['stage'], 'gfx_bind')
+        image = texture_activity_summary(path)['repeated_images'][0]
+        self.assertTrue(image['gpu_source'])
+        self.assertEqual(image['gpu_write_size'], 4096)
+        self.assertEqual(image['hash_reused_mb'], 9.437)
 
     def test_compile_report_bounds_evidence_and_ignores_invalid_or_truncated_events(self):
         path = self.root / 'session.log'

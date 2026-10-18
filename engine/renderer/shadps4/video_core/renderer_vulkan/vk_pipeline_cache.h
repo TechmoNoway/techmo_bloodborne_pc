@@ -204,8 +204,12 @@ private:
         GraphicsPipelineKey key;
     };
     struct PreparedPipeline {
+        PreparedPipeline() = default;
+        PreparedPipeline(PreparedPipeline&&) noexcept = default;
+        PreparedPipeline& operator=(PreparedPipeline&&) noexcept = default;
         std::shared_ptr<PipelineSnapshot> snapshot; // Keeps constructor Info pointers alive.
         std::unique_ptr<GraphicsPipeline> pipeline;
+        vk::UniquePipeline native;
         GraphicsPipeline::SerializationSupport serialization;
     };
     using Precompiler = PipelinePrecompiler<GraphicsPipelineKey, PreparedPipeline>;
@@ -215,9 +219,12 @@ private:
         ComputePipeline::SerializationSupport serialization;
     };
     using ComputePrecompiler = PipelinePrecompiler<ComputePipelineKey, PreparedCompute>;
+    std::shared_ptr<PipelineSnapshot> SnapshotGraphics(const PipelineSelection& selection);
     std::function<PreparedPipeline()> MakeGraphicsWork(const PipelineSelection& selection);
+    Precompiler::EarlyWork MakeEarlyGraphicsWork(const PipelineSelection& selection);
     std::function<PreparedCompute()> MakeComputeWork(const PipelineSelection& selection,
                                                    ComputePipelineKey key);
+    Pipeline::NativeSchedule FirstUseSchedule(const GraphicsPipelineKey& key);
     void CreateNativeCache();
     void SaveNativeCache();
     // Only pipeline creation and shutdown snapshots take this lock, never cache hits.
@@ -263,6 +270,7 @@ private:
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
     bool object_motion_enabled{};
+    bool early_frontend = false;
     vk::UniquePipelineCache preparation_cache;
     std::unique_ptr<Precompiler> precompiler;
     vk::UniquePipelineCache compute_preparation_cache;

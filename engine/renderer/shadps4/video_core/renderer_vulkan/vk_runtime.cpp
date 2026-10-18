@@ -272,6 +272,7 @@ Runtime::TransferMark::~TransferMark() {
 
 void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
                           std::span<const vk::BufferImageCopy> upload_copies) {
+    BbStats::Timer timing{BbStats::t_image_upload};
     SetBackingSamples(dst, dst->info.num_samples, false);
     scheduler.EndRendering();
     const TransferMark mark{*this, "image upload", *dst};

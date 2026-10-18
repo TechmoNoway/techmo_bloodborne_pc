@@ -13,6 +13,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
+#include "video_core/renderer_vulkan/graphics_scan_policy.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include <xxhash.h>
 
@@ -267,6 +268,9 @@ DrawPreparation::~DrawPreparation() {
     std::printf("Pipeline retries: %llu passes, %llu draws recovered\n",
                 static_cast<unsigned long long>(retry_passes.load()),
                 static_cast<unsigned long long>(retry_draws.load()));
+    std::printf("Compute lookahead: %llu scanner attempts, %llu known selections\n",
+                static_cast<unsigned long long>(compute_scan_attempts.load()),
+                static_cast<unsigned long long>(compute_scan_ready.load()));
 }
 
 std::shared_ptr<DrawPreparation::Submission> DrawPreparation::Build(
@@ -391,6 +395,17 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
         next_seq = baseline_seq;
     }
     AmdGpu::RegDirty dirty;
+    PrepWorker compute_worker, graphics_worker;
+    PipelineSelection graphics_sel{};
+    graphics_sel.regs = regs.get();
+    graphics_sel.worker = &graphics_worker;
+    const char* gfx_option = std::getenv("BB_GRAPHICS_SCAN");
+    const bool graphics_scan = !gfx_option || gfx_option[0] != '0';
+    const char* spread_option = std::getenv("BB_GRAPHICS_SCAN_SPREAD");
+    const bool spread = !spread_option || spread_option[0] != '0';
+    std::printf("Graphics scanner sampling: %s, maximum %u selections per buffer\n", spread ? "spread" : "head", GraphicsScan::Budget);
+    const char* option = std::getenv("BB_COMPUTE_SCAN");
+    const bool compute_scan = !option || option[0] != '0';
     while (!stop.stop_requested()) {
         std::shared_ptr<Submission> submission;
         {
@@ -414,8 +429,40 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
         }
         submission->start_checksum = checksum;
         dirty.Clear();
+        unsigned compute_attempts = 0, graphics_attempts = 0, graphics_ordinal = 0;
         ForEachPacket(submission->commands, [&](const AmdGpu::PM4Header* header) {
             ApplyPreparationRegisters(*regs, header, checksum, &dirty);
+            const bool direct = IsDirectDraw(header->type3.opcode);
+            const bool sample = direct && (!spread || GraphicsScan::Sample(graphics_ordinal, submission->num_draws));
+            if (direct) ++graphics_ordinal;
+            if (graphics_scan && sample && graphics_attempts < GraphicsScan::Budget &&
+                regs->stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs &&
+                submission->seq >= gpu_seq.load(std::memory_order_acquire) &&
+                !submission->gpu_done.load(std::memory_order_acquire)) {
+                ++graphics_attempts;
+                ++graphics_scan_attempts;
+                graphics_worker.stages.clear();
+                graphics_worker.failed = graphics_worker.missing_shader = false;
+                graphics_sel.draw_indirect_params = {};
+                if (pipeline_cache.PrepareGraphicsPipeline(graphics_sel)) ++graphics_scan_ready;
+            }
+
+            // Queue known compute selections before publishing this buffer to the
+            // draw workers. Cold modules remain on the existing required path;
+            // workers retry them after publication. Keep scanner work bounded.
+            if (compute_scan && compute_attempts < 8 &&
+                header->type3.opcode == AmdGpu::PM4ItOpcode::DispatchDirect &&
+                submission->seq >= gpu_seq.load(std::memory_order_acquire) &&
+                !submission->gpu_done.load(std::memory_order_acquire) &&
+                (regs->cs_program.dispatch_initiator & 1) && regs->cs_program.dim_x &&
+                regs->cs_program.dim_y && regs->cs_program.dim_z) {
+                ++compute_attempts;
+                ++compute_scan_attempts;
+                compute_worker.stages.clear();
+                compute_worker.failed = compute_worker.missing_shader = false;
+                if (pipeline_cache.PrepareComputePipeline(regs->cs_program, compute_worker))
+                    ++compute_scan_ready;
+            }
         });
         submission->delta.Capture(*regs, dirty);
         submission->end_checksum = checksum;
@@ -579,6 +626,12 @@ void DrawPreparation::Count(bool was_used) {
                 "%llu scanner rebases)\n",
                 static_cast<unsigned long long>(used), static_cast<unsigned long long>(unused),
                 worker_count, static_cast<unsigned long long>(rebases));
+    std::printf("Graphics lookahead: %llu scanner attempts, %llu known selections\n",
+                static_cast<unsigned long long>(graphics_scan_attempts.load()),
+                static_cast<unsigned long long>(graphics_scan_ready.load()));
+    std::printf("Compute lookahead: %llu scanner attempts, %llu known selections\n",
+                static_cast<unsigned long long>(compute_scan_attempts.load()),
+                static_cast<unsigned long long>(compute_scan_ready.load()));
     used = unused = 0;
 }
 

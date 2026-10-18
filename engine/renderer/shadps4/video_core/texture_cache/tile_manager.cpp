@@ -25,6 +25,9 @@
 
 #include <magic_enum/magic_enum.hpp>
 #include <vk_mem_alloc.h>
+#include <bit>
+#include <cstdlib>
+#include "bbport_toggles.h"
 
 namespace VideoCore {
 
@@ -226,6 +229,7 @@ void TileManager::RecordTilingDispatch(vk::Pipeline pipeline, const vk::Descript
 
 std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* in_buffer,
                                                        u64 in_offset, const ImageInfo& info) {
+    BbStats::Timer timing{BbStats::t_detile};
     if (!info.props.is_tiled) {
         return {in_buffer, in_offset};
     }
@@ -249,7 +253,30 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
         .range = sizeof(params),
     };
 
-    const auto staging = runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
+    static const bool reuse_scratch = [] {
+        const char* value = std::getenv("BB_DETILE_SCRATCH_REUSE");
+        return !value || value[0] != '0';
+    }();
+    const Buffer* linear_buffer;
+    u64 linear_offset = 0;
+    if (reuse_scratch && info.guest_size <= 64_MB) {
+        if (!detile_scratch || detile_scratch->SizeBytes() < info.guest_size) {
+            auto replacement = std::make_unique<Buffer>(instance, 0,
+                std::bit_ceil(std::max<u64>(64_KB, info.guest_size)), MemoryType::DeviceLocal,
+                "Detile scratch");
+            if (detile_scratch) {
+                scheduler.DeferOperation([old = std::move(detile_scratch)] {});
+            }
+            detile_scratch = std::move(replacement);
+        } else {
+            BbStats::detile_scratch_reuses.fetch_add(1, std::memory_order_relaxed);
+        }
+        linear_buffer = detile_scratch.get();
+    } else {
+        const auto staging = runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
+        linear_buffer = staging.buffer;
+        linear_offset = staging.offset;
+    }
 
     scheduler.EndRendering();
     runtime.FlushBarriers();
@@ -260,8 +287,8 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
         .range = info.guest_size,
     };
     const vk::DescriptorBufferInfo linear_buffer_info{
-        .buffer = staging.buffer->Handle(),
-        .offset = staging.offset,
+        .buffer = linear_buffer->Handle(),
+        .offset = linear_offset,
         .range = info.guest_size,
     };
     const auto dim_x = static_cast<u32>((info.guest_size / (info.num_bits / 8)) / 64);
@@ -274,11 +301,11 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
                          vk::PipelineStageFlagBits2::eComputeShader,
                          vk::AccessFlagBits2::eShaderRead);
 
-    runtime.AccessBuffer(staging.buffer, staging.offset, info.guest_size,
+    runtime.AccessBuffer(linear_buffer, linear_offset, info.guest_size,
                          vk::PipelineStageFlagBits2::eComputeShader,
                          vk::AccessFlagBits2::eShaderWrite);
 
-    return {staging.buffer, staging.offset};
+    return {linear_buffer, linear_offset};
 }
 
 void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buffer_copies,

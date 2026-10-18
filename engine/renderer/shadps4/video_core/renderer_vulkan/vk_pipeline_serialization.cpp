@@ -500,6 +500,7 @@ void PipelineCache::WarmUp() {
 }
 
 void PipelineCache::Sync() {
+    for (const auto& [_, pipeline] : graphics_pipelines) if (pipeline) pipeline->CompleteNative();
     if (precompiler) {
         precompiler->Stop();
         std::printf("Pipeline preparation: %zu queued, %llu adopted, %.2f ms foreground waits, %zu retained\n",

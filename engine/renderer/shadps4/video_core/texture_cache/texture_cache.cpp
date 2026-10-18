@@ -25,6 +25,8 @@
 #include "video_core/texture_cache/overlap_diagnostics.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/image_lifetime.h"
+#include "bbport_image_hash.h"
+#include "bbport_hash_reuse.h"
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
@@ -485,7 +487,7 @@ void TextureCache::DumpImagesAt(VAddr address, const char* dir) {
 /// first check never matched). Such an image lies within the faulting page: cheap to hash
 /// whole, and a CPU write past its first pixels still counts.
 u64 TextureCache::MaybeDirtyHash(const Image& image) {
-    return XXH3_64bits(std::bit_cast<const u8*>(image.info.guest_address), image.info.guest_size);
+    return BbImageHash::Serial(std::bit_cast<const u8*>(image.info.guest_address), image.info.guest_size);
 }
 
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
@@ -532,15 +534,18 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
 }
 
 void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
+    if (!max_size || address > std::numeric_limits<VAddr>::max() - max_size) return;
     std::scoped_lock lock{mutex};
-    ForEachImageInRegion(address, max_size, [&](ImageId image_id, Image& image) {
-        // Only consider images that match base address.
-        // TODO: Maybe also consider subresources
-        if (image.info.guest_address != address) {
-            return;
-        }
-        // Ensure image is reuploaded when accessed again.
+    ForEachImageInRegion(address, max_size, [&](ImageId, Image& image) {
+        // The page registry is coarser than a resource. Include interior writes
+        // and aliases, but exclude neighbours which only share a registry page.
+        if (!image.Overlaps(address, max_size)) return;
         image.flags |= ImageFlagBits::GpuDirty;
+        if (BbStats::enabled) {
+            ++image.gpu_write_count;
+            image.gpu_write_address = address;
+            image.gpu_write_size = max_size;
+        }
     });
 }
 
@@ -627,7 +632,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         if (!ReuseRejection(requested_info, new_info, binding, exact_fmt, mip, slice).empty()) {
             return {};
         }
-        const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info);
+        const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info, &image_recycler);
         RegisterImage(new_image_id);
 
         // SlotVector insertion may relocate images. Reacquire the source after allocation.
@@ -760,7 +765,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         return reject("cached image is not a covered child subresource");
     }
     if (!merged_image_id) {
-        merged_image_id = slot_images.insert(instance, runtime, slot_image_views, image_info);
+        merged_image_id = slot_images.insert(instance, runtime, slot_image_views, image_info, &image_recycler);
         RegisterImage(merged_image_id);
         RefreshImage(slot_images[merged_image_id]);
     }
@@ -782,7 +787,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     const auto new_info = info;
-    const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info);
+    const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info, &image_recycler);
     RegisterImage(new_image_id);
 
     auto& src_image = slot_images[image_id];
@@ -911,7 +916,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     if (!image_id) {
         view_mip = view_slice = -1;
         TraceOverlap(info, desc.type, {}, nullptr, "create", "no candidate covers requested view");
-        image_id = slot_images.insert(instance, runtime, slot_image_views, info);
+        image_id = slot_images.insert(instance, runtime, slot_image_views, info, &image_recycler);
         RegisterImage(image_id);
     }
 
@@ -1065,7 +1070,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
             info.guest_address = desc.info.stencil_addr;
             info.guest_size = desc.info.stencil_size;
             info.size = desc.info.size;
-            stencil_id = slot_images.insert(instance, runtime, slot_image_views, info);
+            stencil_id = slot_images.insert(instance, runtime, slot_image_views, info, &image_recycler);
             RegisterImage(stencil_id);
         }
         Image& stencil_image = slot_images[stencil_id];
@@ -1081,24 +1086,110 @@ void TextureCache::RefreshImage(Image& image) {
         return;
     }
     BbStats::Timer timer{BbStats::t_refresh};
+    const auto original_flags = image.flags;
+    const bool new_backing = image.mip_hash_backing != image.backing ||
+                             image.mip_hash_layout != image.info.LayoutKey();
+    u64 diagnostic_uploaded = 0, diagnostic_unchanged = 0, diagnostic_hash_reused = 0;
+    bool hash_checked = false; u32 hash_blockers = 0;
+    const bool gpu_source = buffer_cache.IsRegionGpuModified(image.info.guest_address, image.info.guest_size);
+    const char* outcome = "uploaded";
+    if (BbStats::enabled) {
+        ++image.refresh_count;
+        image.refresh_source_bytes += image.info.guest_size;
+    }
+    SCOPE_EXIT {
+        // Bounded per-process evidence. Powers of two show repeated objects
+        // without turning every texture binding into a logging operation.
+        static std::atomic<u32> events{0};
+        const u64 count = image.refresh_count;
+        const bool repeated = count >= 64 && (count & (count - 1)) == 0;
+        if (BbStats::enabled && (repeated || diagnostic_uploaded >= (64ull << 20)) &&
+            events.load(std::memory_order_relaxed) < 256 && events.fetch_add(1, std::memory_order_relaxed) < 256) {
+            std::printf("Texture refresh: uid=%llu address=%#llx size=%llu count=%llu flags=%u "
+                        "new_backing=%u source_total_mb=%.3f uploaded_mb=%.3f unchanged_mb=%.3f outcome=%s "
+                        "gpu_source=%u gpu_writes=%llu write_address=%#llx write_size=%llu hash_reused_mb=%.3f "
+                        "hash_check=%u hash_blockers=%#x hash_candidates=%llu hash_hits=%llu\n",
+                        static_cast<unsigned long long>(image.image_uid),
+                        static_cast<unsigned long long>(image.info.guest_address),
+                        static_cast<unsigned long long>(image.info.guest_size),
+                        static_cast<unsigned long long>(count), u32(original_flags), unsigned(new_backing),
+                        image.refresh_source_bytes / 1e6, diagnostic_uploaded / 1e6,
+                        diagnostic_unchanged / 1e6, outcome, unsigned(gpu_source),
+                        static_cast<unsigned long long>(image.gpu_write_count),
+                        static_cast<unsigned long long>(image.gpu_write_address),
+                        static_cast<unsigned long long>(image.gpu_write_size), diagnostic_hash_reused / 1e6,
+                        unsigned(hash_checked), hash_blockers,
+                        static_cast<unsigned long long>(image.hash_reuse_candidates),
+                        static_cast<unsigned long long>(image.hash_reuse_hits));
+        }
+    };
+
 
     RENDERER_TRACE;
     TRACE_HINT(fmt::format("{:x}:{:x}", image.info.guest_address, image.info.guest_size));
 
+    auto* memory = Core::Memory::Instance();
+    const auto mapping = memory->MappingGeneration();
+    const auto backing_epoch = memory->BackingWriteGeneration();
+    std::optional<u64> checked_whole_hash;
     if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
         False(image.flags & ImageFlagBits::CpuDirty)) {
         const u64 hash = MaybeDirtyHash(image);
-        if (image.hash == hash) {
+        if (image.hash == hash && False(image.flags & ImageFlagBits::GpuDirty)) {
+            outcome = "whole_match";
             image.flags &= ~ImageFlagBits::MaybeCpuDirty;
             return;
         }
         image.hash = hash;
+        checked_whole_hash = hash;
     }
 
     const u32 num_layers = image.info.resources.layers;
     const u32 num_mips = image.info.resources.levels;
     const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
+    static const bool keep_hashes = [] {
+        const char* value = std::getenv("BB_KEEP_MIP_HASHES");
+        return !value || value[0] != '0';
+    }();
+    static const bool parallel_hashes = [] {
+        const char* value = std::getenv("BB_PARALLEL_IMAGE_HASH");
+        return value && value[0] == '1';
+    }();
+    const auto layout = image.info.LayoutKey();
+    const bool same_backing = image.mip_hash_backing == image.backing && image.mip_hash_layout == layout;
+    static const bool reuse_gpu_hash = [] {
+        const char* value = std::getenv("BB_REUSE_GPU_SOURCE_HASH");
+        return !value || value[0] != '0';
+    }();
+    // Reuse only the CPU reference, NEVER the required GPU copy. Full guest
+    // write protection, a clean CPU state, unchanged mappings/backing writes and
+    // the exact uploaded backing/layout are all required. Unwatched modes hash.
+    hash_blockers = BbHashReuse::Blockers({reuse_gpu_hash, WriteTracking(), is_gpu_dirty, gpu_source,
+        same_backing, image.uploaded_mips == u16((1u << num_mips) - 1),
+        False(image.flags & (ImageFlagBits::CpuDirty | ImageFlagBits::MaybeCpuDirty)),
+        image.track_addr == image.info.guest_address && image.track_addr_end == image.info.guest_address + image.info.guest_size,
+        image.cpu_hash_mapping != ~0ULL, !(mapping & 1), image.cpu_hash_mapping == mapping,
+        backing_epoch != BbBackingWriteEpoch::Invalid, image.cpu_hash_backing_epoch != BbBackingWriteEpoch::Invalid,
+        image.cpu_hash_backing_epoch == backing_epoch});
+    hash_checked = true;
+    const bool reuse_reference = hash_blockers == 0;
+    if (BbStats::enabled) {
+        image.hash_reuse_last_blockers = hash_blockers;
+        if (is_gpu_dirty && gpu_source) {
+            ++image.hash_reuse_candidates;
+            image.hash_reuse_hits += unsigned(reuse_reference);
+            BbHashReuse::Note(hash_blockers);
+        }
+    }
+    std::array<u64, 16> hashes{};
+    std::array<BbImageHash::Range, 16> ranges{};
+    ASSERT(num_mips <= hashes.size());
+    for (u32 m = 0; m < num_mips; ++m)
+        ranges[m] = {image.info.mips_layout[m].offset, image.info.mips_layout[m].size};
+    const auto* source = std::bit_cast<const u8*>(image.info.guest_address);
+    const bool parallel = !reuse_reference && parallel_hashes && BbImageHash::SnapshotParallel(source, image.info.guest_size,
+        std::span{ranges}.first(num_mips), std::span{hashes}.first(num_mips));
 
     u64 upload_bytes = 0;
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
@@ -1116,12 +1207,22 @@ void TextureCache::RefreshImage(Image& image) {
         // had no reference, and the first CPU write anywhere in its page replaced the GPU's
         // contents with stale guest memory (a 1x1 exposure texture computed once: the
         // character creation preview went black after one frame).
-        const u8* mip_addr = std::bit_cast<u8*>(image.info.guest_address) + mip_offset;
-        const u64 mip_hash = XXH3_64bits(mip_addr, mip_size);
-        if (is_gpu_modified && !is_gpu_dirty && image.mip_hashes[m] == mip_hash) {
+        const bool reuse_whole = !parallel && checked_whole_hash && num_mips == 1 &&
+                                 mip_offset == 0 && mip_size == image.info.guest_size;
+        const u64 mip_hash = reuse_reference ? image.mip_hashes[m] : parallel ? hashes[m] : reuse_whole ? *checked_whole_hash :
+            BbImageHash::Serial(source + mip_offset, mip_size);
+        if (reuse_reference) {
+            diagnostic_hash_reused += mip_size;
+            BbStats::image_hash_reused_bytes.fetch_add(mip_size, std::memory_order_relaxed);
+        }
+        if (reuse_whole) BbStats::image_hash_reused_bytes.fetch_add(mip_size, std::memory_order_relaxed);
+        hashes[m] = mip_hash;
+        if ((keep_hashes || is_gpu_modified) && !is_gpu_dirty && same_backing &&
+            (image.uploaded_mips & (1u << m)) && image.mip_hashes[m] == mip_hash) {
+            diagnostic_unchanged += mip_size;
+            BbStats::image_unchanged_bytes.fetch_add(mip_size, std::memory_order_relaxed);
             continue;
         }
-        image.mip_hashes[m] = mip_hash;
         upload_bytes += mip_size;
 
         const u32 extent_width = mip_pitch ? std::min(mip_pitch, width) : width;
@@ -1141,7 +1242,9 @@ void TextureCache::RefreshImage(Image& image) {
         });
     }
 
+    diagnostic_uploaded = upload_bytes;
     if (image_copies.empty()) {
+        outcome = "mips_match";
         image.flags &= ~ImageFlagBits::Dirty;
         return;
     }
@@ -1160,6 +1263,18 @@ void TextureCache::RefreshImage(Image& image) {
     }
 
     runtime.UploadImage(&image, buffer, image_copies);
+    // Publish the reference only after all required uploads have been recorded.
+    // A new backing/layout can never reuse an old backing's upload hashes.
+    for (u32 m = 0; m < num_mips; ++m) image.mip_hashes[m] = hashes[m];
+    image.uploaded_mips = u16((1u << num_mips) - 1);
+    image.mip_hash_backing = image.backing;
+    image.mip_hash_layout = layout;
+    // A racing mapping/backing write invalidates the reference for the next
+    // GPU-only refresh. CPU page faults remain serialized by the cache mutex.
+    image.cpu_hash_mapping = WriteTracking() && mapping == memory->MappingGeneration() &&
+        !(mapping & 1) && image.track_addr == image.info.guest_address &&
+        image.track_addr_end == image.info.guest_address + image.info.guest_size ? mapping : ~0ULL;
+    image.cpu_hash_backing_epoch = backing_epoch == memory->BackingWriteGeneration() ? backing_epoch : ~0ULL;
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
@@ -1288,6 +1403,7 @@ void TextureCache::TrackImageTail(ImageId image_id) {
 
 void TextureCache::UntrackImage(ImageId image_id) {
     auto& image = slot_images[image_id];
+    image.cpu_hash_mapping = ~0ULL; // Protection continuity was broken.
     if (!image.IsTracked()) {
         return;
     }
@@ -1302,6 +1418,7 @@ void TextureCache::UntrackImage(ImageId image_id) {
 
 void TextureCache::UntrackImageHead(ImageId image_id) {
     auto& image = slot_images[image_id];
+    image.cpu_hash_mapping = ~0ULL; // Protection continuity was broken.
     const auto image_begin = image.info.guest_address;
     if (!image.IsTracked() || image_begin < image.track_addr) {
         return;
@@ -1320,6 +1437,7 @@ void TextureCache::UntrackImageHead(ImageId image_id) {
 
 void TextureCache::UntrackImageTail(ImageId image_id) {
     auto& image = slot_images[image_id];
+    image.cpu_hash_mapping = ~0ULL; // Protection continuity was broken.
     const auto image_end = image.info.guest_address + image.info.guest_size;
     if (!image.IsTracked() || image.track_addr_end < image_end) {
         return;
@@ -1385,6 +1503,8 @@ void TextureCache::GarbageCollectImages() {
         BbStats::coarse_second.store(u32(second), std::memory_order_relaxed);
         gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
     }
+    image_recycler.Budget(total_used_memory, driver_memory_budget,
+                          instance.CanReportMemoryUsage() && memory_pressure.level == MemoryPressure::Level::Normal);
     // Both caches consume one process budget. Retire cold CPU-backed buffer copies
     // before evicting textures; only whole allocations actually freed count below.
     const u64 freed_buffers = buffer_cache.ReclaimMemory(
@@ -1568,9 +1688,9 @@ void TextureCache::WriteMemorySample() {
                                 "gc_written_back_images,gc_pressure,gc_critical,"
                                 "pending_buffer_bytes,buffer_evicted_bytes,buffer_freed_bytes,"
                                 "gc_tiled_attempts,gc_tiled_writebacks,gc_tiled_bytes,gc_tiled_kept,"
-                                "gc_tiled_ms,gc_tiled_max_ms\n");
+                                "gc_tiled_ms,gc_tiled_max_ms,image_recycle_bytes\n");
     }
-    std::fprintf(memory_log, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f,%.3f\n",
+    std::fprintf(memory_log, "%.3f,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f,%.3f,%llu\n",
                  std::chrono::duration<double>(memory_sample_time - memory_log_start).count(),
                  unsigned(instance.CanReportMemoryUsage()),
                  static_cast<unsigned long long>(total_used_memory),
@@ -1590,7 +1710,8 @@ void TextureCache::WriteMemorySample() {
                  static_cast<unsigned long long>(gc_tiled_attempts),
                  static_cast<unsigned long long>(gc_tiled_writebacks),
                  static_cast<unsigned long long>(gc_tiled_bytes),
-                 static_cast<unsigned long long>(gc_tiled_kept), gc_tiled_ms, gc_tiled_max_ms);
+                 static_cast<unsigned long long>(gc_tiled_kept), gc_tiled_ms, gc_tiled_max_ms,
+                 static_cast<unsigned long long>(image_recycler.Bytes()));
     std::fflush(memory_log);
 }
 
@@ -1685,6 +1806,8 @@ void TextureCache::DeleteImage(ImageId image_id) {
             for (const ImageViewId image_view_id : backing.image_view_ids) {
                 slot_image_views.erase(image_view_id);
             }
+            if (False(image.flags & ImageFlagBits::GpuModified) && !image.scene_proxy &&
+                !image.usage.vo_surface) image_recycler.Retire(std::move(backing.image));
         }
         slot_images.erase(image_id);
         pending_image_bytes.fetch_sub(allocated_bytes, std::memory_order_relaxed);

@@ -63,7 +63,44 @@ struct GraphicsPipelineKey {
     }
 
     bool operator==(const GraphicsPipelineKey& key) const noexcept {
-        return std::memcmp(this, &key, sizeof(key)) == 0;
+        return stage_hashes == key.stage_hashes && vertex_buffer_formats == key.vertex_buffer_formats &&
+            patch_control_points == key.patch_control_points && num_color_attachments == key.num_color_attachments &&
+            color_buffers == key.color_buffers && blend_controls == key.blend_controls && write_masks == key.write_masks &&
+            cb_shader_mask.raw == key.cb_shader_mask.raw && logic_op == key.logic_op && num_samples == key.num_samples &&
+            depth_samples == key.depth_samples && color_samples == key.color_samples && mrt_mask == key.mrt_mask &&
+            motion_vectors == key.motion_vectors && z_format == key.z_format && stencil_format == key.stencil_format &&
+            depth_clamp_enable == key.depth_clamp_enable && prim_type == key.prim_type && polygon_mode == key.polygon_mode &&
+            clip_space == key.clip_space && provoking_vtx_last == key.provoking_vtx_last && depth_clip_enable == key.depth_clip_enable;
+    }
+
+    auto CanonicalBytes() const noexcept {
+        // Keep the v6 byte layout and the hashes of zero-padded old keys. C++
+        // copies/lambda captures need not preserve unnamed bitfield padding.
+        std::array<u8, sizeof(GraphicsPipelineKey)> bytes;
+        std::memcpy(bytes.data(), this, bytes.size());
+        const auto word = [&](size_t at, u32 value) { std::memcpy(bytes.data() + at, &value, sizeof(value)); };
+        static_assert(sizeof(Shader::PsColorBuffer) == 8 && offsetof(Shader::PsColorBuffer, swizzle) == 4);
+        static_assert(sizeof(AmdGpu::BlendControl) == 4);
+        for (size_t i = 0; i < color_buffers.size(); ++i) {
+            const auto& c = color_buffers[i];
+            word(offsetof(GraphicsPipelineKey, color_buffers) + i * sizeof(c),
+                 u32(c.data_format) | u32(c.num_format) << 6 | u32(c.num_conversion) << 10 |
+                 u32(c.export_format) << 13 | u32(c.blend_self_scale) << 17);
+            const auto& b = blend_controls[i];
+            word(offsetof(GraphicsPipelineKey, blend_controls) + i * sizeof(b),
+                 u32(b.color_src_factor) | u32(b.color_func) << 5 | u32(b.color_dst_factor) << 8 |
+                 u32(b.alpha_src_factor) << 16 | u32(b.alpha_func) << 21 | u32(b.alpha_dst_factor) << 24 |
+                 u32(b.separate_alpha_blend) << 29 | u32(b.enable) << 30 | u32(b.disable_rop3) << 31);
+        }
+        constexpr auto samples_end = offsetof(GraphicsPipelineKey, color_samples) + sizeof(color_samples);
+        std::fill(bytes.begin() + samples_end, bytes.begin() + offsetof(GraphicsPipelineKey, mrt_mask), u8{});
+        constexpr auto tail = offsetof(GraphicsPipelineKey, motion_vectors) + sizeof(motion_vectors);
+        static_assert(tail + 8 <= sizeof(GraphicsPipelineKey));
+        word(tail, u32(z_format) | u32(stencil_format) << 2 | u32(depth_clamp_enable) << 3);
+        word(tail + 4, u32(prim_type) | u32(polygon_mode) << 5 | u32(clip_space) << 7 |
+                      u32(provoking_vtx_last) << 8 | u32(depth_clip_enable) << 9);
+        std::fill(bytes.begin() + tail + 8, bytes.end(), u8{});
+        return bytes;
     }
 
     void Serialize(Serialization::Archive& ar) const;
@@ -92,7 +129,7 @@ public:
                      std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
                      std::optional<const Shader::Gcn::FetchShaderData> fetch_shader,
                      std::span<const vk::ShaderModule> modules, SerializationSupport& sdata,
-                     bool preloading, bool speculative = false);
+                     bool preloading, bool speculative = false, NativeSchedule schedule = {});
     ~GraphicsPipeline();
 
     // The background constructor reads owned snapshots; publishing a completed
@@ -141,7 +178,8 @@ struct ClipDistanceShaderKey {
 template <>
 struct std::hash<Vulkan::GraphicsPipelineKey> {
     std::size_t operator()(const Vulkan::GraphicsPipelineKey& key) const noexcept {
-        return XXH3_64bits(&key, sizeof(key));
+        const auto bytes = key.CanonicalBytes();
+        return XXH3_64bits(bytes.data(), bytes.size());
     }
 };
 

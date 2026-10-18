@@ -30,6 +30,161 @@ struct LiverpoolTaskTest {
 
 namespace Vulkan {
 struct PipelinePrecompileTest {
+    static void RequiredEntry(PipelineCache& cache, AmdGpu::Liverpool& gpu, vk::ShaderModule module, bool lookahead = false) {
+        auto saved=std::make_unique<AmdGpu::Regs>(gpu.regs);
+        gpu.regs={};gpu.regs.primitive_type=AmdGpu::PrimitiveType::TriangleList;
+        alignas(256) std::array<u32,128> code{};
+        code[0]=0xBEEB03FF;code[1]=1;
+        AmdGpu::BinaryInfo binary{};binary.signature=AmdGpu::BinaryInfo::signature_ref;
+        binary.length=8;binary.shader_hash=lookahead ? 0x880002 : 0x880001;
+        std::memcpy(code.data()+4,&binary,sizeof(binary));
+        gpu.regs.vs_program.address=reinterpret_cast<uintptr_t>(code.data())>>8;
+        const auto params=AmdGpu::GetParams(gpu.regs.vs_program);
+        auto program=std::make_unique<Program>(Shader::HwStage::Vertex,Shader::SwStage::Vertex,params);
+        program->info.RefreshFlatBuf();
+        PipelineSelection selection{};selection.regs=&gpu.regs;
+        const auto runtime=cache.BuildRuntimeInfo(selection,Shader::HwStage::Vertex,Shader::SwStage::Vertex);
+        Shader::Backend::Bindings binding{};
+        program->AddPermut(module,Shader::StageSpecialization(program->info,runtime,cache.profile,binding));
+        program->info_template=std::make_unique<Shader::Info>(program->info);
+        { std::unique_lock lock{cache.programs_mutex};cache.program_cache.emplace(params.hash,std::move(program)); }
+        cache.ProgramPublished();
+        const auto before=cache.precompiler->RequiredQueued();
+        if(lookahead) {
+            PrepWorker worker;selection.worker=&worker;
+            assert(cache.PrepareGraphicsPipeline(selection));
+        }
+        const auto* pipeline=cache.GetGraphicsPipeline();
+        const bool enabled=!(std::getenv("BB_FIRST_USE_PIPELINE") && std::getenv("BB_FIRST_USE_PIPELINE")[0]=='0');
+        assert(pipeline && pipeline->NativePending()==(lookahead ? cache.early_frontend : enabled));
+        assert(cache.precompiler->RequiredQueued()==before+unsigned(!lookahead));
+        assert(cache.GetGraphicsPipeline()==pipeline); // Pending metadata is safely cacheable.
+        assert(pipeline->Handle() && !pipeline->NativePending());
+        gpu.regs=*saved;
+        puts("PASS: production GetGraphicsPipeline queues first-use native, caches frontend, waits at handle; legacy toggle is honoured");
+    }
+    static auto Early(PipelineCache& cache, PipelineSelection& selection) {
+        // Gate the real production continuation after metadata publication.
+        // This draw has to expose layout/resources before native creation runs.
+        auto key=selection.graphics_key;key.motion_vectors=0;key.stage_hashes[0]^=0x80000000u;
+        auto owned=selection;owned.graphics_key=key;
+        std::promise<void> release;auto gate=release.get_future().share();
+        assert(cache.precompiler->QueueEarly(key,[&] {
+            auto work=cache.MakeEarlyGraphicsWork(owned);
+            return [work=std::move(work),gate](auto publish,auto timing) {
+                work([publish,gate](PipelineCache::PreparedPipeline result) {
+                    publish(std::move(result));gate.wait();
+                },timing);
+            };
+        }));
+        PipelineTiming timing;
+        auto result=cache.precompiler->TakeOrReserve(key,&timing);
+        assert(result && result->pipeline && result->pipeline->NativePending());
+        auto pipeline=std::move(result->pipeline);
+        pipeline->BindRuntimeStages(selection.infos);result->snapshot.reset();
+        assert(pipeline->GetLayout());
+        auto handle=std::async(std::launch::async,[&] { return pipeline->Handle(); });
+        assert(handle.wait_for(std::chrono::milliseconds(10))==std::future_status::timeout);
+        release.set_value();assert(handle.get() && !pipeline->NativePending());
+        puts("PASS: real lookahead frontend consumed before native continuation, bind waits, owned state survives snapshot release");
+        return pipeline;
+    }
+    static auto Deferred(PipelineCache& cache, PipelineSelection& selection) {
+        // Keep the sole compiler occupied. Frontend construction must still
+        // return, exposing the layout/resources while the native handle waits.
+        GraphicsPipelineKey blocker{}; blocker.stage_hashes[0]=0xfedcba+u32(selection.graphics_key.prim_type);
+        std::promise<void> started,release;
+        auto gate=release.get_future().share();
+        assert(cache.precompiler->Queue(blocker,[&] { return [&] {
+            started.set_value();gate.wait();return PipelineCache::PreparedPipeline{};
+        }; }));
+        started.get_future().wait();
+        GraphicsPipeline::SerializationSupport data;
+        auto pipeline=std::make_unique<GraphicsPipeline>(cache.instance,cache.scheduler,cache.desc_heap,
+            cache.profile,selection.graphics_key,*cache.preparation_cache,selection.infos,
+            selection.runtime_infos,selection.fetch_shader,selection.modules,data,false,false,
+            cache.FirstUseSchedule(selection.graphics_key));
+        assert(pipeline->NativePending() && pipeline->GetLayout());
+        // Invalidate caller-owned serialization arrays before the driver reads.
+        data={};
+        release.set_value();
+        assert(cache.precompiler->TakeOrReserve(blocker));
+        return pipeline;
+    }
+    static void ScanGraphics(PipelineCache& cache, vk::ShaderModule module, bool enabled = true, bool late = false, bool spread = true) {
+        alignas(256) std::array<u32,128> code{};
+        code[0]=0xBEEB03FF;code[1]=1;
+        AmdGpu::BinaryInfo binary{};binary.signature=AmdGpu::BinaryInfo::signature_ref;
+        binary.length=8;binary.shader_hash=(enabled ? 0x987654 : 0x987655)+(late?2:0)+(spread?4:0);
+        std::memcpy(code.data()+4,&binary,sizeof(binary));
+        auto regs=std::make_unique<AmdGpu::Regs>();
+        regs->primitive_type=AmdGpu::PrimitiveType::TriangleList;
+        regs->vs_program.address=reinterpret_cast<uintptr_t>(code.data())>>8;
+        const auto params=AmdGpu::GetParams(regs->vs_program);
+        auto program=std::make_unique<Program>(Shader::HwStage::Vertex,Shader::SwStage::Vertex,params);
+        program->info.RefreshFlatBuf();
+        PipelineSelection selection{};selection.regs=regs.get();
+        const auto runtime=cache.BuildRuntimeInfo(selection,Shader::HwStage::Vertex,Shader::SwStage::Vertex);
+        Shader::Backend::Bindings binding{};
+        program->AddPermut(module,Shader::StageSpecialization(program->info,runtime,cache.profile,binding));
+        program->info_template=std::make_unique<Shader::Info>(program->info);
+        { std::unique_lock lock{cache.programs_mutex};cache.program_cache.emplace(params.hash,std::move(program)); }
+        cache.ProgramPublished();
+        _putenv_s("BB_PREP_WORKERS","1");_putenv_s("BB_GRAPHICS_SCAN",enabled ? "1" : "0");
+        _putenv_s("BB_GRAPHICS_SCAN_SPREAD",spread ? "1" : "0");
+        DrawPreparation preparation{cache};
+        AmdGpu::PM4Type3Header type3{AmdGpu::PM4ItOpcode::DrawIndexAuto,1};
+        u32 header;std::memcpy(&header,&type3,4);
+        std::vector<u32> commands;
+        for(unsigned i=0;i<17;++i) {
+            if(late && i==16) {
+                AmdGpu::PM4Type3Header set{AmdGpu::PM4ItOpcode::SetUconfigReg,1};
+                u32 change;std::memcpy(&change,&set,4);
+                constexpr u32 offset=offsetof(AmdGpu::Regs,primitive_type)/4-AmdGpu::Regs::UconfigRegWordOffset;
+                commands.insert(commands.end(),{change,offset,u32(AmdGpu::PrimitiveType::TriangleStrip)});
+            }
+            commands.insert(commands.end(),{header,3,0});
+        }
+        const auto before=cache.precompiler->Queued();
+        auto submission=preparation.Build(commands);
+        submission->retry.Claim(cache.ProgramGeneration()); // Isolate scanner coverage from draw workers.
+        preparation.Enqueue(0,submission);
+        preparation.BeginSubmission(0,*regs,0);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(!submission->scanned.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::yield();
+        assert(submission->scanned.load(std::memory_order_acquire));
+        assert(preparation.graphics_scan_attempts.load()==(enabled ? 16u : 0u) &&
+               preparation.graphics_scan_ready.load()==(enabled ? 16u : 0u));
+        if (enabled) assert(cache.precompiler->Queued()==before+(late && spread ? 2u : 1u));
+        PrepWorker worker;selection.worker=&worker;
+        assert(cache.PrepareGraphicsPipeline(selection));
+        auto ready=cache.precompiler->TakeOrReserve(selection.graphics_key);
+        assert(ready && ready->pipeline);
+        preparation.EndSubmission();
+        puts("PASS: scanner queues known graphics before publication, bounds attempts, deduplicates and compiles owned selection");
+    }
+    static void ScanCompute(PipelineCache& cache) {
+        _putenv_s("BB_PREP_WORKERS", "1");
+        _putenv_s("BB_COMPUTE_SCAN", "1");
+        DrawPreparation preparation{cache};
+        AmdGpu::PM4Type3Header type3{AmdGpu::PM4ItOpcode::DispatchDirect, 3};
+        u32 header; std::memcpy(&header, &type3, 4);
+        const std::array<u32,15> commands{header,0,1,1,1, header,2,1,1,0, header,2,1,1,1};
+        auto submission=preparation.Build(commands);
+        assert(submission);
+        preparation.Enqueue(0,submission);
+        auto regs=std::make_unique<AmdGpu::Regs>();
+        preparation.BeginSubmission(0,*regs,0);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+        while(!submission->scanned.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::yield();
+        assert(submission->scanned.load(std::memory_order_acquire));
+        assert(preparation.compute_scan_attempts.load()==1 && preparation.compute_scan_ready.load()==1);
+        assert(cache.compute_precompiler->Queued()==1 && cache.compute_precompiler->RequiredQueued()==0);
+        preparation.EndSubmission();
+        puts("PASS: real scanner queues compute before publishing draws, ignores empty/disabled dispatches");
+    }
     static auto Consume(PipelineCache &cache, PipelineSelection &selection, bool required = false) {
         assert(cache.precompiler);
         std::optional<PipelineCache::PreparedPipeline> ready;
@@ -224,6 +379,12 @@ int main() {
                        .value;
     PipelineCache cache{instance, scheduler, &gpu, 16};
     PipelinePrecompileTest::CheckPriority(cache);
+    PipelinePrecompileTest::ScanGraphics(cache,*vertex);
+    PipelinePrecompileTest::ScanGraphics(cache,*vertex,false);
+    PipelinePrecompileTest::ScanGraphics(cache,*vertex,true,true,true);
+    PipelinePrecompileTest::ScanGraphics(cache,*vertex,true,true,false);
+    PipelinePrecompileTest::RequiredEntry(cache,gpu,*vertex);
+    PipelinePrecompileTest::RequiredEntry(cache,gpu,*vertex,true);
     Shader::Info vs{}, fs{};
     vs.hw_stage = Shader::HwStage::Vertex;
     vs.sw_stage = Shader::SwStage::Vertex;
@@ -264,6 +425,8 @@ int main() {
         auto prepared = PipelinePrecompileTest::Consume(
             cache, selection, primitive == AmdGpu::PrimitiveType::TriangleStrip);
         auto inline_pipeline = PipelinePrecompileTest::Inline(cache, selection);
+        auto deferred_pipeline = PipelinePrecompileTest::Deferred(cache, selection);
+        auto early_pipeline = PipelinePrecompileTest::Early(cache, selection);
         VideoCore::UniqueImage target{device, instance.GetAllocator()};
         target.Create({.imageType = vk::ImageType::e2D,
                        .format = vk::Format::eR8G8B8A8Unorm,
@@ -285,7 +448,7 @@ int main() {
         VideoCore::Buffer readback{instance, 0, 16 * 16 * 4, VideoCore::MemoryType::HostCached,
                                    "Pipeline prep readback"};
         bool first = true;
-        for (const auto *pipeline : {prepared.get(), inline_pipeline.get()}) {
+        for (const auto *pipeline : {prepared.get(), inline_pipeline.get(), deferred_pipeline.get(), early_pipeline.get()}) {
             scheduler.Record([&, pipeline, first](vk::CommandBuffer cmd) {
                 const vk::ImageMemoryBarrier2 begin{
                     .srcStageMask =
@@ -386,8 +549,7 @@ int main() {
             unseen_permutation.num_thread_x.full = 32;
             PrepWorker different{};
             assert(!cache.PrepareComputePipeline(unseen_permutation, different) && different.missing_shader);
-            PrepWorker worker{};
-            assert(cache.PrepareComputePipeline(regs, worker));
+            PipelinePrecompileTest::ScanCompute(cache);
             regs.user_data[0] = 999; // Owned queued snapshot must survive changed register data.
         }
         const auto *pipeline = cache.GetComputePipeline();

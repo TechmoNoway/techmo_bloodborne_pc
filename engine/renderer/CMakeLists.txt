@@ -206,6 +206,9 @@ if (WIN32)
 endif()
 
 # Explicit test targets never launch the game. record-data-test also has a GPU readback mode.
+add_executable(image-hash-test EXCLUDE_FROM_ALL ../../tests/test_image_hash.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(image-hash-test PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(image-hash-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
 add_executable(stable-arena-test EXCLUDE_FROM_ALL ../../tests/test_stable_arena.cpp ../../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(stable-arena-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(stable-arena-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
@@ -298,6 +301,12 @@ set_source_files_properties(../../tests/test_liverpool_tasks.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_executable(pipeline-cache-blob-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_cache_blob.cpp)
 add_executable(pipeline-precompiler-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_precompiler.cpp)
+add_executable(pipeline-key-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_key.cpp)
+target_compile_options(pipeline-key-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(pipeline-key-test PRIVATE shim)
+target_include_directories(pipeline-key-test SYSTEM PRIVATE shadps4 third_party/gcn/include)
+target_link_libraries(pipeline-key-test PRIVATE xxhash)
+
 target_compile_options(pipeline-precompiler-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(pipeline-precompiler-test PRIVATE shadps4)
 foreach(stage IN ITEMS vert frag comp)

@@ -54,6 +54,8 @@ public:
 
     std::pair<const Buffer*, u64> DetileImage(const VideoCore::Buffer* in_buffer, u64 in_offset,
                                               const ImageInfo& info);
+    // Consume the result in recorded commands before the next DetileImage call.
+    // The scratch buffer stays alive; runtime barriers order reuse after those reads.
 
 private:
     void RecordTilingDispatch(vk::Pipeline pipeline, const vk::DescriptorBufferInfo& tiled,
@@ -70,6 +72,7 @@ private:
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout pl_layout;
     std::unordered_map<TilingKey, vk::UniquePipeline, TilingKey::Hash> tiling_pipelines;
+    std::unique_ptr<Buffer> detile_scratch;
 };
 
 } // namespace VideoCore

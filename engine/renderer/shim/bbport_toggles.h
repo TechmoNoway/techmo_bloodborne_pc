@@ -147,6 +147,11 @@ inline std::atomic<std::int64_t> hot_pages{0};
 /// Stall diagnostics (BB_FRAME_STATS): per-frame deltas printed for frames over 40 ms.
 inline std::atomic<std::uint64_t> images_registered{0};
 inline std::atomic<std::uint64_t> image_upload_bytes{0};
+inline std::atomic<std::uint64_t> image_hash_bytes{0}, image_hash_reused_bytes{0},
+    image_unchanged_bytes{0}, image_hash_parallel_jobs{0}, detile_scratch_reuses{0};
+inline std::atomic<std::uint64_t> t_image_hash{0}, t_hash_snapshot{0}, t_detile{0}, t_image_upload{0};
+inline std::atomic<std::uint64_t> t_image_alloc{0}, t_image_view{0}, t_image_format{0},
+    image_recycle_hits{0}, image_recycle_bytes{0};
 inline std::atomic<std::uint64_t> buffer_upload_bytes{0};
 inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command thread
 inline std::atomic<std::uint64_t> draws{0}, dispatches{0}, submissions{0};

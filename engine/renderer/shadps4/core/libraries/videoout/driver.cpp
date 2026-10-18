@@ -16,6 +16,7 @@
 #include "common/assert.h"
 #include "bbport_platform.h"
 #include "bbport_toggles.h"
+#include "bbport_hash_reuse.h"
 #include "bbport_heap_sites.h"
 #include "bbport_wait_trace.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
@@ -492,7 +493,10 @@ void VideoOutDriver::Flip(const Request& req) {
                                    "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
                                    "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
                                    "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
-                                   "free_mb,pipeline_wait_ms\n");
+                                   "free_mb,pipeline_wait_ms,hash_ms,hash_snapshot_ms,hash_mb,"
+                                   "hash_reused_mb,unchanged_mip_mb,hash_parallel_jobs,detile_ms,"
+                                   "upload_record_ms,host_copy_ms,detile_scratch_reuses,"
+                                   "image_alloc_ms,image_view_ms,image_format_ms,image_recycle_hits\n");
             }
             return file;
         }();
@@ -501,6 +505,7 @@ void VideoOutDriver::Flip(const Request& req) {
             static u64 log_twf, log_tick, log_present, log_compiles, log_rf, log_preupload;
             static u64 log_alloc, log_free;
             static u64 log_pipeline_wait;
+            static std::array<u64, 14> log_upload{};
             const u64 tick = BbStats::tick_wait_ns.load(), present = BbStats::present_wait_ns.load();
             const u64 compiles_now = Vulkan::g_bb_compiles.load();
             // tick_wait_ns and the compile count are reset every stats window.
@@ -511,7 +516,7 @@ void VideoOutDriver::Flip(const Request& req) {
             };
             std::fprintf(frame_log,
                          "%.4f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,"
-                         "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f,%.3f\n",
+                         "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f,%.3f",
                          std::chrono::duration<double>(now - log_start).count(), frame_ms,
                          delta(present, log_present) / 1e6, delta(tick, log_tick) / 1e6,
                          last_gpu_ns ? (gpu_ns - last_gpu_ns) / 1e6 : 0.0,
@@ -531,6 +536,17 @@ void VideoOutDriver::Flip(const Request& req) {
                          delta(BbStats::device_alloc_bytes.load(), log_alloc) / 1e6,
                          delta(BbStats::device_free_bytes.load(), log_free) / 1e6,
                          delta(Vulkan::g_bb_pipeline_wait_ns.load(), log_pipeline_wait) / 1e6);
+            const u64 detail[] = {BbStats::t_image_hash.load(), BbStats::t_hash_snapshot.load(),
+                BbStats::image_hash_bytes.load(), BbStats::image_hash_reused_bytes.load(),
+                BbStats::image_unchanged_bytes.load(), BbStats::image_hash_parallel_jobs.load(),
+                BbStats::t_detile.load(), BbStats::t_image_upload.load(), BbStats::t_copy.load(),
+                BbStats::detile_scratch_reuses.load(), BbStats::t_image_alloc.load(),
+                 BbStats::t_image_view.load(), BbStats::t_image_format.load(), BbStats::image_recycle_hits.load()};
+            for (std::size_t index = 0; index < std::size(detail); ++index) {
+                const double scale = index == 5 || index == 9 || index == 13 ? 1.0 : 1e6;
+                std::fprintf(frame_log, ",%.3f", delta(detail[index], log_upload[index]) / scale);
+            }
+            std::fputc('\n', frame_log);
             static u32 unflushed = 0;
             if (++unflushed >= 120) {
                 std::fflush(frame_log);
@@ -574,6 +590,7 @@ void VideoOutDriver::Flip(const Request& req) {
             const double draws_per_frame = frames ? double(all_draws - window_draws) / frames : 0.0;
             window_draws = all_draws;
             window_gpu_us = gpu_us;
+            BbHashReuse::Print();
             std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
                         "%u shader/pipeline compiles, %.1f ms; %llu recorder syncs; "
                         "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
