@@ -24,7 +24,7 @@ public partial class MainWindow
         Deactivated += InputCapture_Deactivated;
         Closed += (_,_) => EndInputCapture(restoreFocus:false);
         SourceInitialized += (_,_) => (PresentationSource.FromVisual(this) as HwndSource)?.AddHook(InputCapture_WindowMessage);
-        MouseSensitivitySlider.ValueChanged += (_,_) => {if(!syncing)L10n.SetText(FooterMessage,"Unsaved changes");};
+        MouseSensitivitySlider.ValueChanged += (_,_) => {if(!syncing)MarkSettingsChanged();};
     }
     void InputCapture_Deactivated(object? sender,EventArgs e) => EndInputCapture(restoreFocus:false);
 

@@ -7,6 +7,7 @@ on:
     branches: [main, "experiment/**"]
     paths:
       - "engine/runtime/**"
+      - "engine/address_space.h"
       - "engine/renderer/**"
       - "third_party/**"
       - "tests/**"
@@ -88,6 +89,8 @@ jobs:
           out/gpu/motion-shader-test.exe
           out/gpu/image-overlap-test.exe
           out/gpu/settings-test.exe
+          ninja -C out/gpu -j2 performance-monitor-test performance-monitor-gpu-test
+          out/gpu/performance-monitor-test.exe
           out/gpu/ui-composition-test.exe
           out/gpu/engine-hooks-test.exe
           out/gpu/engine-menu-memory-test.exe
@@ -100,17 +103,34 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 pipeline-precompiler-test liverpool-tasks-test pipeline-precompile-gpu-test
+          ninja -C out/gpu -j2 pipeline-precompiler-test pipeline-key-test liverpool-tasks-test pipeline-precompile-gpu-test buffer-access-test shader-memory-test hdr-shader-test
           out/gpu/pipeline-precompiler-test.exe
+          out/gpu/pipeline-key-test.exe
           out/gpu/liverpool-tasks-test.exe
+          mkdir -p out/shader-memory-tests
+          out/gpu/shader-memory-test.exe out/shader-memory-tests
+          for file in out/shader-memory-tests/*.spv; do spirv-val --target-env vulkan1.3 "$file"; done
           # The real Vulkan readback fixture is compiled here and run locally on a GPU.
+
+      - name: Verify depth, indirect IDs and texture cache semantics
+        shell: msys2 {0}
+        run: |
+          set -e
+          ninja -C out/gpu -j2 render-semantics-test image-layout-cache-test lru-cache-test
+          mkdir -p out/render-semantics-tests
+          out/gpu/render-semantics-test.exe out/render-semantics-tests
+          out/gpu/image-layout-cache-test.exe
+          out/gpu/lru-cache-test.exe
+          for file in out/render-semantics-tests/*.spv; do spirv-val --target-env vulkan1.3 "$file"; done
 
       - name: Build and run recording, memory and frame pacing regressions
         # CPU ownership/remapping checks run on hosted Windows; GPU readback runs locally.
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test
+          ninja -C out/gpu -j2 record-data-test memory-notifications-test frame-pacing-test ngx-lifetime-test stable-arena-test image-hash-test tiled-writeback-test tiled-gc-test
+          BB_COPY_THREADS=0 out/gpu/image-hash-test.exe
+          BB_COPY_THREADS=2 out/gpu/image-hash-test.exe
           out/gpu/record-data-test.exe --cpu-only
           out/gpu/memory-notifications-test.exe
           out/gpu/frame-pacing-test.exe
@@ -129,6 +149,8 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_prepare.py'
           python -m unittest discover -s tests -p 'test_patches.py'
+          python -m unittest discover -s tests -p 'test_render_pools.py'
+          python -m unittest discover -s tests -p 'test_memory_preflight.py'
           python -m unittest discover -s tests -p 'test_game_check.py'
           python -m unittest discover -s tests -p 'test_windows_frame_rate.py'
           python -m unittest discover -s tests -p 'test_high_frame_rate.py'
@@ -161,7 +183,14 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Verify launcher settings and lifecycle
+      - name: Locate MSYS2 for launcher verification
+        # The launcher catalog uses the same Python loader as game startup.
+        # Publish the actual MSYS2 location rather than assuming C:\msys64 on runners.
+        # This value is only used during verification/building.
+        shell: msys2 {0}
+        run: echo "BB_MSYS2=$(cygpath -w /)" >> "$GITHUB_ENV"
+
+      - name: Verify launcher UI, mods and lifecycle
         shell: pwsh
         run: ./apps/launcher/Verify-Launcher.ps1 -PreviewDirectory launcher-previews
 
@@ -224,7 +253,9 @@ jobs:
 
           1. Run Techmo.Launcher.exe.
           2. Select your own Bloodborne v1.09 game dump (folder containing eboot.bin and sce_sys).
-          3. Configure resolution, FPS (30, 60 or 90) and upscaler. Unlimited FPS is retired.
+          3. Configure Display (resolution, FPS and Present mode), Graphics and Controls.
+             Apply changes saves the selected profile. Save a copy creates a named profile.
+             Unlimited FPS is experimental; title/loading screens remain limited to 60 FPS.
           4. Press PLAY BLOODBORNE.
 
           The launcher uses artwork from your own game sce_sys folder when available.

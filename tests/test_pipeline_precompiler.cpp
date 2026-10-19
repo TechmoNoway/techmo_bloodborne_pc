@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/pipeline_precompiler.h"
+#include "../engine/renderer/shim/bbport_write_epoch.h"
 #include "video_core/renderer_vulkan/pipeline_retry.h"
+#include "video_core/renderer_vulkan/graphics_scan_policy.h"
 #include <atomic>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <crtdbg.h>
@@ -15,6 +18,88 @@ int main() {
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     using Vulkan::PipelinePrecompiler;
+    for(unsigned total=1;total<512;++total) {
+        unsigned count=0;
+        for(unsigned i=0;i<total;++i) count+=Vulkan::GraphicsScan::Sample(i,total);
+        assert(count==std::min(total,16u));
+        assert(Vulkan::GraphicsScan::Sample(0,total) && Vulkan::GraphicsScan::Sample(total-1,total));
+        assert(!Vulkan::GraphicsScan::Sample(total,total));
+    }
+    assert(Vulkan::GraphicsScan::Sample(0xfffffffeu,0xffffffffu));
+    puts("PASS: graphics scanner samples head and final draw, spreads exactly 16 selections without overflow");
+
+    {
+        PipelinePrecompiler<int,int> deferred{2};
+        std::promise<void> started,release;
+        auto gate=release.get_future().share();
+        auto done=deferred.SubmitReserved(1,[&] { started.set_value();gate.wait();return 99; });
+        started.get_future().wait();
+        // Overlapping backing writes must never look quiescent.
+        BbBackingWriteEpoch epoch;
+        const auto initial=epoch.Snapshot();
+        { BbBackingWriteEpoch::Write a{epoch};
+          { BbBackingWriteEpoch::Write b{epoch};assert(epoch.Snapshot()==BbBackingWriteEpoch::Invalid); }
+          assert(epoch.Snapshot()==BbBackingWriteEpoch::Invalid);
+        }
+        assert(epoch.Snapshot()!=initial && epoch.Snapshot()!=BbBackingWriteEpoch::Invalid);
+        release.set_value();deferred.Stop();
+        Vulkan::PipelineTiming timing;
+        assert(done(&timing)==99 && timing.valid && timing.required);
+        puts("PASS: deferred completion outlives shutdown, shares single compiler, overlapping backing epochs stay invalid");
+    }
+    {
+        std::function<int(Vulkan::PipelineTiming*)> completion;
+        { PipelinePrecompiler<int,int> gone{1}; completion=gone.SubmitReserved(7,[] { return 77; }); }
+        Vulkan::PipelineTiming timing;
+        assert(completion(&timing)==77 && timing.valid);
+        PipelinePrecompiler<int,int> errors{1};
+        auto failed=errors.SubmitReserved(1,[]() -> int { throw std::runtime_error("driver"); });
+        bool caught=false;
+        try { failed(&timing); } catch(const std::runtime_error&) { caught=true; }
+        assert(caught && timing.valid);
+        auto next=errors.SubmitReserved(2,[] { return 2; });assert(next(nullptr)==2);
+        puts("PASS: completion survives compiler destruction and error releases bounded native job");
+    }
+    {
+        PipelinePrecompiler<int,int> bounded{1};
+        std::promise<void> started,release;
+        auto gate=release.get_future().share();
+        std::array<std::function<int(Vulkan::PipelineTiming*)>,4> completions;
+        completions[0]=bounded.SubmitReserved(0,[&] { started.set_value();gate.wait();return 0; });
+        started.get_future().wait();
+        for(int i=1;i<4;++i) completions[i]=bounded.SubmitReserved(i,[i] { return i; });
+        auto fifth=std::async(std::launch::async,[&] { return bounded.SubmitReserved(4,[] { return 4; }); });
+        assert(fifth.wait_for(std::chrono::milliseconds(10))==std::future_status::timeout);
+        release.set_value();
+        auto last=fifth.get();
+        for(int i=0;i<4;++i) assert(completions[i](nullptr)==i);
+        assert(last(nullptr)==4);
+        puts("PASS: first-use native queue applies backpressure at four jobs and releases capacity");
+    }
+    {
+        PipelinePrecompiler<int,std::unique_ptr<int>> early{2};
+        std::promise<void> published,release;
+        auto gate=release.get_future().share();std::atomic<bool> continuation_done{false};
+        assert(early.QueueEarly(1,[&] { return [&](auto publish,auto) {
+            publish(std::make_unique<int>(42));published.set_value();gate.wait();continuation_done=true;
+        }; }));
+        published.get_future().wait();
+        Vulkan::PipelineTiming timing;
+        auto result=early.TakeOrReserve(1,&timing);
+        assert(result && **result==42 && timing.valid && !continuation_done);
+        assert(early.Outstanding()==0);
+        auto stop=std::async(std::launch::async,[&] { early.Stop(); });
+        assert(stop.wait_for(std::chrono::milliseconds(10))==std::future_status::timeout);
+        release.set_value();stop.get();assert(continuation_done);
+        PipelinePrecompiler<int,int> failures{1};
+        assert(failures.QueueEarly(1,[] { return [](auto,auto) { throw std::runtime_error("frontend"); }; }));
+        bool caught=false;try { failures.TakeOrReserve(1,&timing); } catch(const std::runtime_error&) { caught=true; }
+        assert(caught && timing.valid && failures.Outstanding()==0);
+        assert(failures.QueueEarly(2,[] { return [](auto,auto) {}; }));
+        caught=false;try { failures.TakeOrReserve(2); } catch(const std::logic_error&) { caught=true; }
+        assert(caught);
+        puts("PASS: frontend future publishes before continuation, shutdown drains, timing/error/missing-publication remain safe");
+    }
     PipelinePrecompiler<int, std::unique_ptr<int>> compiler{2};
     std::promise<void> release, started;
     auto gate = release.get_future().share();
@@ -45,13 +130,16 @@ int main() {
         return [] { return std::make_unique<int>(0); };
     }));
     assert(snapshots == 2 && compiler.Outstanding() == 2);
-    auto required = std::async(std::launch::async, [&] { return compiler.TakeOrReserve(1); });
+    Vulkan::PipelineTiming first_trace;
+    auto required = std::async(std::launch::async, [&] { return compiler.TakeOrReserve(1, &first_trace); });
     assert(required.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
     // Required draws wait for completion, rather than accepting an incomplete
     // result.
     release.set_value();
     auto result = required.get();
     assert(result && **result == 42);
+    assert(first_trace.valid && !first_trace.required && first_trace.queued <= first_trace.started &&
+           first_trace.started <= first_trace.needed && first_trace.needed <= first_trace.finished);
     auto second = compiler.TakeOrReserve(2);
     assert(second && **second == 43);
     assert(builds == 2 && compiler.Outstanding() == 0);
@@ -196,14 +284,17 @@ int main() {
     std::atomic<int> priority_boosts{0}, priority_restores{0};
     PipelinePrecompiler<int, int> errors{
         1, {}, [&](bool waiting) { ++(waiting ? priority_boosts : priority_restores); }};
+    Vulkan::PipelineTiming failed_trace;
     bool required_failed = false;
     try {
         errors.TakeOrQueue(
-            1, [] { return []() -> int { throw std::runtime_error{"required compile"}; }; });
+            1, [] { return []() -> int { throw std::runtime_error{"required compile"}; }; }, &failed_trace);
     } catch (const std::runtime_error &) {
         required_failed = true;
     }
     assert(required_failed && errors.Outstanding() == 0);
+    assert(failed_trace.valid && failed_trace.required && failed_trace.needed <= failed_trace.queued &&
+           failed_trace.queued <= failed_trace.started && failed_trace.started <= failed_trace.finished);
     bool required_snapshot_failed = false;
     try {
         errors.TakeOrQueue(2, []() -> std::function<int()> { throw std::bad_alloc{}; });

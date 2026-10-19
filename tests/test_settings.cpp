@@ -33,6 +33,14 @@ int main() {
 
     BbSettings::Load();
     auto& s = BbSettings::Get();
+    assert(!s.show_cpu && !s.show_gpu);
+    s.show_cpu=true;s.show_gpu=true;
+    BbSettings::Save();
+    s.show_cpu=false;s.show_gpu=false;
+    BbSettings::Load();
+    assert(s.show_cpu && s.show_gpu && !s.show_fps);
+    s.show_cpu=false;BbSettings::Save();s.show_cpu=true;BbSettings::Load();
+    assert(!s.show_cpu && s.show_gpu);
     assert(s.upscaler == BbSettings::UpscalerFsr3 && !s.show_fps && s.menu_x < 0.0f);
     s.show_fps = true;
     s.upscaler = BbSettings::UpscalerFsr411;

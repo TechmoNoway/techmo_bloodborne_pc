@@ -16,6 +16,33 @@ using namespace Vulkan;
 using Libraries::VideoOut::TilingMode;
 using VideoOutFormat = Libraries::VideoOut::PixelFormat;
 
+namespace {
+struct BcnLayout {
+    std::array<ImageInfo::MipInfo, 16> mips{};
+    u32 bytes{};
+};
+constexpr auto BcnLayouts = [] {
+    std::array<std::array<BcnLayout, 11>, 2> table{};
+    for (u32 kind = 0; kind < 2; ++kind) {
+        for (u32 level = 0; level <= 10; ++level) {
+            auto& entry = table[kind][level];
+            const u32 extent = 1u << level;
+            for (u32 mip = 0; mip <= level; ++mip) {
+                const u32 blocks = std::bit_ceil(std::max(((extent >> mip) + 3) / 4, 1u));
+                auto& layout = entry.mips[mip];
+                std::tie(layout.pitch, layout.height, layout.size) =
+                    ImageSizeMicroTiled(blocks, blocks, 1, kind ? 128 : 64, 1);
+                layout.pitch = std::max(layout.pitch * 4, 32u);
+                layout.height = std::max(layout.height * 4, 32u);
+                layout.offset = entry.bytes;
+                entry.bytes += layout.size;
+            }
+        }
+    }
+    return table;
+}();
+} // namespace
+
 static vk::Format ConvertPixelFormat(const VideoOutFormat format) {
     switch (format) {
     case VideoOutFormat::A8B8G8R8Srgb:
@@ -230,6 +257,18 @@ std::string_view ImageInfo::ViewRejection(const ImageInfo& candidate, Subresourc
 }
 
 void ImageInfo::UpdateSize() {
+    // Preserve Techmo's existing thick/volume and macro-tail calculations.
+    // Only this complete, common BCn layout has a precomputed equivalent.
+    if (props.is_block && props.is_pow2 && std::has_single_bit(pitch) && pitch <= 1024 &&
+        pitch == size.height && size.depth == 1 && resources.layers == 1 &&
+        resources.levels == std::bit_width(pitch) && num_samples == 1 && !alt_tile &&
+        tile_mode == AmdGpu::TileMode::Thin1DThin &&
+        array_mode == AmdGpu::ArrayMode::Array1DTiledThin1 && (num_bits == 64 || num_bits == 128)) {
+        const auto& entry = BcnLayouts[num_bits == 128][std::bit_width(pitch) - 1];
+        std::copy_n(entry.mips.begin(), resources.levels, mips_layout.begin());
+        guest_size = entry.bytes;
+        return;
+    }
     guest_size = 0;
     for (s32 mip = 0; mip < resources.levels; ++mip) {
         u32 mip_w = pitch >> mip;

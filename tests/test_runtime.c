@@ -37,6 +37,7 @@ static void *tls_worker(void *unused) {
     assert(p[0]==42 && p[1]==17 && p[31]==0);
     p[0]=99;
     assert(GET(ThreadSelf,"aI+OeCz8xrQ#p#J")()!=main_identity);
+    assert((uintptr_t)GET(ThreadSelf,"aI+OeCz8xrQ#p#J")() < (UINT64_C(1)<<40));
     return NULL;
 }
 static void libc_support(void) {
@@ -49,6 +50,7 @@ static void libc_support(void) {
     assert(tls(last)==p+31 && tls(index)==p);
     p[0]=23;
     main_identity=GET(ThreadSelf,"aI+OeCz8xrQ#p#J")();
+    assert((uintptr_t)main_identity == ((uintptr_t)main_identity & ((UINT64_C(1)<<40)-1)));
     pthread_t worker;
     assert(pthread_create(&worker,NULL,tls_worker,NULL)==0);
     assert(pthread_join(worker,NULL)==0);

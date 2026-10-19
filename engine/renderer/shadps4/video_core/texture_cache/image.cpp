@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "video_core/texture_cache/image_recycler.h"
+
 #include "bbport_toggles.h"
 #include <ranges>
 #include "common/assert.h"
@@ -102,6 +104,7 @@ void UniqueImage::Destroy() {
 }
 
 void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
+    BbStats::Timer alloc_timer{BbStats::t_image_alloc};
     this->image_ci = image_ci;
     ASSERT(!image);
     // bbport: images of BB_VMA_DEDICATED_MB (4) or more get memory of their own, given back to
@@ -140,10 +143,11 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
 }
 
 Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
-             Common::SlotVector<ImageView>& slot_image_views_, const ImageInfo& info_)
+             Common::SlotVector<ImageView>& slot_image_views_, const ImageInfo& info_, ImageRecycler* recycler)
     : guest_begin{info_.guest_address}, guest_end{info_.guest_address + info_.guest_size},
       info{info_}, runtime{&runtime_}, slot_image_views{&slot_image_views_} {
     BbStats::Timer timer{BbStats::t_image_create};
+    const auto created_at = timer.start;
     if (info.pixel_format == vk::Format::eUndefined) {
         return;
     }
@@ -180,8 +184,10 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
         .usage = usage_flags,
         .flags = flags,
     };
-    const auto image_format_properties =
-        instance.GetPhysicalDevice().getImageFormatProperties2(format_info);
+    const auto image_format_properties = [&] {
+        BbStats::Timer format_timer{BbStats::t_image_format};
+        return instance.GetPhysicalDevice().getImageFormatProperties2(format_info);
+    }();
     if (image_format_properties.result == vk::Result::eErrorFormatNotSupported) {
         LOG_ERROR(Render_Vulkan, "image format {} type {} is not supported (flags {}, usage {})",
                   vk::to_string(supported_format), vk::to_string(format_info.type),
@@ -211,8 +217,18 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     backing = &backing_images.emplace_back();
     backing->num_samples = info.num_samples;
     backing->image = UniqueImage{instance.GetDevice(), instance.GetAllocator()};
-    backing->image.Create(image_ci);
+    if (!recycler || !recycler->Acquire(image_ci, backing->image)) backing->image.Create(image_ci);
 
+    if (BbStats::enabled) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - created_at).count();
+        static std::atomic<u32> logged{0};
+        if (ms >= 8.0 && logged.load() < 128 && logged.fetch_add(1) < 128)
+            std::printf("Texture create: uid=%llu address=%#llx size=%llu width=%u height=%u format=%u ms=%.3f\n",
+                        static_cast<unsigned long long>(image_uid),
+                        static_cast<unsigned long long>(info.guest_address),
+                        static_cast<unsigned long long>(info.guest_size), info.size.width, info.size.height,
+                        u32(info.pixel_format), ms);
+    }
     Vulkan::SetObjectName(instance.GetDevice(), GetImage(),
                           "Image {}x{}x{} {} {} {:#x}:{:#x} L:{} M:{} S:{}", info.size.width,
                           info.size.height, info.size.depth, AmdGpu::NameOf(info.tile_mode),

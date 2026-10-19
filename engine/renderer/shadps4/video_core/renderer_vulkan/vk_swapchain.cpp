@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -23,9 +24,19 @@ Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& windo
     : instance{instance_}, window{window_}, surface{CreateSurface(instance.GetInstance(), window)} {
     FindPresentFormat();
     FindPresentMode();
+    convert_sdr_hdr = supports_hdr && EmulatorSettings.IsSdrHdrOutputEnabled();
+    needs_hdr = convert_sdr_hdr;
+    if (EmulatorSettings.IsSdrHdrOutputEnabled()) {
+        if (convert_sdr_hdr) {
+            std::printf("HDR output: SDR -> HDR10 PQ, reference white %.0f nits, peak %.0f nits, highlight expansion %.0f\n",
+                        EmulatorSettings.GetHdrReferenceWhite(), EmulatorSettings.GetHdrPeak(), EmulatorSettings.GetHdrExpansion());
+        } else {
+            std::printf("HDR output: HDR10 surface unavailable; keeping SDR. Check the display, Windows HDR and driver.\n");
+        }
+    }
 
     Create(window.GetWidth(), window.GetHeight());
-    ImGui::Core::Initialize(instance, window, image_count, surface_format.format);
+    ImGui::Core::Initialize(instance, window, image_count, GetSurfaceFormat().format);
 }
 
 Swapchain::~Swapchain() {
@@ -95,6 +106,7 @@ void Swapchain::Recreate(u32 width_, u32 height_) {
 }
 
 void Swapchain::SetHDR(bool hdr) {
+    hdr = hdr || convert_sdr_hdr;
     if (needs_hdr == hdr) {
         return;
     }

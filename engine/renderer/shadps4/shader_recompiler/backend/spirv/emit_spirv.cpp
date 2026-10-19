@@ -430,6 +430,12 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
         if (info.stores.GetAny(IR::Attribute::Depth)) {
             ctx.AddExecutionMode(main, spv::ExecutionMode::DepthReplacing);
         }
+        // Honor the guest's request only for shaders that do not replace depth.
+        // A contradictory guest state retains the existing depth-export path.
+        if (ctx.runtime_info.hw.fs.depth_before_shader &&
+            !info.stores.GetAny(IR::Attribute::Depth)) {
+            ctx.AddExecutionMode(main, spv::ExecutionMode::EarlyFragmentTests);
+        }
         break;
     case SwStage::Geometry:
         execution_model = spv::ExecutionModel::Geometry;

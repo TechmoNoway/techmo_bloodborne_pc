@@ -11,6 +11,7 @@
 #include "video_core/texture_cache/image_view.h"
 
 #include <deque>
+#include <chrono>
 #include <optional>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -24,6 +25,7 @@ VK_DEFINE_HANDLE(VmaAllocation)
 VK_DEFINE_HANDLE(VmaAllocator)
 
 namespace VideoCore {
+class ImageRecycler;
 
 enum ImageFlagBits : u32 {
     Empty = 0,
@@ -47,7 +49,7 @@ struct UniqueImage {
     UniqueImage& operator=(const UniqueImage&) = delete;
 
     UniqueImage(UniqueImage&& other)
-        : allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
+        : device{other.device}, allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
           image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
           size_bytes{std::exchange(other.size_bytes, 0)} {}
@@ -86,7 +88,8 @@ public:
 
 struct Image {
     explicit Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime,
-                   Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info);
+                   Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info,
+                   ImageRecycler* recycler = nullptr);
     ~Image();
 
     Image(const Image&) = delete;
@@ -162,7 +165,26 @@ public:
     BackingImage* backing{};
     /// bbport: gc tick of the last LRU touch; skips the LRU list (a cache miss) when current.
     mutable u64 lru_touched_tick = ~0ULL;
-    u64 tick_accessed_last{};
+    mutable u64 tick_accessed_last{};
+    mutable u64 last_use_ms{};
+    u64 LastUse() const {
+        return __atomic_load_n(&tick_accessed_last, __ATOMIC_RELAXED);
+    }
+    void NoteUse(u64 tick) const {
+        u64 old=LastUse();
+        while (old<tick) {
+            if (__atomic_compare_exchange_n(&tick_accessed_last,&old,tick,false,
+                                            __ATOMIC_RELAXED,__ATOMIC_RELAXED)) {
+                const u64 now=std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                u64 previous=__atomic_load_n(&last_use_ms,__ATOMIC_RELAXED);
+                while (previous<now && !__atomic_compare_exchange_n(&last_use_ms,&previous,now,false,
+                        __ATOMIC_RELAXED,__ATOMIC_RELAXED)) {}
+                break;
+            }
+        }
+    }
+    u64 LastUseMs() const { return __atomic_load_n(&last_use_ms,__ATOMIC_RELAXED); }
     ImageId depth_id{};
     u64 depth_uid{};
     u64 image_uid{};
@@ -191,6 +213,16 @@ public:
     };
     std::deque<BackingImage> backing_images;
     boost::container::static_vector<u64, 16> mip_hashes{};
+    // Hashes describe the bytes uploaded into this specific backing/layout.
+    u16 uploaded_mips = 0;
+    const BackingImage* mip_hash_backing = nullptr;
+    std::array<u32, 6> mip_hash_layout{};
+    u64 cpu_hash_mapping = ~0ULL, cpu_hash_backing_epoch = ~0ULL;
+    u32 hash_reuse_last_blockers = 0;
+    u64 hash_reuse_candidates = 0, hash_reuse_hits = 0;
+    // Per-object diagnosis, reset with a new guest image. Never used to skip work.
+    u64 gpu_write_count = 0, gpu_write_address = 0, gpu_write_size = 0;
+    u64 refresh_count = 0, refresh_source_bytes = 0;
     u64 lru_id{};
     u64 hash{};
 

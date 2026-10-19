@@ -47,6 +47,9 @@ public:
     }
 
     vk::SurfaceFormatKHR GetSurfaceFormat() const {
+        // Keep the existing guest-native HDR path separate. SDR conversion is encoded into
+        // 10-bit intermediates too, so it must not pass through an 8-bit sRGB frame image.
+        if (convert_sdr_hdr) return {vk::Format::eA2B10G10R10UnormPack32, vk::ColorSpaceKHR::eHdr10St2084EXT};
         return surface_format;
     }
 
@@ -139,6 +142,7 @@ private:
     bool needs_recreation = true;
     bool zero_extent = false; ///< bbport: the surface was 0x0 (minimised) at the last Create
     bool needs_hdr = false;    // The game requested HDR swapchain
+    bool convert_sdr_hdr = false;
     bool supports_hdr = false; // SC supports HDR output
 };
 

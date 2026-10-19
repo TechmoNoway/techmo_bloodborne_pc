@@ -35,6 +35,7 @@ public partial class MainWindow
     {
         latestSessionDirectory = directory;
         LastSessionCard.Visibility = ShowLastSessionCard ? Visibility.Visible : Visibility.Collapsed;
+        HomeSessionCard.Visibility = LastSessionCard.Visibility;
         string category = processExitCode == 0 ? "normal" : "abnormal_exit";
         string reason = processExitCode == 0 ? "normal_exit" : "unknown_exit";
         string code = $"0x{unchecked((uint)processExitCode):X8}";
@@ -96,13 +97,13 @@ public partial class MainWindow
         if (category == "normal")
         {
             L10n.SetText(LastSessionStatus, "Bloodborne closed");
-            L10n.SetText(FooterMessage, "Bloodborne closed");
+            SetFooterMessage("Bloodborne closed");
             LastSessionStatus.Foreground = Green();
         }
         else
         {
             L10n.SetText(LastSessionStatus, category == "startup_error" ? "Bloodborne could not start" : "Bloodborne stopped unexpectedly");
-            L10n.SetText(FooterMessage, "Session ended · {0}", code);
+            SetFooterMessage("Session ended · {0}", code);
             LastSessionStatus.Foreground = Red();
         }
         L10n.SetText(LastSessionDetail, "{0}\nExit code: {1}", description, code);

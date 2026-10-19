@@ -42,3 +42,31 @@ Stability/shader and opt-in tiled collection follow-up (2026-10-17):
   Shader binary versions are 9 (regular) and 10 (motion). Runtime mapping generations,
   owned temporary linear storage and default-off GC instrumentation are local adaptations.
   See ../../THIRD_PARTY_NOTICES.txt for identities and license terms.
+Guest-address and cache-lifetime stability follow-up (2026-10-17):
+  Checked 1 MiB render-pool patch sites from Awakenchan/BloodBorneButPc 4f93643.
+  Local implementations: low Windows thread handles, immutable overlapping sparse
+  windows with guest-VA hazard tracking, real section/view memory preflight and
+  coordinated temporary fallback, and GPU-completion/recent-use texture guards.
+  See ../../THIRD_PARTY_NOTICES.txt for attribution and scope.
+Buffer access and shader ordering follow-up (2026-10-18):
+  c09fa46a85 (#5262): vertex/index/indirect/count buffer read tracking, adapted to
+  Techmo's prepared draw and recording paths, explicit per-consumer stage masks,
+  spillable binding storage, GDS read/write hazards and indirect READ_MASK support.
+  945dbc3cc3 (#5285): side-effecting subgroup shared-memory barriers. Keep local
+  divergent-loop protection for workgroup execution barriers.
+  b08fd9bb41 (#5342): FP64 instruction coverage in shader-info collection.
+  This step used shader binary versions 11 (regular) and 12 (motion); metadata/key
+  layouts stay 7/6. Player cache files are not automatically deleted.
+Depth/texture/indirect follow-up (2026-10-18):
+  7d28d2790b (#5264): guest-requested early fragment tests. Depth exporters retain
+  the existing late/depth-export path rather than adding an upstream assertion.
+  8e23388af8 (#5219): layout/LRU optimization reference. Local stable-index LRU,
+  bounded sampler memo and exact common BCn table preserve Techmo's generic,
+  thick/volume layout rules and synchronization. No intrusive pointers into
+  relocatable sampler storage or narrowed mip-size fields are introduced.
+  643c7997a5 (#5348): explicit indirect-draw ID semantics, also applied to
+  instance step-rate inputs. Fetch-owned base offsets remain fetch-owned.
+  995e37e4e7 (#5046): expanded CMask sample patterns, adapted to live image
+  ownership and existing GPU buffer coherency. Unsupported counts reject fills.
+  Current shader versions: regular 13, motion 14, metadata 8, pipeline key 6.
+  See ../../THIRD_PARTY_NOTICES.txt for full source identities and licenses.

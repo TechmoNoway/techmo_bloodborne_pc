@@ -9,6 +9,7 @@
 #include <mutex>
 
 #include "core/libraries/videoout/buffer.h"
+#include "core/emulator_settings.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -80,6 +81,7 @@ public:
         }
         swapchain.SetHDR(enable);
         pp_settings.hdr = enable ? 1 : 0;
+        pp_settings.sdr_to_hdr = !enable && EmulatorSettings.IsSdrHdrOutputEnabled() ? 1 : 0;
     }
 
     VideoCore::Image& RegisterVideoOutSurface(

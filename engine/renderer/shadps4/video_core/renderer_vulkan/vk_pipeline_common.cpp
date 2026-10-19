@@ -20,7 +20,19 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
     : instance{instance_}, scheduler{scheduler_}, desc_heap{desc_heap_}, profile{profile_},
       is_compute{is_compute_} {}
 
-Pipeline::~Pipeline() = default;
+Pipeline::~Pipeline() {
+    // Layouts must outlive every accepted native create, even for unused pipelines.
+    try { CompleteNative(); } catch (...) {}
+}
+
+void Pipeline::CompleteNative() const {
+    if (native_ready.load(std::memory_order_acquire)) return;
+    std::call_once(native_once, [&] {
+        pipeline = pending_native();
+        pending_native = {};
+        native_ready.store(true, std::memory_order_release);
+    });
+}
 
 
 void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data,

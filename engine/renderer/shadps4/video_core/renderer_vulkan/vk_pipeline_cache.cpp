@@ -49,20 +49,23 @@ struct PipelineWorkerPriority {
     std::mutex mutex;
     HANDLE thread{};
     int idle = THREAD_PRIORITY_IDLE;
-    bool waiting = false;
+    u32 waiters = 0;
     void Attach() {
         std::scoped_lock lock{mutex};
         if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
                             &thread, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
             const auto priority = GetThreadPriority(thread);
             if (priority != THREAD_PRIORITY_ERROR_RETURN) idle = priority;
-            if (waiting) SetThreadPriority(thread, THREAD_PRIORITY_NORMAL);
+            if (waiters) SetThreadPriority(thread, THREAD_PRIORITY_NORMAL);
         }
     }
     void Wait(bool value) {
         std::scoped_lock lock{mutex};
-        waiting = value;
-        if (thread) SetThreadPriority(thread, value ? THREAD_PRIORITY_NORMAL : idle);
+        // Stage A may wait for lookahead while Stage B waits for first-use
+        // native work. One completed consumer cannot demote another's compiler.
+        if (value) ++waiters;
+        else if (waiters) --waiters;
+        if (thread) SetThreadPriority(thread, waiters ? THREAD_PRIORITY_NORMAL : idle);
     }
     ~PipelineWorkerPriority() { if (thread) CloseHandle(thread); }
 #else
@@ -141,6 +144,7 @@ void PipelineCache::CreateNativeCache() {
     ASSERT_MSG(result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(result));
     pipeline_cache = std::move(cache);
+    std::printf("Pipeline native cache: %zu compatible seed bytes\n", initial_data.size());
 }
 
 void PipelineCache::SaveNativeCache() {
@@ -166,6 +170,8 @@ void PipelineCache::SaveNativeCache() {
     const auto file_data = DriverCache::Encode(payload, DriverIdentity(instance));
     if (!file_data.empty() && !Storage::ReplaceCacheFile(DriverCachePath(), file_data)) {
         LOG_WARNING(Render_Vulkan, "Cannot save Vulkan driver cache; keeping the previous file");
+    } else if (!file_data.empty()) {
+        std::printf("Pipeline native cache: saved %zu payload bytes\n", payload.size());
     }
 }
 
@@ -337,6 +343,7 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         info.hw.fs.addr_flags = regs.ps_input_addr;
         info.hw.fs.num_inputs = regs.num_interp;
         info.hw.fs.front_face_all_bits = regs.barycentric_control.front_face_all_bits;
+        info.hw.fs.depth_before_shader = regs.depth_shader_control.depth_before_shader;
         info.hw.fs.num_samples =
             regs.ps_input_addr.sample_coverage_ena && regs.ps_input_ena.sample_coverage_ena
                 ? regs.aa_config.NumSamples()
@@ -396,6 +403,7 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         info.sw.vs.step_rate_1 = regs.vgt_instance_step_rate_1;
         info.sw.vs.vertex_sgpr_offset = sel.draw_indirect_params.vertex_sgpr_offset;
         info.sw.vs.instance_sgpr_offset = sel.draw_indirect_params.instance_sgpr_offset;
+        info.sw.vs.is_indirect = sel.draw_indirect_params.is_indirect;
         info.sw.vs.tess_emulated_primitive =
             regs.primitive_type == AmdGpu::PrimitiveType::RectList ||
             regs.primitive_type == AmdGpu::PrimitiveType::QuadList;
@@ -489,6 +497,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     };
     CreateNativeCache();
     WarmUp();
+    const auto warm = GetPrecacheProgress();
+    std::printf("Pipeline warmup: %u loaded, %u rejected, %u records\n", warm.loaded, warm.rejected, warm.total);
     StartPreparation();
     std::scoped_lock lock{Registry().mutex};
     Registry().caches.push_back(this);
@@ -517,6 +527,21 @@ struct CompileTimer {
     }
 };
 } // namespace
+
+static void LogPipelineTiming(const char* kind, u64 hash, const PipelineTiming& t) {
+    if (!t.valid) return;
+    const auto remaining = std::max(0.0, PipelineTiming::Ms(t.finished - t.needed));
+    const auto compile = PipelineTiming::Ms(t.finished - t.started);
+    if (remaining < 2.0 && compile < 8.0) return;
+    std::printf("Pipeline timeline: %s %#llx origin=%s queued=%.3f start=%.3f need=%.3f "
+                "queue_ms=%.3f compile_ms=%.3f lead_ms=%.3f remaining_ms=%.3f capacity_ms=%.3f admission_ms=%.3f\n",
+                kind, static_cast<unsigned long long>(hash), t.required ? "required" : "lookahead",
+                PipelineTiming::Ms(t.queued - PipelineTiming::epoch),
+                PipelineTiming::Ms(t.started - PipelineTiming::epoch),
+                PipelineTiming::Ms(t.needed - PipelineTiming::epoch),
+                PipelineTiming::Ms(t.started - t.queued), compile,
+                PipelineTiming::Ms(t.needed - t.queued), remaining, t.capacity_wait_ms, t.admission_wait_ms);
+}
 
 bool PipelineCache::PrepareGraphicsPipeline(PipelineSelection& worker_sel) {
     // Tessellation stages read constant buffers from memory at selection time: not prepared.
@@ -595,7 +620,11 @@ void PipelineCache::StartPreparation() try {
                 priority->Attach();
             }, [priority](bool waiting) { priority->Wait(waiting); });
             for (const auto& [key, _] : graphics_pipelines) precompiler->Known(key);
-            std::printf("Pipeline preparation: on, 1 worker, 32 speculative results maximum, +1 required\n");
+            const char* early = std::getenv("BB_PIPELINE_EARLY_FRONTEND");
+            const char* first = std::getenv("BB_FIRST_USE_PIPELINE");
+            early_frontend = (!early || early[0] != '0') && (!first || first[0] != '0');
+            std::printf("Pipeline early frontend: %s, native continuation on same worker\n", early_frontend ? "on" : "off");
+            std::printf("Pipeline preparation: on, 1 worker, 32 speculative results maximum, +1 legacy required, 4 first-use native jobs\n");
         }
     }
     const char* compute = std::getenv("BB_COMPUTE_PREP");
@@ -673,7 +702,10 @@ void PipelineCache::QueuePreparedPipeline(const PipelineSelection &selection) tr
          primitive != AmdGpu::PrimitiveType::RectList &&
          primitive != AmdGpu::PrimitiveType::QuadList))
         return;
-    precompiler->Queue(selection.graphics_key, [&] { return MakeGraphicsWork(selection); });
+    if (early_frontend)
+        precompiler->QueueEarly(selection.graphics_key, [&] { return MakeEarlyGraphicsWork(selection); });
+    else
+        precompiler->Queue(selection.graphics_key, [&] { return MakeGraphicsWork(selection); });
 } catch (const std::exception &error) {
     static std::atomic_flag warned{};
     if (!warned.test_and_set())
@@ -681,8 +713,8 @@ void PipelineCache::QueuePreparedPipeline(const PipelineSelection &selection) tr
                     error.what());
 }
 
-std::function<PipelineCache::PreparedPipeline()>
-PipelineCache::MakeGraphicsWork(const PipelineSelection &selection) {
+std::shared_ptr<PipelineCache::PipelineSnapshot>
+PipelineCache::SnapshotGraphics(const PipelineSelection& selection) {
     auto snapshot = std::make_shared<PipelineSnapshot>();
     snapshot->key = selection.graphics_key;
     snapshot->runtime_infos = selection.runtime_infos;
@@ -696,6 +728,12 @@ PipelineCache::MakeGraphicsWork(const PipelineSelection &selection) {
         snapshot->user_data[stage].assign(ud.begin(), ud.end());
         snapshot->infos[stage]->user_data = snapshot->user_data[stage];
     }
+    return snapshot;
+}
+
+std::function<PipelineCache::PreparedPipeline()>
+PipelineCache::MakeGraphicsWork(const PipelineSelection &selection) {
+    auto snapshot = SnapshotGraphics(selection);
     return [this, snapshot] {
         const auto start = std::chrono::steady_clock::now();
         std::array<const Shader::Info *, MaxShaderStages> infos{};
@@ -716,6 +754,108 @@ PipelineCache::MakeGraphicsWork(const PipelineSelection &selection) {
                 static_cast<unsigned long long>(std::hash<GraphicsPipelineKey>{}(snapshot->key)),
                 ms);
         return result;
+    };
+}
+
+PipelineCache::Precompiler::EarlyWork
+PipelineCache::MakeEarlyGraphicsWork(const PipelineSelection& selection) {
+    auto snapshot = SnapshotGraphics(selection);
+    const auto hash = std::hash<GraphicsPipelineKey>{}(selection.graphics_key);
+    auto priority = precompiler->PriorityCallback();
+    return [this, snapshot, hash, priority](Precompiler::Publish publish,
+                                          std::shared_ptr<PipelineTiming> frontend_timing) {
+        struct NativeState {
+            std::promise<vk::UniquePipeline> result;
+            std::future<vk::UniquePipeline> future{result.get_future()};
+            PipelineTiming timing;
+        };
+        auto native = std::make_shared<NativeState>();
+
+        Pipeline::NativeWork create;
+        Pipeline::NativeSchedule collect = [&](Pipeline::NativeWork work) -> Pipeline::NativeWork {
+            create = std::move(work);
+            return [native, priority, hash]() mutable {
+                const auto need = PipelineTiming::Clock::now();
+                struct Priority {
+                    const std::function<void(bool)>& callback;
+                    explicit Priority(const std::function<void(bool)>& cb) : callback{cb} {
+                        if (callback) try { callback(true); } catch (...) {}
+                    }
+                    ~Priority() { if (callback) try { callback(false); } catch (...) {} }
+                } waiting{priority};
+                // Read native timing only after the future becomes ready, also
+                // on error. It is never the frontend timing consumed by Stage A.
+                try {
+                    auto result = native->future.get();
+                    const auto now = PipelineTiming::Clock::now();
+                    g_bb_pipeline_wait_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(now - need).count()), std::memory_order_relaxed);
+                    auto trace = native->timing; trace.needed = need; trace.valid = true;
+                    LogPipelineTiming("gfx_bind", hash, trace);
+                    return result;
+                } catch (...) {
+                    const auto now = PipelineTiming::Clock::now();
+                    g_bb_pipeline_wait_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(now - need).count()), std::memory_order_relaxed);
+                    throw;
+                }
+            };
+        };
+        PreparedPipeline result;
+        try {
+            std::array<const Shader::Info*, MaxShaderStages> infos{};
+            for (u32 i = 0; i < MaxShaderStages; ++i) infos[i] = snapshot->infos[i].get();
+            result.snapshot = snapshot;
+            result.pipeline = std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, snapshot->key, *preparation_cache,
+                infos, snapshot->runtime_infos, snapshot->fetch_shader, snapshot->modules,
+                result.serialization, false, true, collect);
+            if (!create) throw std::logic_error{"native graphics continuation missing"};
+            std::printf("Pipeline early ready: gfx %#llx metadata_ms=%.3f\n",
+                        static_cast<unsigned long long>(hash),
+                        PipelineTiming::Ms(PipelineTiming::Clock::now() - frontend_timing->started));
+        } catch (...) {
+            native->timing.started = native->timing.finished = PipelineTiming::Clock::now();
+            native->result.set_exception(std::current_exception());
+            throw;
+        }
+        // No shader Info or borrowed snapshot is read after publication. The
+        // native create closure owns every Vulkan pointee and helper module.
+        native->timing.queued = PipelineTiming::Clock::now(); // Native inputs are now complete.
+        publish(std::move(result));
+        native->timing.started = PipelineTiming::Clock::now();
+        try {
+            auto pipeline = create();
+            native->timing.finished = PipelineTiming::Clock::now();
+            const auto ms = PipelineTiming::Ms(native->timing.finished - native->timing.started);
+            native->result.set_value(std::move(pipeline));
+            if (ms >= 8) std::printf("Pipeline prepared: gfx %#llx %.2f ms (background)\n",
+                                   static_cast<unsigned long long>(hash), ms);
+        } catch (...) {
+            native->timing.finished = PipelineTiming::Clock::now();
+            native->result.set_exception(std::current_exception());
+        }
+    };
+}
+
+Pipeline::NativeSchedule PipelineCache::FirstUseSchedule(const GraphicsPipelineKey& key) {
+    return [this, key](Pipeline::NativeWork work) -> Pipeline::NativeWork {
+        const auto hash = std::hash<GraphicsPipelineKey>{}(key);
+        auto done = precompiler->SubmitReserved(key, [work = std::move(work)]() mutable {
+            PreparedPipeline result;
+            result.native = work();
+            return result;
+        });
+        std::printf("Pipeline first use: gfx %#llx native queued; wait at bind\n",
+                    static_cast<unsigned long long>(hash));
+        return [done = std::move(done), hash]() mutable {
+            PipelineTiming timing;
+            const auto start = std::chrono::steady_clock::now();
+            auto result = done(&timing);
+            const auto ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count());
+            g_bb_pipeline_wait_ns.fetch_add(ns, std::memory_order_relaxed);
+            LogPipelineTiming("gfx_bind", hash, timing);
+            return std::move(result.native);
+        };
     };
 }
 
@@ -771,12 +911,39 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
         GraphicsPipeline::SerializationSupport sdata{};
-        if (precompiler) {
-            const auto required_before = precompiler->RequiredQueued();
+        static const bool first_use = [] {
+            const char* value = std::getenv("BB_FIRST_USE_PIPELINE");
+            return !value || value[0] != '0';
+        }();
+        bool reserved_first_use = false;
+        if (precompiler && first_use && !EmulatorSettings.IsShaderCollect()) {
+            PipelineTiming timing;
             const auto start = std::chrono::steady_clock::now();
             try {
+              if (auto ready = precompiler->TakeOrReserve(sel.graphics_key, &timing)) {
+                it.value() = std::move(ready->pipeline);
+                it.value()->BindRuntimeStages(sel.infos);
+                sdata = std::move(ready->serialization);
+                ++prepared_pipeline_hits;
+                const auto ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - start).count());
+                prepared_pipeline_wait_ns += ns;
+                g_bb_pipeline_wait_ns.fetch_add(ns, std::memory_order_relaxed);
+                LogPipelineTiming(early_frontend ? "gfx_frontend" : "gfx", pipeline_hash, timing);
+              } else reserved_first_use = true;
+            } catch (const std::exception& error) {
+                reserved_first_use = true;
+                std::printf("Pipeline lookahead failed: gfx %#llx %s; scheduling required native\n",
+                            static_cast<unsigned long long>(pipeline_hash), error.what());
+            }
+        }
+        if (precompiler && !first_use) {
+            const auto required_before = precompiler->RequiredQueued();
+            const auto start = std::chrono::steady_clock::now();
+            PipelineTiming timing;
+            try {
                 if (auto ready = precompiler->TakeOrQueue(sel.graphics_key,
-                        [&] { return MakeGraphicsWork(sel); })) {
+                        [&] { return MakeGraphicsWork(sel); }, &timing)) {
                     it.value() = std::move(ready->pipeline);
                     it.value()->BindRuntimeStages(sel.infos);
                     sdata = std::move(ready->serialization);
@@ -796,6 +963,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 std::printf("Pipeline preparation failed: gfx %#llx %s; compiling required draw\n",
                     static_cast<unsigned long long>(pipeline_hash), error.what());
             }
+            LogPipelineTiming("gfx", pipeline_hash, timing);
             if (precompiler->RequiredQueued() != required_before)
                 std::printf("Pipeline required: gfx %#llx reason=%s primitive=%u\n",
                     static_cast<unsigned long long>(pipeline_hash),
@@ -803,15 +971,22 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                     static_cast<unsigned>(sel.graphics_key.prim_type));
         }
         if (!it.value()) {
+            if (reserved_first_use)
+                std::printf("Pipeline required: gfx %#llx reason=%s primitive=%u\n",
+                    static_cast<unsigned long long>(pipeline_hash),
+                    sel.cold_shader ? "cold_shader" : (sel.new_permutation ? "new_permutation" : "not_prepared"),
+                    static_cast<unsigned>(sel.graphics_key.prim_type));
             std::printf("Pipeline miss: gfx %#llx reason=%s primitive=%u\n",
                 static_cast<unsigned long long>(pipeline_hash),
                 sel.cold_shader ? "cold_shader" : (sel.new_permutation ? "new_permutation" : "not_prepared"),
                 static_cast<unsigned>(sel.graphics_key.prim_type));
-            CompileTimer timer{"graphics pipeline", pipeline_hash};
+            CompileTimer timer{reserved_first_use ? "graphics frontend" : "graphics pipeline", pipeline_hash};
             std::scoped_lock cache_lock{native_cache_mutex};
             it.value() = std::make_unique<GraphicsPipeline>(
-                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
-                sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+                instance, scheduler, desc_heap, profile, sel.graphics_key,
+                reserved_first_use ? *preparation_cache : *pipeline_cache, sel.infos,
+                sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false, false,
+                reserved_first_use ? FirstUseSchedule(sel.graphics_key) : Pipeline::NativeSchedule{});
         }
 
         RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
@@ -842,9 +1017,10 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         if (compute_precompiler) {
             const auto required_before = compute_precompiler->RequiredQueued();
             const auto start = std::chrono::steady_clock::now();
+            PipelineTiming timing;
             try {
                 if (auto ready = compute_precompiler->TakeOrQueue(compute_key,
-                        [&] { return MakeComputeWork(sel, compute_key); })) {
+                        [&] { return MakeComputeWork(sel, compute_key); }, &timing)) {
                     it.value() = std::move(ready->pipeline);
                     it.value()->BindRuntimeStage(*sel.infos[0]);
                     sdata = std::move(ready->serialization);
@@ -860,6 +1036,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             g_bb_pipeline_wait_ns.fetch_add(ns, std::memory_order_relaxed);
             if (ns >= 2'000'000) std::printf("Pipeline preparation wait: compute %#llx %.2f ms\n",
                 static_cast<unsigned long long>(pipeline_hash), ns / 1e6);
+            LogPipelineTiming("compute", pipeline_hash, timing);
             if (compute_precompiler->RequiredQueued() != required_before)
                 std::printf("Pipeline required: compute %#llx reason=%s\n",
                     static_cast<unsigned long long>(pipeline_hash),
@@ -1376,6 +1553,8 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
 
 std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule module,
                                                              std::span<const u32> spv_code) {
+    // No native create may still reference a module being replaced.
+    for (const auto& [_, graphics] : graphics_pipelines) if (graphics) graphics->CompleteNative();
     std::optional<vk::ShaderModule> new_module{};
     for (const auto& [_, program] : program_cache) {
         for (auto& m : program->modules) {

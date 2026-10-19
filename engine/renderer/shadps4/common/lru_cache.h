@@ -3,7 +3,8 @@
 
 #pragma once
 
-#include <deque>
+#include <limits>
+#include <vector>
 #include <type_traits>
 
 #include "common/types.h"
@@ -12,15 +13,16 @@ namespace Common {
 
 template <typename ObjectType, typename TickType>
 class LeastRecentlyUsedCache {
+    static constexpr size_t None = std::numeric_limits<size_t>::max();
     struct Item {
         ObjectType obj;
         TickType tick;
-        Item* next{};
-        Item* prev{};
+        size_t next = None;
+        size_t prev = None;
     };
 
 public:
-    LeastRecentlyUsedCache() : first_item{}, last_item{} {}
+    LeastRecentlyUsedCache() = default;
     ~LeastRecentlyUsedCache() = default;
 
     size_t Insert(ObjectType obj, TickType tick) {
@@ -28,7 +30,7 @@ public:
         auto& item = item_pool[new_id];
         item.obj = obj;
         item.tick = tick;
-        Attach(item);
+        Attach(new_id);
         return new_id;
     }
 
@@ -38,37 +40,34 @@ public:
             return;
         }
         item.tick = tick;
-        if (&item == last_item) {
+        if (id == last_item) {
             return;
         }
-        Detach(item);
-        Attach(item);
+        Detach(id);
+        Attach(id);
     }
 
     void Free(size_t id) {
-        auto& item = item_pool[id];
-        Detach(item);
-        item.prev = nullptr;
-        item.next = nullptr;
+        Detach(id);
         free_items.push_back(id);
     }
 
     template <typename Func>
     void ForEachItemBelow(TickType tick, Func&& func) {
         static constexpr bool RETURNS_BOOL =
-            std::is_same_v<std::invoke_result<Func, ObjectType>, bool>;
-        Item* iterator = first_item;
-        while (iterator) {
-            if (static_cast<s64>(tick) - static_cast<s64>(iterator->tick) < 0) {
+            std::is_same_v<std::invoke_result_t<Func&, ObjectType&>, bool>;
+        size_t iterator = first_item;
+        while (iterator != None) {
+            if (item_pool[iterator].tick > tick) {
                 return;
             }
-            Item* next = iterator->next;
+            const size_t next = item_pool[iterator].next;
             if constexpr (RETURNS_BOOL) {
-                if (func(iterator->obj)) {
+                if (func(item_pool[iterator].obj)) {
                     return;
                 }
             } else {
-                func(iterator->obj);
+                func(item_pool[iterator].obj);
             }
             iterator = next;
         }
@@ -78,58 +77,41 @@ private:
     size_t Build() {
         if (free_items.empty()) {
             const size_t item_id = item_pool.size();
-            auto& item = item_pool.emplace_back();
-            item.next = nullptr;
-            item.prev = nullptr;
+            item_pool.emplace_back();
             return item_id;
         }
-        const size_t item_id = free_items.front();
-        free_items.pop_front();
+        const size_t item_id = free_items.back();
+        free_items.pop_back();
         auto& item = item_pool[item_id];
-        item.next = nullptr;
-        item.prev = nullptr;
+        item.next = None;
+        item.prev = None;
         return item_id;
     }
 
-    void Attach(Item& item) {
-        if (!first_item) {
-            first_item = &item;
-        }
-        if (!last_item) {
-            last_item = &item;
-        } else {
-            item.prev = last_item;
-            last_item->next = &item;
-            item.next = nullptr;
-            last_item = &item;
-        }
+    void Attach(size_t id) {
+        auto& item = item_pool[id];
+        item.prev = last_item;
+        item.next = None;
+        if (last_item != None) item_pool[last_item].next = id;
+        else first_item = id;
+        last_item = id;
     }
 
-    void Detach(Item& item) {
-        if (item.prev) {
-            item.prev->next = item.next;
-        }
-        if (item.next) {
-            item.next->prev = item.prev;
-        }
-        if (&item == first_item) {
-            first_item = item.next;
-            if (first_item) {
-                first_item->prev = nullptr;
-            }
-        }
-        if (&item == last_item) {
-            last_item = item.prev;
-            if (last_item) {
-                last_item->next = nullptr;
-            }
-        }
+    void Detach(size_t id) {
+        auto& item = item_pool[id];
+        if (item.prev != None) item_pool[item.prev].next = item.next;
+        else first_item = item.next;
+        if (item.next != None) item_pool[item.next].prev = item.prev;
+        else last_item = item.prev;
+        item.prev = item.next = None;
     }
 
-    std::deque<Item> item_pool;
-    std::deque<size_t> free_items;
-    Item* first_item{};
-    Item* last_item{};
+    // Indices survive contiguous storage growth, including callbacks that free
+    // the current item. Keep IDs stable for image/sampler relocation safety.
+    std::vector<Item> item_pool;
+    std::vector<size_t> free_items;
+    size_t first_item = None;
+    size_t last_item = None;
 };
 
 } // namespace Common

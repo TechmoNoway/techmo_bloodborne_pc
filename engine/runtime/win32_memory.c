@@ -48,12 +48,29 @@ int win_mem_space(uintptr_t start, uintptr_t end) {
     return 0;
 }
 int win_mem_section(uint64_t size, void **backing) {
-    section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT,
+    HANDLE candidate = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT,
                                  (DWORD)(size >> 32), (DWORD)size, NULL);
-    if (!section) { report("creating the memory pool section", 0, size); return -1; }
-    *backing = MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, size);
-    if (!*backing) { report("mapping the memory pool", 0, size); return -1; }
+    if (!candidate) { report("creating the memory pool section", 0, size); return -1; }
+    void *view = MapViewOfFile(candidate, FILE_MAP_ALL_ACCESS, 0, 0, size);
+    if (!view) {
+        DWORD error=GetLastError(); CloseHandle(candidate); SetLastError(error);
+        report("mapping the memory pool", 0, size); return -1;
+    }
+    section=candidate; *backing=view;
     return 0;
+}
+int win_mem_probe_section(uint64_t size) {
+    if (!size || size>UINT64_C(17408)*1024*1024) {
+        SetLastError(ERROR_INVALID_PARAMETER); return -1;
+    }
+    HANDLE candidate=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_EXECUTE_READWRITE|SEC_COMMIT,
+                                       (DWORD)(size>>32),(DWORD)size,NULL);
+    if (!candidate) return -1;
+    void *view=MapViewOfFile(candidate,FILE_MAP_ALL_ACCESS,0,0,size);
+    DWORD error=view ? ERROR_SUCCESS : GetLastError();
+    if (view) UnmapViewOfFile(view);
+    CloseHandle(candidate); SetLastError(error);
+    return view ? 0 : -1;
 }
 static DWORD page_mode(int prot) {
     switch (prot & 7) {

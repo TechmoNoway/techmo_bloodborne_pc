@@ -74,7 +74,7 @@ for dependency in "${gpu[@]}"; do
     [[ ! -f $dependency ]] || gpu_inputs+=("$dependency")
 done
 if [[ -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe &&
-      -z $(find engine/runtime engine/renderer/bbgpu.h "${gpu_inputs[@]}" out/libatrac9.a build.sh \
+      -z $(find engine/runtime engine/address_space.h engine/renderer/bbgpu.h "${gpu_inputs[@]}" out/libatrac9.a build.sh \
                tools/gpu_capabilities.c -newer out/bb-probe.exe -print -quit) ]]; then
     echo "Up to date: $PWD/out/bb-probe.exe"
 else

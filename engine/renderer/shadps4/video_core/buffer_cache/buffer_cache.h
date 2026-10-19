@@ -65,10 +65,9 @@ public:
 };
 
 class BufferCache {
+    friend struct StableArenaTest;
+    friend struct TiledWritebackTest;
     static constexpr u64 ADDRESS_SPACE_BITS = 40;
-    static constexpr u64 ARENA_PAGE_BITS = 32;
-    static constexpr u64 ARENA_PAGE_SIZE = u64{1} << ARENA_PAGE_BITS;
-    static constexpr u64 NUM_ARENA_PAGES = u64{1} << (ADDRESS_SPACE_BITS - ARENA_PAGE_BITS);
     static constexpr u64 MIN_BLOCK_SIZE = 16_KB;
 
 public:
@@ -222,6 +221,7 @@ private:
     }
 
     const Buffer* GetArena(u64 first_block, u64 last_block);
+    void BindResidentAliases(u64 first,u64 end,vk::DeviceMemory memory,u64 offset);
 
     /// `in_place`: bind what can be in place even when Garlic (texture data, read once into an
     /// image: a VRAM copy of it would only cost an upload).
@@ -358,7 +358,8 @@ private:
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;
 
-    std::array<const Buffer*, NUM_ARENA_PAGES> address_space{};
+    std::vector<const Buffer*> address_space;
+    u32 arena_page_bits = 32;
     std::deque<Buffer> arenas;
     std::vector<ArenaBinds> pending_binds;
     std::mutex preupload_mutex;               ///< the map hooks come from guest threads
@@ -457,7 +458,6 @@ private:
     u32 last_evacuation = 0; ///< ProcessIdleBlocks: when a chunk was last emptied
     u32 block_size{};
     u32 block_shift{};
-    u32 blocks_per_arena_page{};
     u32 blocks_per_arena_page_shift{};
 };
 

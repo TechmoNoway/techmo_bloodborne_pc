@@ -8,6 +8,9 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 
 #include <boost/container/small_vector.hpp>
+#include <atomic>
+#include <functional>
+#include <mutex>
 
 namespace Shader {
 struct Info;
@@ -32,9 +35,14 @@ public:
              bool is_compute = false);
     virtual ~Pipeline();
 
-    vk::Pipeline Handle() const noexcept {
+    vk::Pipeline Handle() const {
+        CompleteNative();
         return *pipeline;
     }
+    void CompleteNative() const;
+    bool NativePending() const { return !native_ready.load(std::memory_order_acquire); }
+    using NativeWork = std::function<vk::UniquePipeline()>;
+    using NativeSchedule = std::function<NativeWork(NativeWork)>;
 
     vk::PipelineLayout GetLayout() const noexcept {
         return *pipeline_layout;
@@ -71,7 +79,10 @@ protected:
     Scheduler& scheduler;
     DescriptorHeap& desc_heap;
     const Shader::Profile& profile;
-    vk::UniquePipeline pipeline;
+    mutable vk::UniquePipeline pipeline;
+    mutable NativeWork pending_native;
+    mutable std::once_flag native_once;
+    mutable std::atomic<bool> native_ready{true};
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniqueDescriptorSetLayout desc_layout;
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};

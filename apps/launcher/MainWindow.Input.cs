@@ -116,7 +116,7 @@ public partial class MainWindow
         RememberCustomBindings();
         foreach(var d in PcDefaults) keyBindings.First(row=>row.Key==d.key).Binding=preset=="custom"?state.CustomInputBindings![d.key]:PresetBinding(d.key,d.binding,preset);
         RefreshBindings(regroup:false);
-        L10n.SetText(FooterMessage,"Unsaved changes");
+        MarkSettingsChanged();
     }
     void BindingPreset_Changed(object sender,SelectionChangedEventArgs e)
     {
@@ -146,6 +146,7 @@ public partial class MainWindow
                 .Select(g=>InputKeyNames.Display(g.Key)+" ("+string.Join(", ",g.Select(p=>p.Action))+")").ToArray();
             BindingConflictText.Visibility=shared.Length==0?Visibility.Collapsed:Visibility.Visible;
             L10n.SetText(BindingConflictText,"Shared inputs: {0}. These actions will respond together.",string.Join("; ",shared));
+            UpdateKeycapLabels();
         }
         finally {updatingBindings=false;}
     }
@@ -160,6 +161,6 @@ public partial class MainWindow
         row.Binding=InputKeyNames.Join(slot=="keyboard"?token:current.keyboard,slot=="mouse"?token:current.mouse);
         RememberCustomBindings();
         RefreshBindings(regroup:false);
-        L10n.SetText(FooterMessage,"Unsaved changes");
+        MarkSettingsChanged();
     }
 }

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include "bbport_toggles.h"
 #include <stdexcept>
 #include <utility>
 #include <boost/container/small_vector.hpp>
@@ -37,9 +41,11 @@ GraphicsPipeline::GraphicsPipeline(
     std::span<const Shader::RuntimeInfo, MaxShaderStages> runtime_infos,
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader_,
     std::span<const vk::ShaderModule> modules, SerializationSupport& sdata, bool preloading,
-    bool speculative)
+    bool speculative, NativeSchedule schedule)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
+    using Clock = std::chrono::steady_clock;
+    const auto frontend_begin = Clock::now();
     const vk::Device device = instance.GetDevice();
     // Generated helpers are only needed until pipeline creation finishes.
     // Keep them owned on error paths as well as successful speculative builds.
@@ -55,6 +61,7 @@ GraphicsPipeline::GraphicsPipeline(
     };
     std::ranges::copy(infos, stages.begin());
     BuildDescSetLayout(preloading, speculative);
+    const auto descriptor_end = Clock::now();
     const auto debug_str = GetDebugString();
 
     const vk::PushConstantRange push_constants = {
@@ -81,6 +88,7 @@ GraphicsPipeline::GraphicsPipeline(
     ASSERT_MSG(layout_result == vk::Result::eSuccess,
                "Failed to create graphics pipeline layout: {}", vk::to_string(layout_result));
     pipeline_layout = std::move(layout);
+    const auto layout_end = Clock::now();
     SetObjectName(device, *pipeline_layout, "Graphics PipelineLayout {}", debug_str);
 
     if (!preloading) {
@@ -444,6 +452,99 @@ GraphicsPipeline::GraphicsPipeline(
         .layout = *pipeline_layout,
     };
 
+    if (schedule) {
+        const auto state_end = Clock::now();
+        // Own and rewire EVERY pointee used by vkCreateGraphicsPipelines. The
+        // worker never reads guest memory, stack state, sdata or mutable Infos.
+        struct OwnedCreate {
+            vk::GraphicsPipelineCreateInfo info;
+            decltype(raster_chain) raster;
+            decltype(shader_stages) shaders;
+            decltype(dynamic_states) dynamics;
+            decltype(attachments) blends{};
+            decltype(color_formats) formats{};
+            decltype(color_samples) samples{};
+            SerializationSupport data;
+            decltype(generated_modules) generated;
+            vk::PipelineVertexInputDivisorStateCreateInfo divisor;
+            vk::PipelineVertexInputStateCreateInfo vertex;
+            vk::PipelineInputAssemblyStateCreateInfo assembly;
+            vk::PipelineTessellationStateCreateInfo tessellation;
+            vk::PipelineViewportDepthClipControlCreateInfoEXT clip;
+            vk::PipelineViewportStateCreateInfo viewport;
+            vk::PipelineDynamicStateCreateInfo dynamic;
+            vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup;
+            vk::AttachmentSampleCountInfoAMD mixed;
+            vk::PipelineRenderingCreateInfo rendering;
+            vk::PipelineColorBlendStateCreateInfo blending;
+            vk::PipelineDepthStencilStateCreateInfo depth;
+        };
+        auto owned = std::make_shared<OwnedCreate>();
+        owned->info = pipeline_info;
+        owned->raster = raster_chain;
+        owned->shaders = shader_stages;
+        owned->dynamics = dynamic_states;
+        std::copy_n(attachments.begin(), key.num_color_attachments, owned->blends.begin());
+        std::copy_n(color_formats.begin(), key.num_color_attachments, owned->formats.begin());
+        owned->samples = color_samples;
+        owned->data = sdata;
+        owned->generated = std::move(generated_modules);
+        owned->divisor = divisor_state;
+        owned->divisor.pVertexBindingDivisors = owned->data.divisors.data();
+        owned->vertex = vertex_input_info;
+        owned->vertex.pNext = vertex_input_info.pNext ? &owned->divisor : nullptr;
+        owned->vertex.pVertexBindingDescriptions = owned->data.vertex_bindings.data();
+        owned->vertex.pVertexAttributeDescriptions = owned->data.vertex_attributes.data();
+        owned->assembly = input_assembly;
+        owned->tessellation = tessellation_state;
+        owned->clip = clip_control;
+        owned->viewport = viewport_info;
+        owned->viewport.pNext = viewport_info.pNext ? &owned->clip : nullptr;
+        owned->dynamic = dynamic_info;
+        owned->dynamic.pDynamicStates = owned->dynamics.data();
+        owned->subgroup = subgroup_size_ci;
+        for (auto& shader : owned->shaders)
+            shader.pNext = shader.pNext ? &owned->subgroup : nullptr;
+        owned->mixed = mixed_samples;
+        owned->mixed.pColorAttachmentSamples = owned->samples.data();
+        owned->rendering = pipeline_rendering_ci;
+        owned->rendering.pNext = pipeline_rendering_ci.pNext ? &owned->mixed : nullptr;
+        owned->rendering.pColorAttachmentFormats = owned->formats.data();
+        owned->blending = color_blending;
+        owned->blending.pAttachments = owned->blends.data();
+        owned->depth = depth_stencil_info;
+        owned->info.pNext = &owned->rendering;
+        owned->info.pStages = owned->shaders.data();
+        owned->info.pVertexInputState = pipeline_info.pVertexInputState ? &owned->vertex : nullptr;
+        owned->info.pInputAssemblyState = &owned->assembly;
+        owned->info.pTessellationState = &owned->tessellation;
+        owned->info.pViewportState = &owned->viewport;
+        owned->info.pRasterizationState = &owned->raster.get();
+        owned->info.pMultisampleState = &owned->data.multisampling;
+        owned->info.pDepthStencilState = pipeline_info.pDepthStencilState ? &owned->depth : nullptr;
+        owned->info.pColorBlendState = &owned->blending;
+        owned->info.pDynamicState = &owned->dynamic;
+        ASSERT(!owned->data.multisampling.pNext && !owned->data.multisampling.pSampleMask);
+        const auto snapshot_end = Clock::now();
+        pending_native = schedule([device, pipeline_cache, owned, debug_str] {
+            auto [result, pipe] = device.createGraphicsPipelineUnique(pipeline_cache, owned->info);
+            if (result != vk::Result::eSuccess)
+                throw std::runtime_error{"first-use graphics pipeline: " + vk::to_string(result)};
+            SetObjectName(device, *pipe, "Graphics Pipeline {}", debug_str);
+            return std::move(pipe);
+        });
+        native_ready.store(false, std::memory_order_release);
+        const auto enqueue_end = Clock::now();
+        const auto ms = [](auto span) { return std::chrono::duration<double, std::milli>(span).count(); };
+        static std::atomic<u32> samples{0};
+        if (BbStats::enabled && ms(enqueue_end - frontend_begin) >= 2 && samples.fetch_add(1) < 128)
+            std::printf("Pipeline frontend: gfx %#llx total_ms=%.3f descriptor_ms=%.3f layout_ms=%.3f state_ms=%.3f snapshot_ms=%.3f enqueue_ms=%.3f\n",
+                        static_cast<unsigned long long>(std::hash<GraphicsPipelineKey>{}(key_)),
+                        ms(enqueue_end - frontend_begin), ms(descriptor_end - frontend_begin),
+                        ms(layout_end - descriptor_end), ms(state_end - layout_end),
+                        ms(snapshot_end - state_end), ms(enqueue_end - snapshot_end));
+        return;
+    }
     auto [pipeline_result, pipe] =
         device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
     if ((preloading || speculative) && pipeline_result != vk::Result::eSuccess) {
@@ -458,7 +559,7 @@ GraphicsPipeline::GraphicsPipeline(
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
 }
 
-GraphicsPipeline::~GraphicsPipeline() = default;
+GraphicsPipeline::~GraphicsPipeline() { try { CompleteNative(); } catch (...) {} }
 
 template <typename Attribute, typename Binding>
 void GraphicsPipeline::GetVertexInputs(

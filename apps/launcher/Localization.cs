@@ -22,7 +22,8 @@ public sealed class Localization : INotifyPropertyChanged
 
     Localization()
     {
-        keysByText = english.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.Ordinal);
+        keysByText = english.GroupBy(pair => pair.Value, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Key, StringComparer.Ordinal);
         foreach (var pair in vietnamese) keysByText.TryAdd(pair.Value, pair.Key);
         if (!english.Keys.ToHashSet().SetEquals(vietnamese.Keys))
             throw new InvalidDataException("English and Vietnamese UI catalogs must contain the same keys.");

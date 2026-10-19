@@ -11,6 +11,8 @@ $project = '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</Out
 Set-Content -Encoding utf8 -LiteralPath (Join-Path $verificationRoot 'LauncherChecks.csproj') -Value $project
 $program = @'
 using System.IO;
+using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -26,19 +28,35 @@ using Localization = BloodborneLauncher.Localization;
 static class Program
 {
     static MainWindow window = null!;
+    static string sourceRoot = Environment.GetEnvironmentVariable("TECHMO_VERIFY_SOURCE_ROOT")!;
     static int assertions;
     static bool publicRelease = __PUBLIC_RELEASE__;
     static T Get<T>(string name) where T : class => (T)window.FindName(name);
     static void Call(string name, params object[] args) => typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, args);
     static void Check(bool value, string message) { if (!value) throw new Exception(message); assertions++; }
     static void CheckSessionCard(string context) {
-        var card = Get<Border>("LastSessionCard");
-        Check(card.Visibility == (publicRelease ? Visibility.Collapsed : Visibility.Visible),
-            context + (publicRelease ? ": public release hides last session" : ": Actions build shows last session"));
-        if (publicRelease) Check(!card.IsVisible && card.ActualHeight == 0, context + ": hidden card takes no layout space");
+        foreach (string name in new[]{"LastSessionCard","HomeSessionCard"}) {
+            var card = Get<Border>(name);
+            Check(card.Visibility == (publicRelease ? Visibility.Collapsed : Visibility.Visible),
+                context + " " + name + (publicRelease ? ": public release hides last session" : ": Actions build shows last session"));
+            if (publicRelease) Check(!card.IsVisible && card.ActualHeight == 0, context + " " + name + ": hidden card takes no layout space");
+        }
     }
-    static string Tag(string name) => ((ComboBoxItem)Get<ComboBox>(name).SelectedItem).Tag?.ToString() ?? "";
+    static void CheckDiagnosticsAccess(string context) {
+        if (publicRelease) {
+            Check(!Get<Button>("ViewDiagnosticsButton").IsVisible && Get<Border>("HomeSessionCard").Visibility==Visibility.Collapsed,
+                context + ": public release omits the session summary shortcut");
+            Get<Button>("NavAdvanced").BringIntoView(); Pump();
+            Check(FitsWithin(Get<Button>("NavAdvanced"),Get<ScrollViewer>("SidebarNavigation")),
+                context + ": Diagnostics remains reachable in the sidebar");
+        } else Check(FitsWithin(Get<Button>("ViewDiagnosticsButton"),Get<ScrollViewer>("HomePage")),
+            context + ": Actions build can reach the session Diagnostics shortcut");
+    }
+    static string Tag(string name) => window.FindName(name) is Slider slider
+        ? (Math.Round(slider.Value,MidpointRounding.AwayFromZero)/100).ToString("0.00",System.Globalization.CultureInfo.InvariantCulture)
+        : ((ComboBoxItem)Get<ComboBox>(name).SelectedItem).Tag?.ToString() ?? "";
     static void Select(string name, string tag) {
+        if (window.FindName(name) is Slider slider) { slider.Value=double.Parse(tag,System.Globalization.CultureInfo.InvariantCulture)*100;return; }
         var box = Get<ComboBox>(name);
         box.SelectedItem = box.Items.Cast<ComboBoxItem>().First(x => x.Tag?.ToString() == tag);
     }
@@ -271,12 +289,11 @@ static class Program
     static void VerifyUpscalingAvailability(string output,string root) {
         Select("UpscalerCombo","dlss"); Select("PresetCombo","3");
         foreach(string provider in new[]{"off","taa"}) {
-            if(provider=="off") Select("UpscalerCombo",provider);
-            else Get<ComboBox>("QuickUpscaler").SelectedIndex=4;
+            Select("UpscalerCombo",provider);
             foreach(string language in new[]{"en","vi"}) {
                 Select("UiLanguageCombo",language); Pump();
                 string disabled=language=="en"?"Disabled":"Không áp dụng";
-                foreach(string name in new[]{"PresetCombo","QuickPreset"}) {
+                foreach(string name in new[]{"PresetCombo"}) {
                     var box=Get<ComboBox>(name); box.ApplyTemplate();
                     var placeholder=(TextBlock)box.Template.FindName("DisabledSelection",box);
                     Check(!box.IsEnabled && !box.IsDropDownOpen,provider+" disables "+name);
@@ -289,18 +306,550 @@ static class Program
                 if(provider=="taa") { ClickNav("Home"); Render(Path.Combine(output,"quality-disabled-home-"+language+".png"),1440,900); }
             }
             Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi"); Pump();
-            Check(!Get<ComboBox>("PresetCombo").IsEnabled && !Get<ComboBox>("QuickPreset").IsEnabled && Tag("PresetCombo")=="3","Disabled state survives reload and retains the real preference");
+            Check(!Get<ComboBox>("PresetCombo").IsEnabled && Tag("PresetCombo")=="3","Disabled state survives reload and retains the real preference");
             Check(File.ReadAllLines(Path.Combine(root,"bbport.ini")).Contains("preset=3"),"Disabled is never written as a runtime preset");
             Select("UpscalerCombo","dlss");
         }
         foreach(string provider in new[]{"dlss","fsr3","fsr4","fsr411"}) {
             Select("UpscalerCombo",provider); Pump();
-            Check(Get<ComboBox>("PresetCombo").IsEnabled && Get<ComboBox>("QuickPreset").IsEnabled && Tag("PresetCombo")=="3" && Get<ComboBox>("QuickPreset").SelectedIndex==3,provider+" restores Performance in both selectors");
+            Check(Get<ComboBox>("PresetCombo").IsEnabled && Tag("PresetCombo")=="3",provider+" restores Performance");
             Check(Get<TextBlock>("PresetUnavailableHint").Visibility==Visibility.Collapsed,"Active upscaler hides the disabled explanation");
         }
         Select("PresetCombo","0"); Select("UpscalerCombo","off"); Select("UpscalerCombo","taa"); Select("UpscalerCombo","dlss");
-        Check(Tag("PresetCombo")=="0" && Get<ComboBox>("QuickPreset").SelectedIndex==0,"Native AA also survives Off and TAA transitions");
+        Check(Tag("PresetCombo")=="0","Native AA also survives Off and TAA transitions");
         Select("UiLanguageCombo","en"); Select("UpscalerCombo","fsr411"); Select("PresetCombo","3");
+    }
+    static void VerifySavesAndHdr(string output,string root) {
+        var type=typeof(MainWindow).Assembly.GetType("BloodborneLauncher.SaveDataStore")!;
+        object Store(string path,Func<bool>? running=null) => Activator.CreateInstance(type,path,running ?? new Func<bool>(()=>false))!;
+        object? Invoke(object store,string name,params object[] args) {
+            try { return type.GetMethod(name)!.Invoke(store,args); }
+            catch(TargetInvocationException ex) { throw ex.InnerException!; }
+        }
+        string Prop(object item,string key)=>(string)item.GetType().GetProperty(key)!.GetValue(item)!;
+        int Count(object store,string name)=>((System.Collections.ICollection)Invoke(store,name)!).Count;
+        bool Rejected(object store,string method,params object[] args) {
+            try { Invoke(store,method,args); return false; }
+            catch(Exception e) when(e is InvalidDataException or IOException or JsonException) { return true; }
+        }
+        string fixture=Path.Combine(root,"save-checks");
+        string source=Path.Combine(fixture,"source");
+        string title=Path.Combine(source,"savedata","1","CUSA03173");
+        string memory=title+".memory";
+        Directory.CreateDirectory(Path.Combine(title,"SPRJ0005"));
+        Directory.CreateDirectory(Path.Combine(title,"SPRJ0005.sce_sys"));
+        Directory.CreateDirectory(memory);
+        File.WriteAllText(Path.Combine(title,"SPRJ0005","userdata0000"),"original character");
+        File.WriteAllText(Path.Combine(title,"SPRJ0005.sce_sys","param.bin"),"metadata");
+        File.WriteAllText(Path.Combine(memory,"memory.dat"),"original memory");
+        var store=Store(source);
+        Check(Count(store,"ListSaves")==1,"Save discovery groups title and memory with metadata");
+        string zip=Prop(Invoke(store,"Backup","1","CUSA03173")!,"Path");
+        Check(Count(store,"ListBackups")==1,"Created ZIP appears in backups");
+        using(var archive=ZipFile.OpenRead(zip)) Check(archive.GetEntry("data/CUSA03173/SPRJ0005.sce_sys/param.bin")!=null && archive.GetEntry("data/CUSA03173.memory/memory.dat")!=null,"Backup includes metadata and memory");
+        File.WriteAllText(Path.Combine(title,"SPRJ0005","userdata0000"),"new progress");
+        File.WriteAllText(Path.Combine(title,"extra-file"),"must be removed on restore");
+        File.WriteAllText(Path.Combine(memory,"memory.dat"),"new memory");
+        string safety=(string)Invoke(store,"Restore",zip)!;
+        Check(File.Exists(safety) && Count(store,"ListBackups")==2,"Restore makes a separate safety backup");
+        Check(File.ReadAllText(Path.Combine(title,"SPRJ0005","userdata0000"))=="original character" && !File.Exists(Path.Combine(title,"extra-file")),"Restore replaces exactly the backed up save set");
+        Check(File.ReadAllText(Path.Combine(memory,"memory.dat"))=="original memory","Restore replaces paired save memory");
+        Invoke(store,"Restore",safety);
+        Check(File.ReadAllText(Path.Combine(title,"SPRJ0005","userdata0000"))=="new progress" && File.ReadAllText(Path.Combine(memory,"memory.dat"))=="new memory","Safety backup recovers the previous progress and memory");
+        string target=Path.Combine(fixture,"target");
+        var fresh=Store(target);
+        Invoke(fresh,"Restore",zip);
+        Check(File.Exists(Path.Combine(target,"savedata","1","CUSA03173","SPRJ0005","userdata0000")),"Imported backup restores into a new user folder");
+        string empty=Path.Combine(fixture,"empty");Directory.CreateDirectory(Path.Combine(empty,"savedata","1","CUSA03173"));
+        Invoke(Store(empty),"Restore",zip);
+        Check(File.Exists(Path.Combine(empty,"savedata","1","CUSA03173","SPRJ0005","userdata0000")),"Restore tolerates an empty existing title folder");
+        var running=Store(source,()=>true);
+        Check(Rejected(running,"Backup","1","CUSA03173") && Rejected(running,"Restore",zip),"Backup and restore are blocked while the game is running");
+        Check(Rejected(store,"Backup","..","CUSA03173") && Rejected(store,"Backup","1","../other"),"Save operations reject invalid account/title paths");
+        string MakeZip(string label,string name,string contents,string hash, bool extra=false) {
+            string path=Path.Combine(fixture,label+".zip");
+            using(var archive=ZipFile.Open(path,ZipArchiveMode.Create)) {
+                using(var writer=new StreamWriter(archive.CreateEntry("data/"+name).Open())) writer.Write(contents);
+                if(extra)using(var writer=new StreamWriter(archive.CreateEntry("unexpected").Open()))writer.Write("extra");
+                using(var writer=new StreamWriter(archive.CreateEntry("manifest.json").Open()))
+                    writer.Write(JsonSerializer.Serialize(new {Version=1,UserId="1",TitleId="CUSA03173",CreatedUtc=DateTime.UtcNow,Files=new[]{new{Name=name,Bytes=(long)System.Text.Encoding.UTF8.GetByteCount(contents),Sha256=hash}}}));
+            } return path;
+        }
+        string hash=Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("payload")));
+        foreach(string name in new[]{"CUSA03173/../escape","../escape","CUSA03173/CON.txt","CUSA03173/trailing. ","CUSA03173/x:stream","CUSA03173/\\escape"}) {
+            var hostile=MakeZip("bad-"+Guid.NewGuid().ToString("N"),name,"payload",hash);
+            Check(Rejected(store,"Restore",hostile),"Reject unsafe ZIP entry "+name);
+        }
+        var tampered=MakeZip("tampered","CUSA03173/SPRJ0005/userdata0000","damaged",hash);
+        string current=File.ReadAllText(Path.Combine(title,"SPRJ0005","userdata0000"));
+        Check(Rejected(store,"Restore",tampered) && File.ReadAllText(Path.Combine(title,"SPRJ0005","userdata0000"))==current,"Integrity failure preserves live saves");
+        var unexpected=MakeZip("unexpected","CUSA03173/SPRJ0005/userdata0000","payload",hash,true);
+        Check(Rejected(store,"Restore",unexpected),"Unexpected ZIP files are rejected");
+        var memoryOnly=MakeZip("memory-only","CUSA03173.memory/memory.dat","payload",hash);
+        Check(Rejected(store,"Restore",memoryOnly),"Memory-only archives cannot replace full saves");
+        Check(!Directory.EnumerateDirectories(Path.Combine(source,"savedata"),".techmo-*").Any(),"Save staging/rollback directories are cleaned up");
+        // Fail the second directory swap after validation and safety backup, then verify rollback.
+        FileStream? held=null; int probes=0;
+        var failing=Store(source,()=> { if(++probes==5)held=new FileStream(Path.Combine(memory,"memory.dat"),FileMode.Open,FileAccess.Read,FileShare.Read);return false; });
+        try { Check(Rejected(failing,"Restore",zip),"A locked memory directory aborts the replacement"); }
+        finally { held?.Dispose(); }
+        Check(File.ReadAllText(Path.Combine(title,"SPRJ0005","userdata0000"))==current && File.ReadAllText(Path.Combine(memory,"memory.dat"))=="new memory","A failed second swap rolls back the first save directory");
+        Check(Rejected(store,"Restore",Path.Combine(fixture,"missing.zip")),"Missing import returns a handled error");
+
+        Environment.SetEnvironmentVariable("BB_USER_DIR",source);
+        Call("InitializeSaves");Environment.SetEnvironmentVariable("BB_USER_DIR",null);
+        ClickNav("Mods");Pump();
+        Check(Get<StackPanel>("SaveDataPanel").Visibility==Visibility.Visible && Get<ComboBox>("SaveSetCombo").Items.Count==1,"Save tab discovers isolated data");
+        Check(Get<ComboBox>("SaveSetCombo").SelectedItem.ToString()!.StartsWith("CUSA03173 · User 1"),"Save picker displays a friendly label instead of record internals");
+        Call("SaveSettings");Get<ComboBox>("SaveSetCombo").SelectedIndex=0;Call("RefreshSaveLists");
+        Check(!(bool)typeof(MainWindow).GetField("hasUnsavedChanges",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(window)!,"Selecting or refreshing saves does not dirty the profile");
+        Render(Path.Combine(output,"control-hub-saves-en.png"));
+        Select("UiLanguageCombo","vi");Render(Path.Combine(output,"control-hub-saves-vi.png"));
+        Check(Get<Button>("BackupSaveButton").Content?.ToString()=="Tạo bản sao lưu","Save actions translate to Vietnamese");
+        Check(Get<ComboBox>("SaveSetCombo").SelectedItem.ToString()!.Contains("Người dùng 1"),"Save picker label updates when the language changes");
+        Check(Get<ComboBox>("SaveSetCombo").SelectionBoxItem.ToString()!.Contains("Người dùng 1"),"WPF selection text refreshes rather than retaining the English cached label");
+        Select("UiLanguageCombo","en");
+        Call("SavesTab_Click",Get<Button>("ModsTab"),new RoutedEventArgs());
+        Check(Get<StackPanel>("ModSettingsPanel").Visibility==Visibility.Visible,"Existing mods remain in their own sub-tab");
+        Call("SavesTab_Click",Get<Button>("SavesTab"),new RoutedEventArgs());
+        ClickNav("Display");
+        Check(Get<CheckBox>("HdrOutputCheck").IsChecked==false && !Get<ComboBox>("HdrWhiteCombo").IsEnabled,"HDR defaults to Off with calibration disabled");
+        Get<CheckBox>("HdrOutputCheck").IsChecked=true;
+        Check(Get<ComboBox>("HdrWhiteCombo").IsEnabled && !Get<ComboBox>("HdrPeakCombo").IsEnabled,"Reference white is enabled independently of optional expansion");
+        Get<CheckBox>("HdrExpandCheck").IsChecked=true;Select("HdrWhiteCombo","250");Select("HdrPeakCombo","800");Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
+        Check(Get<ComboBox>("HdrPeakCombo").IsEnabled && Tag("HdrWhiteCombo")=="250" && Tag("HdrPeakCombo")=="800","HDR controls survive save/reload");
+        var psi=new System.Diagnostics.ProcessStartInfo();psi.Environment["BB_HDR"]="1";psi.Environment["BB_HDR_OUTPUT"]="inherited";
+        Call("ConfigureHdrLaunch",psi);
+        Check(psi.Environment["BB_HDR_OUTPUT"]=="sdr" && psi.Environment["BB_HDR_WHITE"]=="250" && psi.Environment["BB_HDR_PEAK"]=="800" && psi.Environment["BB_HDR_EXPAND"]=="1" && psi.Environment["BB_HDR"]=="0","HDR launch uses explicit output conversion settings");
+        Get<ScrollViewer>("DisplayPage").ScrollToBottom();Pump();Render(Path.Combine(output,"control-hub-hdr-en.png"));
+        Select("UiLanguageCombo","vi");Render(Path.Combine(output,"control-hub-hdr-vi.png"));Select("UiLanguageCombo","en");
+        Get<CheckBox>("HdrOutputCheck").IsChecked=false;Call("SaveSettings");Call("ConfigureHdrLaunch",psi);
+        Check(psi.Environment["BB_HDR_OUTPUT"]=="off" && psi.Environment["BB_HDR"]=="0","HDR Off clears inherited HDR activation");
+        Check(((SolidColorBrush)Application.Current.Resources["AppBackgroundBrush"]).Color==Color.FromRgb(8,8,8) && ((SolidColorBrush)Application.Current.Resources["PanelBrush"]).Color.A<255,"Dark theme has black background with translucent panels");
+    }
+
+    static void VerifyOverlaySettings(string output,string root) {
+        var fields=new[]{"ShowFpsCheck","ShowCpuCheck","ShowGpuCheck"};
+        var keys=new[]{"show_fps","show_cpu","show_gpu"};
+        string ini=Path.Combine(root,"bbport.ini"),library=Path.Combine(root,"user","launcher","profiles.json");
+        for(int mask=0;mask<8;++mask) {
+            for(int i=0;i<fields.Length;++i)Get<CheckBox>(fields[i]).IsChecked=(mask&(1<<i))!=0;
+            Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
+            Check(Enumerable.Range(0,3).All(i=>Get<CheckBox>(fields[i]).IsChecked==((mask&(1<<i))!=0) && File.ReadAllLines(ini).Contains(keys[i]+"="+((mask&(1<<i))!=0?"1":"0"))),"FPS/CPU/GPU checkboxes persist independently: "+mask);
+        }
+        var picker=Get<ComboBox>("ProfileCombo");picker.SelectedIndex=0;
+        Get<CheckBox>("ShowCpuCheck").IsChecked=true;Get<CheckBox>("ShowGpuCheck").IsChecked=false;Call("SaveSettings");
+        picker.SelectedIndex=1;Get<CheckBox>("ShowCpuCheck").IsChecked=false;Get<CheckBox>("ShowGpuCheck").IsChecked=true;Call("SaveSettings");
+        picker.SelectedIndex=0;
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==false,"Profiles restore their own monitoring choices");
+        Call("SaveSettings");picker.SelectedIndex=1;Call("SaveSettings");
+        var legacy=JsonNode.Parse(File.ReadAllText(library))!;
+        foreach(var profile in legacy["Profiles"]!.AsArray()) { profile!["Settings"]!.AsObject().Remove("ShowCpu");profile["Settings"]!.AsObject().Remove("ShowGpu"); }
+        File.WriteAllText(library,legacy.ToJsonString());Call("InitializeProfiles");
+        Call("ApplyProfile",Get<ComboBox>("ProfileCombo").SelectedItem);Call("SaveSettings");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false && JsonNode.Parse(File.ReadAllText(library))!["Version"]!.GetValue<int>()==1,"Existing v1 profiles migrate missing metrics to Off without losing the profile");
+        string saved=File.ReadAllText(ini);
+        File.WriteAllText(ini,saved.Replace("show_cpu=0","show_cpu=1").Replace("show_gpu=0","show_gpu=1"));
+        Call("LoadState");Call("ApplyStateToUi");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==true,"In-game monitoring changes are read back from the runtime INI");
+        ClickNav("Display");Get<CheckBox>("ShowFpsCheck").IsChecked=true;
+        Render(Path.Combine(output,"overlay-options-en.png"),1320,960);Get<ScrollViewer>("DisplayPage").ScrollToVerticalOffset(600);Pump();Render(Path.Combine(output,"overlay-options-en.png"),1320,960);
+        Select("UiLanguageCombo","vi");Render(Path.Combine(output,"overlay-options-vi.png"),1320,960);
+        Check(Get<CheckBox>("ShowCpuCheck").Content?.ToString()=="Hiện mức sử dụng CPU (%)" && Get<CheckBox>("ShowGpuCheck").Content?.ToString()=="Hiện mức sử dụng GPU (%)","Monitoring controls translate to Vietnamese");
+        Select("UiLanguageCombo","en");Call("SaveSettings");
+    }
+
+    static void VerifySharpening(string output,string root) {
+        string ini=Path.Combine(root,"bbport.ini"), library=Path.Combine(root,"user","launcher","profiles.json");
+        var slider=Get<Slider>("SharpnessSlider");
+        ClickNav("Graphics");Call("GraphicsTab_Click",Get<Button>("GraphicsUpscalingTab"),new RoutedEventArgs());
+        Select("UpscalerCombo","dlss");Get<CheckBox>("SharpenCheck").IsChecked=true;
+        foreach(double value in new[]{0,0.3,1,2}) {
+            slider.Value=value;Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
+            string expected=value.ToString("0.00",System.Globalization.CultureInfo.InvariantCulture);
+            Check(slider.Value==value && Get<TextBlock>("SharpnessValue").Text==expected && File.ReadAllLines(ini).Contains("sharpness="+expected),"Sharpness reaches the native INI and survives restart: "+expected);
+        }
+        slider.Value=0.37;Get<CheckBox>("SharpenCheck").IsChecked=false;Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
+        Check(!slider.IsEnabled && slider.Value==0.37 && File.ReadAllLines(ini).Contains("sharpen=0"),"Turning sharpening off preserves its chosen strength");
+        Get<CheckBox>("SharpenCheck").IsChecked=true;
+        foreach(string provider in new[]{"taa","dlss","fsr3","fsr4","fsr411"}) {
+            Select("UpscalerCombo",provider);
+            Check(slider.IsEnabled && Get<CheckBox>("SharpenCheck").IsEnabled && slider.Value==0.37,"Sharpness available for "+provider);
+        }
+        Select("UpscalerCombo","off");
+        Check(!slider.IsEnabled && !Get<CheckBox>("SharpenCheck").IsEnabled && slider.Value==0.37,"Upscaler Off disables sharpening without erasing its value");
+        Select("UpscalerCombo","dlss");
+        slider.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice,PresentationSource.FromVisual(window),Environment.TickCount,Key.Right) {RoutedEvent=Keyboard.KeyDownEvent});
+        Check(Math.Abs(slider.Value-0.38)<0.00001,"Sharpness supports precise keyboard adjustment");
+        Call("SaveSettings");
+        var picker=Get<ComboBox>("ProfileCombo");picker.SelectedIndex=0;slider.Value=0.65;Call("SaveSettings");
+        picker.SelectedIndex=1;slider.Value=1.25;Call("SaveSettings");picker.SelectedIndex=0;
+        Check(slider.Value==0.65,"Sharpness belongs to the selected profile");Call("SaveSettings");picker.SelectedIndex=1;
+        Check(slider.Value==1.25,"Profiles retain separate sharpening strengths");Call("SaveSettings");
+        var legacy=JsonNode.Parse(File.ReadAllText(library))!;
+        foreach(var profile in legacy["Profiles"]!.AsArray()) profile!["Settings"]!.AsObject().Remove("Sharpness");
+        File.WriteAllText(library,legacy.ToJsonString());Call("InitializeProfiles");Call("ApplyProfile",picker.SelectedItem);Call("SaveSettings");
+        Check(slider.Value==0.3 && JsonNode.Parse(File.ReadAllText(library))!["Version"]!.GetValue<int>()==1,"Older profiles migrate sharpening to the native default without a schema reset");
+        File.WriteAllText(ini,File.ReadAllText(ini).Replace("sharpness=0.30","sharpness=0.47").Replace("sharpen=1","sharpen=0"));
+        Call("LoadState");Call("ApplyStateToUi");
+        Check(slider.Value==0.47 && Get<CheckBox>("SharpenCheck").IsChecked==false,"Native menu strength and toggle take precedence when reloading");
+        Get<CheckBox>("SharpenCheck").IsChecked=true;
+        Render(Path.Combine(output,"sharpening-en.png"),1320,960);slider.BringIntoView();Pump();Render(Path.Combine(output,"sharpening-en.png"),1320,960);
+        Select("UiLanguageCombo","vi");Render(Path.Combine(output,"sharpening-vi.png"),1320,960);
+        Check(Get<TextBlock>("SharpnessTitle").Text=="Độ sắc nét" && Get<TextBlock>("SharpnessHint").Text.Contains("viền sáng"),"Sharpening controls and explanation translate to Vietnamese");
+        Select("UiLanguageCombo","en");Call("SaveSettings");
+    }
+
+    static void VerifySettingsInteraction(string output,string root) {
+        bool Dirty()=>(bool)typeof(MainWindow).GetField("hasUnsavedChanges",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(window)!;
+        void WaitForMotion() {
+            var frame=new System.Windows.Threading.DispatcherFrame();
+            var timer=new System.Windows.Threading.DispatcherTimer { Interval=TimeSpan.FromMilliseconds(350) };
+            timer.Tick+=(_,_)=>{timer.Stop();frame.Continue=false;};timer.Start();System.Windows.Threading.Dispatcher.PushFrame(frame);
+        }
+        var viewport=Get<Grid>("ApplyBarViewport");var sharpness=Get<Slider>("SharpnessSlider");
+        Get<CheckBox>("ReducedMotionCheck").IsChecked=true;Call("SaveSettings");Pump();
+        Check(!Dirty() && viewport.Visibility==Visibility.Collapsed && viewport.Height==0,"Successful Apply collapses the whole bar and releases its layout space with reduced motion");
+        foreach(string page in new[]{"Home","Display","Graphics","Controller","Mods","Online","Advanced","General"}) {
+            ClickNav(page);window.UpdateLayout();Pump();
+            var scroll=Get<ScrollViewer>(page=="Mods"?"ModsPage":page+"Page");
+            scroll.ScrollToVerticalOffset(150);Pump();scroll.ScrollToTop();Pump();
+            foreach(var bar in Visuals(scroll).OfType<System.Windows.Controls.Primitives.ScrollBar>()) {
+                bar.RaiseEvent(new RoutedPropertyChangedEventArgs<double>(0,100,System.Windows.Controls.Primitives.RangeBase.ValueChangedEvent));
+            }
+            Check(!Dirty() && viewport.Visibility==Visibility.Collapsed,"Scrolling and scrollbar events do not stage edits in "+page);
+        }
+        ClickNav("Display");Render(Path.Combine(output,"apply-bar-hidden.png"),1000,680);
+        var pageScroll=Get<ScrollViewer>("DisplayPage");pageScroll.ScrollToTop();Pump();
+        var combo=Get<ComboBox>("ResolutionCombo");object selected=combo.SelectedItem;double offset=pageScroll.VerticalOffset;
+        combo.Focus();
+        var wheel=new MouseWheelEventArgs(Mouse.PrimaryDevice,Environment.TickCount,-120) {RoutedEvent=Mouse.PreviewMouseWheelEvent};
+        combo.RaiseEvent(wheel);Pump();
+        Check(wheel.Handled && ReferenceEquals(selected,combo.SelectedItem) && !Dirty(),"Wheel over a focused closed dropdown keeps its selection and clean state");
+        Check(pageScroll.VerticalOffset>offset,"Wheel over a closed dropdown scrolls the settings page");
+        combo.IsDropDownOpen=true;
+        var openWheel=new MouseWheelEventArgs(Mouse.PrimaryDevice,Environment.TickCount,-120) {RoutedEvent=Mouse.PreviewMouseWheelEvent};
+        combo.RaiseEvent(openWheel);
+        Check(!openWheel.Handled,"Open dropdown lists retain their normal wheel behavior");combo.IsDropDownOpen=false;
+        ClickNav("Graphics");Call("GraphicsTab_Click",Get<Button>("GraphicsUpscalingTab"),new RoutedEventArgs());
+        sharpness.Value=0.55;Pump();
+        Check(Dirty() && viewport.Visibility==Visibility.Visible && Get<Button>("ApplySettingsButton").IsEnabled,"Editing a real setting reveals Apply and its dirty indicator");
+        Render(Path.Combine(output,"apply-bar-unsaved.png"),1320,960);
+        Call("SaveSettings");Check(!Dirty() && viewport.Visibility==Visibility.Collapsed,"Apply hides the bar after a real setting edit");
+        // A failed save must keep the pending edits and their retry action visible.
+        bool online=Get<CheckBox>("OnlineEnabledCheck").IsChecked==true;string oldPort=Get<TextBox>("OnlineP2pPortBox").Text;
+        Get<CheckBox>("OnlineEnabledCheck").IsChecked=true;Get<TextBox>("OnlineP2pPortBox").Text="65536";
+        bool saved=(bool)typeof(MainWindow).GetMethod("SaveSettings",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(window,null)!;
+        Check(!saved && Dirty() && viewport.Visibility==Visibility.Visible && Get<Button>("ApplySettingsButton").IsEnabled,"A failed Apply keeps its error and retry button visible");
+        Get<CheckBox>("OnlineEnabledCheck").IsChecked=online;Get<TextBox>("OnlineP2pPortBox").Text=oldPort;Call("SaveSettings");
+        Call("SetFooterMessage","Session ended · {0}",new object[]{23});
+        Check(!Dirty() && viewport.Visibility==Visibility.Visible && !Get<Button>("ApplySettingsButton").IsEnabled,"Session notices can reveal the bar without creating unsaved changes");
+        Call("SaveSettings");Get<CheckBox>("ReducedMotionCheck").IsChecked=false;WaitForMotion();
+        Call("SaveSettings");
+        if(SystemParameters.ClientAreaAnimation) Check(viewport.Visibility==Visibility.Visible && !viewport.IsHitTestVisible,"Normal Apply starts a noninteractive downward exit transition");
+        WaitForMotion();
+        Check(viewport.Visibility==Visibility.Collapsed && Math.Abs(viewport.Height)<0.001,"Apply completes its slide and collapses after the animation");
+        sharpness.Value=0.65;WaitForMotion();Call("SaveSettings");sharpness.Value=0.75;WaitForMotion();
+        Check(Dirty() && viewport.Visibility==Visibility.Visible && Math.Abs(viewport.Height-68)<0.001,"A new edit during the exit transition keeps Apply visible");
+        Get<CheckBox>("ReducedMotionCheck").IsChecked=true;Call("SaveSettings");
+    }
+
+    static void VerifyUndo(string output,string root) {
+        var undo=Get<Button>("UndoSettingsButton");
+        bool Dirty()=>(bool)typeof(MainWindow).GetField("hasUnsavedChanges",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(window)!;
+        void Undo()=>undo.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        string ini=Path.Combine(root,"bbport.ini"), settings=Path.Combine(root,"launcher-settings.json"), library=Path.Combine(root,"user","launcher","profiles.json");
+        string currentPath=Get<TextBox>("PathBox").Text;
+        Select("UiLanguageCombo","en");Select("ThemeCombo","dark");Select("UpscalerCombo","dlss");Select("PresetCombo","1");Select("FpsCombo","60");
+        Get<CheckBox>("ReducedMotionCheck").IsChecked=true;Get<Slider>("SharpnessSlider").Value=0.35;
+        Get<CheckBox>("HdrOutputCheck").IsChecked=false;Get<CheckBox>("ShowCpuCheck").IsChecked=false;
+        Get<CheckBox>("DeveloperModeCheck").IsChecked=false;Get<Slider>("MouseSensitivitySlider").Value=3;
+        Call("SetBindingSlot",BindingRow("strong_attack"),"mouse","Left Shift + Mouse1");
+        Get<CheckBox>("OnlineRememberCheck").IsChecked=false;Get<CheckBox>("OnlineEnabledCheck").IsChecked=false;
+        Get<TextBox>("OnlineHostBox").Text="undo-baseline.example";Get<TextBox>("OnlineP2pPortBox").Text="32000";
+        Get<PasswordBox>("OnlinePasswordBox").Password="undo-password-in-memory";Get<PasswordBox>("OnlineTokenBox").Password="undo-token-in-memory";
+        Call("SaveSettings");
+        string baselineIni=File.ReadAllText(ini),baselineState=File.ReadAllText(settings),baselineLibrary=File.ReadAllText(library);
+        object baselineProfile=Get<ComboBox>("ProfileCombo").SelectedItem;
+        Check(!Dirty() && !undo.IsEnabled,"Undo is disabled after successful Apply");
+        Select("UpscalerCombo","taa");Select("FpsCombo","90");Get<Slider>("SharpnessSlider").Value=1.4;
+        Get<Slider>("MouseSensitivitySlider").Value=8;Call("SetBindingSlot",BindingRow("strong_attack"),"mouse","Right Ctrl + Mouse2");
+        Get<CheckBox>("HdrOutputCheck").IsChecked=true;Get<CheckBox>("ShowCpuCheck").IsChecked=true;Get<CheckBox>("DeveloperModeCheck").IsChecked=true;
+        Get<TextBox>("OnlineHostBox").Text="unapplied.example";Get<PasswordBox>("OnlinePasswordBox").Password="changed";Get<PasswordBox>("OnlineTokenBox").Password="changed-token";
+        Get<TextBox>("PathBox").Text=Path.Combine(root,"Not applied");Select("ThemeCombo","light");Select("UiLanguageCombo","vi");
+        Check(Dirty() && undo.IsEnabled && undo.Content?.ToString()=="Hoàn tác" && undo.ToolTip?.ToString()?.Contains("toàn bộ")==true,"Undo is enabled for pending edits and translated with its scope");
+        Render(Path.Combine(output,"undo-vi.png"),1320,920);
+        Undo();Pump();
+        Check(!Dirty() && !undo.IsEnabled && Get<Grid>("ApplyBarViewport").Visibility==Visibility.Collapsed,"Undo clears pending changes and collapses the Apply bar");
+        Check(Tag("UpscalerCombo")=="dlss" && Tag("FpsCombo")=="60" && Get<Slider>("SharpnessSlider").Value==0.35,"Undo restores graphics and presentation together");
+        Check(Get<Slider>("MouseSensitivitySlider").Value==3 && BindingRow("strong_attack").MouseToken=="Left Shift + Mouse1","Undo restores bindings and sensitivity, including the custom binding snapshot");
+        Check(Get<CheckBox>("HdrOutputCheck").IsChecked==false && Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("DeveloperModeCheck").IsChecked==false,"Undo also restores HDR, overlay and diagnostic switches");
+        Check(Get<TextBox>("PathBox").Text==currentPath && Tag("ThemeCombo")=="dark" && Localization.Current.Language=="en","Undo restores installation path and previewed appearance/language");
+        Check(Get<TextBox>("OnlineHostBox").Text=="undo-baseline.example" && Get<PasswordBox>("OnlinePasswordBox").Password=="undo-password-in-memory" && Get<PasswordBox>("OnlineTokenBox").Password=="undo-token-in-memory","Undo restores in-memory online fields without reading a remembered account");
+        Check(File.ReadAllText(ini)==baselineIni && File.ReadAllText(settings)==baselineState && File.ReadAllText(library)==baselineLibrary,"Undo writes no runtime settings, launcher settings or profile library");
+        Check(!baselineState.Contains("undo-password") && !baselineIni.Contains("undo-password") && !baselineLibrary.Contains("undo-password"),"Undo account checkpoints never enter settings/profile files");
+        var picker=Get<ComboBox>("ProfileCombo");picker.SelectedIndex=ReferenceEquals(picker.Items[0],baselineProfile)?1:0;Pump();
+        Check(Dirty() && !ReferenceEquals(picker.SelectedItem,baselineProfile),"Profile selection is staged before Undo");Undo();
+        Check(ReferenceEquals(picker.SelectedItem,baselineProfile) && !Dirty() && File.ReadAllText(library)==baselineLibrary,"Undo restores the previously applied profile without changing profile membership");
+        Get<Slider>("SharpnessSlider").Value=0.7;Call("SaveSettings");Get<Slider>("SharpnessSlider").Value=1.8;Undo();
+        Check(Get<Slider>("SharpnessSlider").Value==0.7 && !Dirty(),"A successful Apply advances the Undo checkpoint");
+        Get<TextBox>("OnlineP2pPortBox").Text="65536";Get<Slider>("SharpnessSlider").Value=1.6;
+        bool saved=(bool)typeof(MainWindow).GetMethod("SaveSettings",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(window,null)!;
+        string failedIni=File.ReadAllText(ini),failedSettings=File.ReadAllText(settings);
+        Check(!saved && undo.IsEnabled,"Undo remains available after a failed Apply");Undo();
+        Check(Get<Slider>("SharpnessSlider").Value==0.7 && Get<TextBox>("OnlineP2pPortBox").Text=="32000" && !Dirty(),"Failed Apply never replaces the last successful checkpoint");
+        Check(File.ReadAllText(ini)==failedIni && File.ReadAllText(settings)==failedSettings,"Undo after a failed save still performs no file writes");
+        Call("SaveSettings");Get<Slider>("SharpnessSlider").Value=0.8;
+        Render(Path.Combine(output,"undo-en.png"),1320,920);
+        window.MinWidth=640;window.MinHeight=480;Select("UiLanguageCombo","vi");Render(Path.Combine(output,"undo-compact-vi.png"),640,480);
+        Check(FitsWithin(undo,Get<FrameworkElement>("ApplyBar")) && FitsWithin(Get<Button>("ApplySettingsButton"),Get<FrameworkElement>("ApplyBar")),"Undo and Apply fit together in the smallest Vietnamese layout");
+        Undo();Call("SaveSettings");Call("SetFooterMessage","Session ended · {0}",new object[]{23});
+        Check(!undo.IsEnabled && !Dirty(),"A session notice alone does not enable Undo");Call("SaveSettings");
+    }
+
+    static void VerifyMods(string output,string root) {
+        string mods=Path.Combine(root,"mods"),config=Path.Combine(root,"mods.json"),game=Get<TextBox>("PathBox").Text;
+        string python=new[]{Path.Combine(sourceRoot,"tools/python/python.exe"),Path.Combine(sourceRoot,"builds/_internal/toolchain/clang64/bin/python.exe"),Path.Combine(Environment.GetEnvironmentVariable("BB_MSYS2")??@"C:\msys64","clang64/bin/python.exe")}.FirstOrDefault(File.Exists)
+            ?? throw new InvalidOperationException("Mod checks require packaged Python or CLANG64 Python from BB_MSYS2.");
+        string RunPython(params string[] arguments) {
+            var start=new System.Diagnostics.ProcessStartInfo(python) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+            foreach(string argument in arguments)start.ArgumentList.Add(argument);
+            using var process=System.Diagnostics.Process.Start(start)!;
+            var stdout=process.StandardOutput.ReadToEndAsync();var stderr=process.StandardError.ReadToEndAsync();
+            if(!process.WaitForExit(15000)){process.Kill(true);throw new Exception("Synthetic mod command timed out");}
+            if(process.ExitCode!=0)throw new Exception(stderr.GetAwaiter().GetResult());
+            return stdout.GetAwaiter().GetResult().Trim();
+        }
+        void Put(string file,string text) {Directory.CreateDirectory(Path.GetDirectoryName(file)!);File.WriteAllText(file,text);}
+        void Scan() {
+            var type=typeof(MainWindow).Assembly.GetType("BloodborneLauncher.ModCatalog")!;
+            object catalog=Task.Run(async()=>{
+                var task=(Task)type.GetMethod("Scan",BindingFlags.Static|BindingFlags.NonPublic)!.Invoke(null,new object[]{sourceRoot,mods,game})!;
+                await task.ConfigureAwait(false);return task.GetType().GetProperty("Result")!.GetValue(task)!;
+            }).GetAwaiter().GetResult();
+            Call("UpdateModCatalog",catalog);Pump();
+        }
+        var list=Get<ListBox>("ModList");
+        MainWindow.ModRow Row(string name)=>list.Items.Cast<MainWindow.ModRow>().Single(row=>row.Name==name);
+        bool Dirty()=>(bool)typeof(MainWindow).GetField("hasUnsavedChanges",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(window)!;
+        void Undo()=>Get<Button>("UndoSettingsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        string shared="dvdroot_ps4/chr/a.dcx";
+        Put(Path.Combine(game,shared),"base");Put(Path.Combine(mods,"Costume",shared),"costume");Put(Path.Combine(mods,"Lighting",shared),"lighting");
+        Put(Path.Combine(mods,"Lighting/dvdroot_ps4/sfx/new.dcx"),"new");Put(Path.Combine(mods,"Download.zip"),"archive fixture");Put(Path.Combine(mods,"Unknown/readme.txt"),"not a recognized layout");
+        File.WriteAllText(config,"{\"order\":[\"Costume\",\"Lighting\"],\"disabled\":[],\"future_note\":\"keep\"}");
+        Call("LoadModSettings");Get<CheckBox>("ModsEnabledCheck").IsChecked=true;Call("SaveSettings");
+        ClickNav("Mods");Call("SavesTab_Click",Get<Button>("ModsTab"),new RoutedEventArgs());Scan();
+        Check(!Dirty() && list.Items.Count==4,"Catalog shows valid and unrecognized entries without staging edits");
+        Check(Row("Costume").Enabled && Row("Lighting").Enabled && !Row("Download.zip").CanToggle && !Row("Unknown").CanToggle,"Recognized mods can be toggled; archives and bad layouts explain why they cannot load");
+        Check(Get<ItemsControl>("ModConflictList").Items.Cast<MainWindow.ModConflict>().Single().Winner=="Lighting","Conflict preview matches the runtime's last-mod-wins order");
+        string before=File.ReadAllText(config);Row("Lighting").Enabled=false;
+        Check(Dirty() && File.ReadAllText(config)==before && Get<ItemsControl>("ModConflictList").Items.Count==0,"Individual toggles update preview but do not write before Apply");
+        Undo();Check(Row("Lighting").Enabled && !Dirty() && File.ReadAllText(config)==before,"Undo restores pending mod choices without writing mods.json");
+        list.SelectedItem=Row("Costume");Call("MoveMod_Click",Get<Button>("ModMoveDownButton"),new RoutedEventArgs());
+        Check(Get<ItemsControl>("ModConflictList").Items.Cast<MainWindow.ModConflict>().Single().Winner=="Costume","Moving a mod changes the predicted winning file");
+        Call("SaveSettings");
+        var stored=JsonNode.Parse(File.ReadAllText(config))!;
+        Check(stored["order"]!.AsArray().Select(value=>value!.GetValue<string>()).SequenceEqual(new[]{"Lighting","Costume"}) && stored["future_note"]!.GetValue<string>()=="keep","Apply writes runtime-compatible order and preserves unknown config fields");
+        Check(File.Exists(config+".bak"),"Mod settings keep an atomic previous-file backup");
+        string overlay=RunPython(Path.Combine(sourceRoot,"scripts/mods.py"),game,"--mods-dir",mods,"--config",config,"--out",Path.Combine(root,"mod-test-out"));
+        Check(File.ReadAllText(Path.Combine(overlay,shared))=="costume" && File.ReadAllText(Path.Combine(game,shared))=="base","The actual Python loader uses the launcher's saved order and leaves the base game untouched");
+        RunPython("-c","import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); import mods; mods.remove_overlay(Path(sys.argv[2]))",Path.Combine(sourceRoot,"scripts"),overlay);
+        Row("Costume").Enabled=false;Call("SaveSettings");Call("LoadModSettings");Scan();
+        Check(!Row("Costume").Enabled && Row("Lighting").Enabled && !Dirty(),"Per-mod enable state survives Apply and reload");
+        list.SelectedItem=Row("Lighting");Get<ScrollViewer>("ModsPage").ScrollToVerticalOffset(350);Pump();
+        Check(!Dirty(),"Selecting or scrolling mod rows does not create unsaved changes");
+        Get<CheckBox>("ModsEnabledCheck").IsChecked=false;
+        Check(Get<ItemsControl>("ModConflictList").Items.Count==0 && Get<TextBlock>("ModSummary").Text.Contains("disabled"),"Master Off removes all effective mod conflicts");Undo();
+        Put(Path.Combine(mods,"BadExecutable",shared),"bad");Put(Path.Combine(mods,"BadExecutable/eboot.bin"),"unsupported executable");Scan();
+        Check(Row("BadExecutable").Enabled && Row("BadExecutable").Status.Contains("Cannot load"),"Unsafe executable replacement is shown as an invalid mod");
+        bool saved=(bool)typeof(MainWindow).GetMethod("SaveSettings",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(window,null)!;
+        Check(!saved,"An active invalid mod must be disabled before Apply");Row("BadExecutable").Enabled=false;Call("SaveSettings");
+        Check(JsonNode.Parse(File.ReadAllText(config))!["disabled"]!.AsArray().Any(value=>value!.GetValue<string>()=="BadExecutable"),"Disabling the invalid mod permits other mods to load");
+        Row("Costume").Enabled=true;Call("SaveSettings");
+        Render(Path.Combine(output,"mods-manager-en.png"),1320,960);Get<ScrollViewer>("ModsPage").ScrollToTop();Render(Path.Combine(output,"mods-manager-en.png"),1320,960);
+        Select("UiLanguageCombo","vi");Render(Path.Combine(output,"mods-manager-vi.png"),1320,960);
+        Check(Row("Lighting").Status.Contains("file trùng") && Get<Button>("ModMoveUpButton").Content?.ToString()=="Đưa lên","Mod rows, priorities and controls translate to Vietnamese");
+        window.MinWidth=640;window.MinHeight=480;Render(Path.Combine(output,"mods-manager-compact-vi.png"),800,680);
+        Get<Button>("ModRefreshButton").BringIntoView();Pump();
+        Check(FitsWithin(Get<Button>("ModRefreshButton"),Get<ScrollViewer>("ModsPage")),"Mod actions remain reachable in compact layouts");
+        Select("UiLanguageCombo","en");Call("SaveSettings");
+        string validConfig=File.ReadAllText(config);File.WriteAllText(config,"{broken");Call("LoadModSettings");
+        Check(!list.IsEnabled && Get<TextBlock>("ModConfigWarning").Visibility==Visibility.Visible,"Malformed configuration is visible and cannot be silently overwritten");
+        Get<CheckBox>("ModsEnabledCheck").IsChecked=false;Call("SaveSettings");
+        Check(File.ReadAllText(config)=="{broken","Global Off leaves malformed mod configuration intact");
+        File.WriteAllText(config,validConfig);Call("LoadModSettings");Scan();Get<CheckBox>("ModsEnabledCheck").IsChecked=true;Call("SaveSettings");
+        Check(list.IsEnabled && !Dirty(),"A repaired mod configuration can be loaded without resetting its choices");
+    }
+
+    static void VerifyLighting(string output,string root) {
+        var names=new[]{"GraphicsAoSlider","GraphicsShadowsSlider","GraphicsBloomSlider","GraphicsSaturationSlider"};
+        string ini=Path.Combine(root,"bbport.ini"), state=Path.Combine(root,"launcher-settings.json"), profiles=Path.Combine(root,"user","launcher","profiles.json");
+        bool RuntimeEnabled()=>File.ReadAllLines(ini).Contains("graphics_controls=1");
+        bool ProfileEnabled() {
+            var data=JsonNode.Parse(File.ReadAllText(profiles))!;
+            return data["Profiles"]!.AsArray().Single(p=>p!["Id"]!.GetValue<string>()==data["ActiveProfileId"]!.GetValue<string>())!["Settings"]!["GraphicsControls"]!.GetValue<bool>();
+        }
+        void Reset()=>Call("ResetLighting_Click",Get<Button>("ResetLightingButton"),new RoutedEventArgs());
+        ClickNav("Graphics");Call("GraphicsTab_Click",Get<Button>("GraphicsEffectsTab"),new RoutedEventArgs());
+        Check(window.FindName("GraphicsControlsCheck")==null,"Lighting controls have no master checkbox");
+        string upscaler=Tag("UpscalerCombo"), fov=Tag("CameraFovCombo");
+        bool? ssao=Get<CheckBox>("SsaoCheck").IsChecked, aa=Get<CheckBox>("GameAaCheck").IsChecked, hdr=Get<CheckBox>("HdrOutputCheck").IsChecked;
+        string before=File.ReadAllText(ini), profileBefore=File.ReadAllText(profiles);
+        Reset();
+        Check(names.All(n=>Tag(n)=="1.00") && Get<CheckBox>("GraphicsVignetteCheck").IsChecked==true,"Restore defaults resets lighting to original multipliers and vignette On");
+        Check(File.ReadAllText(ini)==before && File.ReadAllText(profiles)==profileBefore,"Restore defaults stages the change until Apply or Play");
+        Check(Tag("UpscalerCombo")==upscaler && Tag("CameraFovCombo")==fov && Get<CheckBox>("SsaoCheck").IsChecked==ssao && Get<CheckBox>("GameAaCheck").IsChecked==aa && Get<CheckBox>("HdrOutputCheck").IsChecked==hdr,"Lighting reset preserves AA, SSAO, camera, upscaling and HDR settings");
+        Call("SaveSettings");
+        Check(!RuntimeEnabled() && !ProfileEnabled(),"Original lighting does not require runtime hooks");
+        var saturation=Get<Slider>("GraphicsSaturationSlider");
+        string savedBeforeDrag=File.ReadAllText(ini);
+        saturation.Value=137;
+        Check(Get<TextBlock>("GraphicsSaturationValue").Text=="137%" && File.ReadAllText(ini)==savedBeforeDrag,"Slider readouts update immediately without writing settings while dragging");
+        Slider.IncreaseSmall.Execute(null,saturation);
+        Check(saturation.Value==138 && Get<TextBlock>("GraphicsSaturationValue").Text=="138%","Keyboard adjustment changes the effect by one percent");
+        Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
+        Check(saturation.Value==138 && File.ReadAllLines(ini).Contains("graphics_saturation=1.38"),"Slider percentages persist as runtime multipliers with one percent precision");
+        foreach(var (name,value) in new[]{("GraphicsAoSlider","0.40"),("GraphicsShadowsSlider","1.40"),("GraphicsBloomSlider","0.60"),("GraphicsSaturationSlider","1.20"),("GraphicsAoSlider","0.00"),("GraphicsBloomSlider","0.00"),("GraphicsSaturationSlider","0.00")}) {
+            Reset();Select(name,value);Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
+            Check(Tag(name)==value && names.Where(n=>n!=name).All(n=>Tag(n)=="1.00") && Get<CheckBox>("GraphicsVignetteCheck").IsChecked==true,"Independent lighting override survives Apply/reload: "+name+"="+value);
+            Check(RuntimeEnabled() && ProfileEnabled() && JsonNode.Parse(File.ReadAllText(state))!["GraphicsControls"]!.GetValue<bool>(),"Runtime and profile support is derived automatically for "+name+"="+value);
+        }
+        Reset();Get<CheckBox>("GraphicsVignetteCheck").IsChecked=false;Call("SaveSettings");
+        Check(RuntimeEnabled() && ProfileEnabled() && names.All(n=>Tag(n)=="1.00"),"Vignette alone enables support without changing numeric effects");
+        Reset();Call("SaveSettings");
+        Check(!RuntimeEnabled() && !ProfileEnabled(),"Restoring all originals removes the internal override flag");
+        // Existing v1 profiles can contain either value of the retired master switch.
+        foreach(bool legacyFlag in new[]{false,true}) {
+            var data=JsonNode.Parse(File.ReadAllText(profiles))!;
+            var active=data["Profiles"]!.AsArray().Single(p=>p!["Id"]!.GetValue<string>()==data["ActiveProfileId"]!.GetValue<string>())!["Settings"]!;
+            active["GraphicsControls"]=legacyFlag;active["GraphicsBloom"]=legacyFlag?"1.00":"0.40";
+            File.WriteAllText(profiles,data.ToJsonString());Call("InitializeProfiles");
+            Call("ApplyProfile",Get<ComboBox>("ProfileCombo").SelectedItem);Call("SaveSettings");
+            Check(Tag("GraphicsBloomSlider")== (legacyFlag?"1.00":"0.40") && RuntimeEnabled()==!legacyFlag && ProfileEnabled()==!legacyFlag,"Legacy profile values remain effective independently of its old master flag "+legacyFlag);
+        }
+        // The native INI remains authoritative for values, but the old switch no longer hides them.
+        string original=File.ReadAllText(ini);
+        File.WriteAllText(ini,original.Replace("graphics_bloom=1.00","graphics_bloom=0.37").Replace("graphics_controls=1","graphics_controls=0"));
+        Call("LoadState");Call("ApplyStateToUi");Call("SaveSettings");
+        Check(Tag("GraphicsBloomSlider")=="0.37" && RuntimeEnabled(),"Intermediate in-game values survive migration and enable their required hooks");
+        Check(Get<Slider>("GraphicsBloomSlider").Value==37 && Get<TextBlock>("GraphicsBloomValue").Text=="37%","In-game multiplier values map to slider percentages correctly");
+        Reset();Call("SaveSettings");
+        Get<ScrollViewer>("GraphicsPage").ScrollToTop();Render(Path.Combine(output,"lighting-original-en.png"),1320,960);
+        Check(new[]{"Ao","Shadows","Bloom","Saturation"}.All(n=>Get<TextBlock>("Graphics"+n+"Value").Text=="100% — Original"),"Original percentages are explicit in English");
+        Select("UiLanguageCombo","vi");Pump();Render(Path.Combine(output,"lighting-original-vi.png"),1320,960);
+        Check(new[]{"Ao","Shadows","Bloom","Saturation"}.All(n=>Get<TextBlock>("Graphics"+n+"Value").Text=="100% — Gốc"),"Original percentages translate without changing values");
+        Check(Get<TextBlock>("LightingTitle").Text=="Ánh sáng và màu sắc" && Get<TextBlock>("LightingRestartHint").Text.Contains("khởi động lại game"),"Lighting title and restart guidance are localized");
+        window.MinWidth=640;window.MinHeight=480;
+        Render(Path.Combine(output,"lighting-compact-vi.png"),800,680);
+        Get<Button>("ResetLightingButton").BringIntoView();Pump();
+        Check(FitsWithin(Get<Button>("ResetLightingButton"),Get<ScrollViewer>("GraphicsPage")),"Reset lighting remains reachable in the compact layout");
+        Render(Path.Combine(output,"lighting-compact-vi.png"),800,680);
+        Select("UiLanguageCombo","en");Call("SaveSettings");
+    }
+
+    static void VerifyProfiles(string output,string root) {
+        window.MinWidth=1000; window.MinHeight=680;
+        Select("UiLanguageCombo","en"); Select("ThemeCombo","dark");
+        Select("UpscalerCombo","dlss"); Select("PresetCombo","1"); Select("PresentCombo","Immediate");
+        Get<ComboBox>("ResolutionCombo").SelectedItem=Get<ComboBox>("ResolutionCombo").Items.Cast<ComboBoxItem>().Single(item=>item.Content?.ToString()=="1920x1080"); Select("FpsCombo","60");
+        BindingRow("strong_attack").Binding="Left Shift + Mouse1";
+        Get<Slider>("MouseSensitivitySlider").Value=8;
+        Get<TextBox>("OnlineHostBox").Text="private-server.example";
+        Get<PasswordBox>("OnlinePasswordBox").Password="memory-only-profile-test";
+        Get<PasswordBox>("OnlineTokenBox").Password="token-only-profile-test";
+        Call("SaveSettings");
+        string path=Path.Combine(root,"user","launcher","profiles.json");
+        Check(File.Exists(path),"Existing settings migrate to a local profile library");
+        var initial=JsonNode.Parse(File.ReadAllText(path))!;
+        Check(initial["Version"]!.GetValue<int>()==1 && initial["Profiles"]!.AsArray().Count==1,"Versioned library begins with current setup");
+        string originalId=initial["ActiveProfileId"]!.GetValue<string>();
+        var initialSettings=initial["Profiles"]![0]!["Settings"]!.AsObject();
+        Check(!initialSettings.ContainsKey("GamePath") && !initialSettings.ContainsKey("UiLanguage") && !initialSettings.ContainsKey("UiTheme"),"Profiles exclude paths and launcher preferences");
+        Check(!initialSettings.Any(p=>p.Key.StartsWith("Online")) && !File.ReadAllText(path).Contains("private-server.example") && !File.ReadAllText(path).Contains("memory-only"),"Profiles exclude online addresses and credentials");
+        Check(initial["Profiles"]![0]!["Bindings"]!["strong_attack"]!.GetValue<string>()=="Left Shift + Mouse1","Profiles preserve keyboard and mouse combinations");
+        var create=typeof(MainWindow).GetMethod("CreateProfileCopy",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        Check((bool)create.Invoke(window,new object[]{"Boss fights"})!,"Save a copy creates and applies a named profile");
+        Check(Get<ComboBox>("ProfileCombo").Items.Count==2 && Get<ComboBox>("ProfileCombo").Text=="Boss fights","New profile appears in the global selector");
+        Check(!((bool)typeof(MainWindow).GetField("hasUnsavedChanges",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(window)!),"Saving clears the dirty state");
+        Select("UpscalerCombo","taa"); Select("PresentCombo","FifoRelaxed"); Select("FpsCombo","90");
+        Get<Slider>("MouseSensitivitySlider").Value=2;
+        BindingRow("strong_attack").Binding="Right Ctrl + Mouse2";
+        Call("SaveSettings");
+        var profiles=Get<ComboBox>("ProfileCombo");
+        string idBefore=JsonNode.Parse(File.ReadAllText(path))!["ActiveProfileId"]!.GetValue<string>();
+        string iniBefore=File.ReadAllText(Path.Combine(root,"bbport.ini"));
+        profiles.SelectedIndex=0; Pump();
+        Check(Tag("UpscalerCombo")=="dlss" && Tag("PresentCombo")=="Immediate" && Tag("FpsCombo")=="60","Changing profile restores graphics, presentation and FPS independently");
+        Check(BindingRow("strong_attack").Binding=="Left Shift + Mouse1" && Get<Slider>("MouseSensitivitySlider").Value==8,"Changing profile restores input bindings and sensitivity");
+        Check(Get<PasswordBox>("OnlinePasswordBox").Password=="memory-only-profile-test" && Get<PasswordBox>("OnlineTokenBox").Password=="token-only-profile-test","Switching profiles preserves unsaved in-memory online credentials");
+        Check(File.ReadAllText(Path.Combine(root,"bbport.ini"))==iniBefore,"Selecting a profile stages settings without writing runtime configuration");
+        Check(JsonNode.Parse(File.ReadAllText(path))!["ActiveProfileId"]!.GetValue<string>()==idBefore,"The active profile is persisted when applied");
+        Check(Get<System.Windows.Shapes.Ellipse>("ProfileDirtyDot").Visibility==Visibility.Visible,"Staged profile visibly has unapplied changes");
+        Call("SaveSettings");
+        Check(JsonNode.Parse(File.ReadAllText(path))!["ActiveProfileId"]!.GetValue<string>()==originalId,"Apply persists the selected profile identity");
+        profiles.SelectedIndex=1; Pump();
+        Check(Tag("UpscalerCombo")=="taa" && Tag("PresentCombo")=="FifoRelaxed" && !Get<ComboBox>("PresetCombo").IsEnabled,"TAA and present mode remain correct after a profile round trip");
+        Check(BindingRow("strong_attack").Binding=="Right Ctrl + Mouse2" && Get<Slider>("MouseSensitivitySlider").Value==2,"Each named profile keeps its own inputs");
+        Call("SaveSettings"); Call("InitializeProfiles");
+        Check(profiles.Text=="Boss fights" && profiles.Items.Count==2,"Profile names and active selection survive reloading");
+        Check(File.Exists(path+".bak"),"Atomic saves retain a previous library backup");
+        int count=profiles.Items.Count;
+        try { create.Invoke(window,new object[]{"boss FIGHTS"}); throw new Exception("Duplicate profile was accepted"); }
+        catch(TargetInvocationException error) when(error.InnerException is InvalidDataException) { assertions++; }
+        Check(profiles.Items.Count==count,"A duplicate name cannot overwrite another profile");
+        string good=File.ReadAllText(path);
+        File.WriteAllText(path,"{\"Version\":1,\"Profiles\":[");
+        Call("InitializeProfiles");
+        Check(profiles.Items.Count==2 && Directory.EnumerateFiles(Path.GetDirectoryName(path)!,"profiles.json.corrupt-*").Any(),"A damaged library is recovered from backup and preserved for inspection");
+        Call("SaveSettings");
+        Check(JsonNode.Parse(File.ReadAllText(path))!["Profiles"]!.AsArray().Count==2,"Recovered profiles can be saved normally");
+        // Exercise failed replacements and future formats using a separate store, never the live library.
+        var storeType=typeof(MainWindow).Assembly.GetType("BloodborneLauncher.LauncherProfileStore")!;
+        string isolated=Path.Combine(root,"profile-store-tests","profiles.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(isolated)!); File.WriteAllText(isolated,good);
+        object store=Activator.CreateInstance(storeType,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic,null,new object[]{isolated},null)!;
+        var load=storeType.GetMethod("Load",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        var save=storeType.GetMethod("Save",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        object library=load.Invoke(store,new object?[]{null})!;
+        using(var locked=new FileStream(isolated,FileMode.Open,FileAccess.Read,FileShare.Read)) {
+            try { save.Invoke(store,new[]{library}); throw new Exception("A locked profile library was replaced"); }
+            catch(TargetInvocationException error) when(error.InnerException is IOException) { assertions++; }
+        }
+        Check(File.ReadAllText(isolated)==good && !Directory.EnumerateFiles(Path.GetDirectoryName(isolated)!,"*.tmp").Any(),"A failed atomic save leaves the original bytes and cleans its temporary file");
+        var future=JsonNode.Parse(good)!; future["Version"]=99; File.WriteAllText(isolated,future.ToJsonString());
+        try { load.Invoke(store,new object?[]{null}); throw new Exception("A future profile format was accepted"); }
+        catch(TargetInvocationException error) when(error.InnerException is NotSupportedException) { assertions++; }
+        Check(JsonNode.Parse(File.ReadAllText(isolated))!["Version"]!.GetValue<int>()==99,"Unsupported profile versions are preserved without downgrade");
+        // Inspect the new pages with real, independent controls and both themes.
+        ClickNav("Graphics"); Get<ScrollViewer>("GraphicsPage").ScrollToTop();
+        Select("UpscalerCombo","dlss"); Select("PresetCombo","2");
+        Check(Get<TextBlock>("SceneResolutionText").Text=="1130 × 636","Render preview uses the runtime's even-dimension rounding for Balanced");
+        Select("UpscalerCombo","off");
+        Check(Get<TextBlock>("SceneResolutionText").Text=="1920 × 1080" && !Get<ComboBox>("PresetCombo").IsEnabled,"Off shows native scene size and disables quality");
+        Select("UpscalerCombo","dlss"); Select("PresetCombo","1");
+        Render(Path.Combine(output,"control-hub-graphics.png"),1320,920);
+        Call("GraphicsTab_Click",Get<Button>("GraphicsEffectsTab"),new RoutedEventArgs());
+        Check(Get<StackPanel>("EffectsPanel").Visibility==Visibility.Visible,"Effects tab displays the existing effect controls");
+        Render(Path.Combine(output,"control-hub-effects.png"),1320,920);
+        Call("GraphicsTab_Click",Get<Button>("GraphicsCameraTab"),new RoutedEventArgs());
+        Check(Get<ComboBox>("CameraFovCombo").IsVisible,"Camera settings have their own graphics tab");
+        Call("GraphicsTab_Click",Get<Button>("GraphicsUpscalingTab"),new RoutedEventArgs());
+        ClickNav("Controller"); Get<ScrollViewer>("ControllerPage").ScrollToTop();
+        Render(Path.Combine(output,"control-hub-controls.png"),1320,920);
+        Get<Button>("KeyForward").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check(Get<Grid>("CaptureOverlay").Visibility==Visibility.Visible,"Movement diagram starts the same key capture as the binding table");
+        Call("CancelCapture_Click",window,new RoutedEventArgs());
+        Call("ControlsTab_Click",Get<Button>("GamepadTab"),new RoutedEventArgs());
+        window.UpdateLayout(); Pump();
+        Check(Get<ComboBox>("ControllerCombo").IsVisible && !Get<DataGrid>("KeyBindingsGrid").IsVisible,"Gamepad tab separates controller selection from keyboard bindings");
+        Call("ControlsTab_Click",Get<Button>("KeyboardTab"),new RoutedEventArgs());
+        ClickNav("General"); Select("ThemeCombo","light"); Render(Path.Combine(output,"control-hub-settings-light.png"),1320,920);
+        Check(((SolidColorBrush)Application.Current.Resources["PanelBrush"]).Color==Color.FromRgb(255,255,255),"Light theme updates native product surfaces");
+        Select("UiLanguageCombo","vi"); ClickNav("Display");
+        Render(Path.Combine(output,"control-hub-display-light-vi.png"),1320,920);
+        Select("ThemeCombo","dark"); Select("UiLanguageCombo","en"); ClickNav("Home"); Get<ScrollViewer>("HomePage").ScrollToTop();
+        Render(Path.Combine(output,"control-hub-play.png"),1320,920);
+        Call("SaveSettings");
     }
     static bool FitsWithin(FrameworkElement child, FrameworkElement parent) {
         var bounds=child.TransformToAncestor(parent).TransformBounds(new Rect(0,0,child.ActualWidth,child.ActualHeight));
@@ -328,8 +877,10 @@ static class Program
         File.WriteAllText(Path.Combine(game,"sce_sys","param.sfo"),"01.09");
         File.WriteAllText(Path.Combine(root,"run.bat"),"@echo off\r\nset BB_ > launch-env.txt\r\necho %* > launch-args.txt\r\necho session>>launch-count.txt\r\nping 127.0.0.1 -n 3 > nul\r\n");
         File.WriteAllText(Path.Combine(root,"bbport.ini"),"# keep this comment\r\nunrelated_setting=keep\r\nupscaler=off\r\n");
+        string? verificationMsys2=Environment.GetEnvironmentVariable("BB_MSYS2");
         foreach (string key in Environment.GetEnvironmentVariables().Keys)
-            if(key.StartsWith("BB_")) Environment.SetEnvironmentVariable(key,null);
+            if(key.StartsWith("BB_") && key != "BB_MSYS2") Environment.SetEnvironmentVariable(key,null);
+        Check(Environment.GetEnvironmentVariable("BB_MSYS2")==verificationMsys2,"Fixture cleanup preserves the configured MSYS2 Python location");
         if (File.Exists(Path.Combine(root,"launcher-settings.json"))) File.Delete(Path.Combine(root,"launcher-settings.json"));
         foreach(var stale in new[]{"out/game_dir.txt","launch-env.txt","launch-args.txt"}) { var f=Path.Combine(root,stale); if(File.Exists(f)) File.Delete(f); }
         var app = new App();
@@ -338,6 +889,14 @@ static class Program
 
         window = new MainWindow { ShowInTaskbar=false, ShowActivated=false, WindowStartupLocation=WindowStartupLocation.Manual, Left=-20000, Top=-20000 };
         window.Show(); Pump();
+        Check(Get<Border>("HomeSessionCard").Visibility==(publicRelease?Visibility.Collapsed:Visibility.Visible),"The Play session summary follows the build profile before a game is launched");
+        Check(!Get<Button>("UndoSettingsButton").IsEnabled,"Undo starts disabled with no pending edits");
+        Get<Slider>("SharpnessSlider").Value=0.6;Get<Button>("UndoSettingsButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Check(Get<Slider>("SharpnessSlider").Value==0.3 && !Get<Button>("UndoSettingsButton").IsEnabled,"Undo before the first Apply restores startup settings");
+        Get<CheckBox>("ReducedMotionCheck").IsChecked=true;
+        Check(new[]{"GraphicsAoSlider","GraphicsShadowsSlider","GraphicsBloomSlider","GraphicsSaturationSlider"}.All(n=>Tag(n)=="1.00") && Get<CheckBox>("GraphicsVignetteCheck").IsChecked==true,"First launch uses original lighting and color settings");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false,"CPU/GPU monitoring is opt-in by default");
+        Check(Get<Slider>("SharpnessSlider").Value==0.3,"First launch retains the native sharpening strength default");
         Check(window.Title=="Techmo Bloodborne","Techmo window branding");
         Check(typeof(MainWindow).Assembly.GetName().Name=="Techmo.Launcher","Techmo executable identity");
         Check(Localization.Current.Language=="en","English is the default UI language");
@@ -353,7 +912,7 @@ static class Program
         Check(Get<Image>("HeroImage").Source is BitmapSource, "Embedded hero not loaded");
         Call("ConfigureGraphics_Click",Get<Button>("ConfigureGraphicsButton"),new RoutedEventArgs()); Pump();
         Check(Get<FrameworkElement>("GraphicsPage").Visibility==Visibility.Visible && Get<Button>("NavGraphics").Tag?.ToString()=="active","Home graphics shortcut opens and selects Graphics");
-        Check(FitsWithin(Get<ComboBox>("UiLanguageCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Language selector reachable outside Home");
+        Check(FitsWithin(Get<ComboBox>("ProfileCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Profile selector reachable outside Home");
         ClickNav("Home");
         Get<CheckBox>("PcControlsCheck").IsChecked=false; Pump();
         Check(Get<TextBlock>("InputStatus").Text=="Controller","Home reflects gamepad input");
@@ -427,19 +986,13 @@ static class Program
         Get<TextBox>("PathBox").Text=Path.Combine(root,"bad"); Call("RefreshStatus");
         Check(!Get<Button>("PlayButton").IsEnabled,"Invalid path must disable Play");
         Get<TextBox>("PathBox").Text=game; Call("RefreshStatus");
-        foreach(var pair in new[] { ("UpscalerCombo","QuickUpscaler"),("PresetCombo","QuickPreset"),("FpsCombo","QuickFps"),("ResolutionCombo","QuickResolution") }) {
-            var detailed=Get<ComboBox>(pair.Item1); var quick=Get<ComboBox>(pair.Item2);
-            for(int i=0;i<detailed.Items.Count;i++) { detailed.SelectedIndex=i; Check(quick.SelectedIndex==i,pair.Item1+" to quick "+i); }
-            for(int i=quick.Items.Count-1;i>=0;i--) { quick.SelectedIndex=i; Check(detailed.SelectedIndex==i,pair.Item2+" to detailed "+i); }
-        }
+        Check(window.FindName("QuickSettingsGrid")==null && window.FindName("QuickFps")==null,"Play does not duplicate Display or Graphics settings");
         VerifyUpscalingAvailability(output,root);
-        Get<CheckBox>("FullscreenCheck").IsChecked=false; Check(Get<ComboBox>("QuickDisplay").SelectedIndex==1,"Display sync to quick");
-        Get<ComboBox>("QuickDisplay").SelectedIndex=0; Check(Get<CheckBox>("FullscreenCheck").IsChecked==true,"Display sync from quick");
+        Get<CheckBox>("FullscreenCheck").IsChecked=true;
         Select("CameraFovCombo","1.25"); Select("CameraDistanceCombo","0.80"); Select("CameraHeightCombo","1.20");
-        Select("GraphicsAoCombo","0.40"); Select("GraphicsShadowsCombo","1.40");
-        Select("GraphicsBloomCombo","0.80"); Select("GraphicsSaturationCombo","1.20");
+        Select("GraphicsAoSlider","0.40"); Select("GraphicsShadowsSlider","1.40");
+        Select("GraphicsBloomSlider","0.80"); Select("GraphicsSaturationSlider","1.20");
         Get<CheckBox>("RebirthCheck").IsChecked=true;
-        Get<CheckBox>("GraphicsControlsCheck").IsChecked=true;
         Get<CheckBox>("GraphicsVignetteCheck").IsChecked=false;
         Select("UpscalerCombo","fsr411"); Select("PresetCombo","3"); Select("FpsCombo","90");
         Select("PresentCombo","FifoRelaxed"); Select("LiveResolutionCombo","auto"); Select("ModelLodCombo","-2");
@@ -460,7 +1013,7 @@ static class Program
         Check(Get<DataGrid>("KeyBindingsGrid").Columns[0].Header?.ToString()=="Thao tác","Vietnamese table header");
         Select("PresetCombo","0");ClickNav("Home");Render(Path.Combine(output,"launcher-home-vi.png"));
         Render(Path.Combine(output,"launcher-home-vi-compact.png"),1100,720);Select("PresetCombo","3");
-        foreach(var translatedPage in new[]{"Graphics","Performance","Mods","Advanced"}) {
+        foreach(var translatedPage in new[]{"Graphics","Display","Mods","Advanced"}) {
             ClickNav(translatedPage);Render(Path.Combine(output,"launcher-"+translatedPage.ToLowerInvariant()+"-vi.png"));
         }
         ClickNav("General");Render(Path.Combine(output,"launcher-general-vi.png"));
@@ -568,15 +1121,15 @@ static class Program
         Check(!diagnosticEnv.Contains("BB_SESSION_DIR="+sessionDir+"\r\n"),"Consecutive sessions have different report directories");
         Call("ShowSessionReport",sessionDir,0);Get<ScrollViewer>("HomePage").ScrollToTop();
         Render(Path.Combine(output,"launcher-play.png"));
-        foreach(var page in new[]{"General","Graphics","Performance","Controller","Online","Mods","Advanced"}) {
+        foreach(var page in new[]{"General","Graphics","Display","Controller","Online","Mods","Advanced"}) {
             ClickNav(page); Pump();
             Check(Get<FrameworkElement>(page+"Page").Visibility==Visibility.Visible,"Navigation "+page);
             Check(Get<FrameworkElement>("HomePage").Visibility==Visibility.Collapsed,"Home hidden "+page);
             Render(Path.Combine(output,"launcher-"+page.ToLowerInvariant()+".png"));
-            Check(FitsWithin(Get<ComboBox>("UiLanguageCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Global language selector on "+page);
+            Check(FitsWithin(Get<ComboBox>("ProfileCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Global profile selector on "+page);
         }
         ClickNav("Graphics");
-        var upscaler = Get<ComboBox>("UpscalerCombo");
+        var upscaler = Get<ComboBox>("PresetCombo");
         upscaler.IsDropDownOpen = true; Pump(); window.UpdateLayout();
         var popup = (System.Windows.Controls.Primitives.Popup)upscaler.Template.FindName("PART_Popup",upscaler);
         Check(popup.IsOpen && popup.Child != null,"Styled dropdown opens");
@@ -592,11 +1145,11 @@ static class Program
         Check(FitsWithin(Get<Button>("PlayButton"),Get<ScrollViewer>("HomePage")),"Compact home can reach the entire Play button");
         Get<ScrollViewer>("HomePage").ScrollToBottom(); Pump();
         Render(Path.Combine(output,"launcher-compact-scrolled.png"),1000,680);
-        Check(Get<ScrollViewer>("HomePage").VerticalOffset>0,"Compact home scrolls to quick controls");
-        Check(FitsWithin(Get<ComboBox>("QuickFps"),Get<ScrollViewer>("HomePage")),"Compact home can reach quick FPS");
-        Get<Expander>("SystemDetails").IsExpanded=true; Pump();
-        Get<ScrollViewer>("HomePage").ScrollToBottom(); Pump();
-        Check(FitsWithin(Get<TextBlock>("Fsr4Status"),Get<ScrollViewer>("HomePage")),"System capability details remain reachable");
+        if (!publicRelease) Check(Get<ScrollViewer>("HomePage").VerticalOffset>0,"Compact home scrolls to Diagnostics");
+        CheckDiagnosticsAccess("Compact home");
+        ClickNav("Advanced"); Get<Expander>("SystemDetails").IsExpanded=true; Pump();
+        Get<ScrollViewer>("AdvancedPage").ScrollToBottom(); Pump();
+        Check(FitsWithin(Get<TextBlock>("Fsr4Status"),Get<ScrollViewer>("AdvancedPage")),"System capability details remain reachable in Diagnostics");
         Render(Path.Combine(output,"launcher-system-details-compact.png"),1000,680);
         Get<Expander>("SystemDetails").IsExpanded=false;
         Get<ScrollViewer>("HomePage").ScrollToTop(); Pump();
@@ -604,12 +1157,12 @@ static class Program
         ClickNav("Home"); Render(Path.Combine(output,"launcher-150-percent.png"),1100,720,144);
         window.MinWidth=900; window.MinHeight=520;
         Render(Path.Combine(output,"launcher-200-percent.png"),900,520,192);
-        Check(FitsWithin(Get<ComboBox>("UiLanguageCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Language selector fits the small high-DPI layout");
+        Check(FitsWithin(Get<ComboBox>("ProfileCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Profile selector fits the small high-DPI layout");
         Get<Button>("PlayButton").BringIntoView(); Pump();
         Check(FitsWithin(Get<Button>("PlayButton"),Get<ScrollViewer>("HomePage")),"High-DPI home can reach Play");
         Render(Path.Combine(output,"launcher-play-200-percent.png"),900,520,192);
         Get<ScrollViewer>("HomePage").ScrollToBottom(); Pump();
-        Check(FitsWithin(Get<ComboBox>("QuickFps"),Get<ScrollViewer>("HomePage")),"High-DPI home can reach quick settings");
+        CheckDiagnosticsAccess("High-DPI home");
         Render(Path.Combine(output,"launcher-quick-200-percent.png"),900,520,192);
         Get<ScrollViewer>("SidebarNavigation").ScrollToBottom(); Pump();
         Check(Get<ScrollViewer>("SidebarNavigation").VerticalOffset>0,"Short-screen sidebar remains scrollable");
@@ -620,49 +1173,40 @@ static class Program
         ClickNav("Home");
         Select("UiLanguageCombo","vi");
         Render(Path.Combine(output,"launcher-small-vi.png"),640,480);
-        Check(FitsWithin(Get<ComboBox>("UiLanguageCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Vietnamese language selector fits the minimum work area");
+        Check(FitsWithin(Get<ComboBox>("ProfileCombo"),Get<FrameworkElement>("WorkspaceHeader")),"Vietnamese profile selector fits the minimum work area");
         Get<Button>("PlayButton").BringIntoView(); Pump();
         Check(FitsWithin(Get<Button>("PlayButton"),Get<ScrollViewer>("HomePage")),"Play remains reachable in the minimum work area");
         Render(Path.Combine(output,"launcher-small-play-vi.png"),640,480);
         Get<ScrollViewer>("HomePage").ScrollToBottom(); Pump();
-        Check(FitsWithin(Get<ComboBox>("QuickFps"),Get<ScrollViewer>("HomePage")),"Quick settings remain reachable in the minimum work area");
+        CheckDiagnosticsAccess("Minimum work area");
         Render(Path.Combine(output,"launcher-small-quick-vi.png"),640,480);
         Select("UiLanguageCombo","en");
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Tag("UpscalerCombo")=="fsr411" && Tag("FpsCombo")=="90" && Tag("PresetCombo")=="3","Settings reload");
-        Check(Get<ComboBox>("QuickUpscaler").SelectedIndex==1 && Get<ComboBox>("QuickFps").SelectedIndex==2,"Quick settings reload");
-        Check(Get<ComboBox>("FpsCombo").Items.Count==4 && Get<ComboBox>("QuickFps").Items.Count==4,"30/60/90/Unlimited presets without 120 FPS");
+        Check(Get<ComboBox>("FpsCombo").Items.Count==4,"30/60/90/Unlimited presets without 120 FPS");
+        Check(window.FindName("VSyncCheck")==null,"Present mode is the single presentation setting without a duplicate VSync checkbox");
         foreach(string fps in new[]{"30","60","90","uncap"}) {
             Select("FpsCombo",fps);
-            Select("PresentCombo","Immediate");
-            Check(Get<CheckBox>("VSyncCheck").IsChecked==false,"Immediate clears VSync at "+fps);
-            Get<CheckBox>("VSyncCheck").IsChecked=true;
-            Check(Tag("PresentCombo")=="Fifo","VSync selects FIFO at "+fps);
-            Get<CheckBox>("VSyncCheck").IsChecked=false;
-            Check(Tag("PresentCombo")=="Immediate","Disabling VSync restores user mode at "+fps);
-            Select("PresentCombo","FifoRelaxed");
-            Check(Get<CheckBox>("VSyncCheck").IsChecked==true,"Adaptive FIFO reflects VSync at "+fps);
-            Select("PresentCombo","");
-            Check(Get<CheckBox>("VSyncCheck").IsChecked==false,"Mailbox remains selectable at "+fps);
-            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
-            Check(Tag("FpsCombo")==fps && Tag("PresentCombo")=="" && Get<CheckBox>("VSyncCheck").IsChecked==false,"FPS and disabled VSync round trip at "+fps);
+            foreach(string mode in new[]{"Immediate","FifoRelaxed","","Fifo"}) {
+                Select("PresentCombo",mode);
+                Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
+                Check(Tag("FpsCombo")==fps && Tag("PresentCombo")==mode,"Independent FPS/present-mode round trip: "+fps+" / "+mode);
+                Check(Get<TextBlock>("PresentModeHint").Text.Length>20,"Present mode has a useful explanation");
+            }
             if(fps=="uncap") {
-                Get<Button>("NavGraphics").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
-                Render(Path.Combine(output,"graphics-unlimited-vsync-off-en.png"),1440,900);
+                ClickNav("Display");
+                Render(Path.Combine(output,"display-unlimited-fifo-en.png"),1320,920);
                 Select("UiLanguageCombo","vi");
-                Render(Path.Combine(output,"graphics-unlimited-vsync-off-vi.png"),1440,900);
+                Render(Path.Combine(output,"display-unlimited-fifo-vi.png"),1320,920);
                 Select("UiLanguageCombo","en");
             }
-            Get<CheckBox>("VSyncCheck").IsChecked=true;
-            Call("SaveSettings"); Call("LoadState"); Call("ApplyStateToUi");
-            Check(Tag("FpsCombo")==fps && Tag("PresentCombo")=="Fifo" && Get<CheckBox>("VSyncCheck").IsChecked==true,"FPS and enabled VSync round trip at "+fps);
         }
         Select("FpsCombo","90"); Select("PresentCombo","FifoRelaxed"); Call("SaveSettings");
         foreach(string legacy in new[]{"120","Unlimited","0","480","bad"}) {
             string saved=File.ReadAllText(Path.Combine(root,"launcher-settings.json"));
             File.WriteAllText(Path.Combine(root,"launcher-settings.json"),saved.Replace("\"Fps\": \"90\"","\"Fps\": \""+legacy+"\""));
             Call("LoadState"); Call("ApplyStateToUi");
-            Check(Tag("FpsCombo")=="60" && Get<ComboBox>("QuickFps").SelectedIndex==1,"Legacy FPS fallback "+legacy);
+            Check(Tag("FpsCombo")=="60","Legacy FPS fallback "+legacy);
             Call("SaveSettings");
             using(var migrated=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"launcher-settings.json"))))
                 Check(migrated.RootElement.GetProperty("Fps").GetString()=="60","Persist FPS migration "+legacy);
@@ -678,12 +1222,12 @@ static class Program
         File.WriteAllText(Path.Combine(root,"bbport.ini"),cameraIni.Replace("camera_fov_scale=1.25","camera_fov_scale=1.23"));
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Tag("CameraFovCombo")=="1.23","Preserve in-game intermediate FOV");
-        Check(Get<CheckBox>("RebirthCheck").IsChecked==true && Get<CheckBox>("GraphicsControlsCheck").IsChecked==true,"Enhancements reload from INI");
-        Check(Tag("GraphicsAoCombo")=="0.40" && Tag("GraphicsShadowsCombo")=="1.40" && Tag("GraphicsBloomCombo")=="0.80" && Tag("GraphicsSaturationCombo")=="1.20","Live graphics values reload");
+        Check(Get<CheckBox>("RebirthCheck").IsChecked==true,"Enhancements reload from INI");
+        Check(Tag("GraphicsAoSlider")=="0.40" && Tag("GraphicsShadowsSlider")=="1.40" && Tag("GraphicsBloomSlider")=="0.80" && Tag("GraphicsSaturationSlider")=="1.20","Live graphics values reload");
         string runtimeIni=File.ReadAllText(Path.Combine(root,"bbport.ini"));
         File.WriteAllText(Path.Combine(root,"bbport.ini"),runtimeIni.Replace("graphics_bloom=0.80","graphics_bloom=0.60").Replace("rebirth=1","rebirth=0").Replace("effect_ssao=0","effect_ssao=1"));
         Call("LoadState"); Call("ApplyStateToUi");
-        Check(Tag("GraphicsBloomCombo")=="0.60" && Get<CheckBox>("RebirthCheck").IsChecked==false && Get<CheckBox>("SsaoCheck").IsChecked==true,"Native pages remain authoritative over stale launcher JSON");
+        Check(Tag("GraphicsBloomSlider")=="0.60" && Get<CheckBox>("RebirthCheck").IsChecked==false && Get<CheckBox>("SsaoCheck").IsChecked==true,"Native pages remain authoritative over stale launcher JSON");
         Get<TextBox>("OnlineHostBox").Text="server.example";
         Get<TextBox>("OnlinePortBox").Text="31413";
         Get<TextBox>("OnlineWebApiBox").Text="http://server.example:31415";
@@ -723,7 +1267,16 @@ static class Program
         Check(!File.Exists(protectedAccount),"Unchecking remember forgets account");
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Get<PasswordBox>("OnlinePasswordBox").Password.Length==0,"Forgotten account is not restored");
-        Console.WriteLine($"PASS: {assertions} assertions; settings, navigation, all quick options, launch environment and artwork.");
+        VerifyProfiles(output,root);
+        VerifySavesAndHdr(output,root);
+        VerifyLighting(output,root);
+        VerifyOverlaySettings(output,root);
+        VerifySharpening(output,root);
+        VerifySettingsInteraction(output,root);
+        VerifyUndo(output,root);
+        VerifyMods(output,root);
+        Console.WriteLine($"PASS: {assertions} assertions; profiles, settings, navigation, input capture, launch environment and artwork.");
+        typeof(MainWindow).GetField("hasUnsavedChanges",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,false);
         window.Close(); app.Shutdown();
     }
 }
@@ -734,11 +1287,15 @@ static class Program
 '@
 $program = $program.Replace('__PUBLIC_RELEASE__', $PublicRelease.IsPresent.ToString().ToLowerInvariant())
 Set-Content -Encoding utf8 -LiteralPath (Join-Path $verificationRoot 'Program.cs') -Value $program
-$arguments = @('run','--project',(Join-Path $verificationRoot 'LauncherChecks.csproj'),'--configuration','Release')
+$arguments = @('run','--project',(Join-Path $verificationRoot 'LauncherChecks.csproj'),'--configuration','Release','--property:NuGetAudit=false','--property:RestoreIgnoreFailedSources=true')
 $arguments += "--property:TechmoPublicRelease=$($PublicRelease.IsPresent.ToString().ToLowerInvariant())"
 if ($PackageCache) { $arguments += "--property:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))" }
-if ($SdlDll) { & dotnet @arguments -- $PreviewDirectory ([IO.Path]::GetFullPath($SdlDll)) }
-else { & dotnet @arguments -- $PreviewDirectory }
+$previousVerificationSource = $env:TECHMO_VERIFY_SOURCE_ROOT
+$env:TECHMO_VERIFY_SOURCE_ROOT = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+try {
+    if ($SdlDll) { & dotnet @arguments -- $PreviewDirectory ([IO.Path]::GetFullPath($SdlDll)) }
+    else { & dotnet @arguments -- $PreviewDirectory }
+} finally { $env:TECHMO_VERIFY_SOURCE_ROOT = $previousVerificationSource }
 if ($LASTEXITCODE -ne 0) { throw 'Launcher verification failed.' }
 Write-Host "Preview images: $PreviewDirectory"
 Write-Host "Isolated test fixtures: $verificationRoot"

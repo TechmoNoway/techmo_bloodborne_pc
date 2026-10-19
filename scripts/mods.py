@@ -30,18 +30,24 @@ def child(folder, name):
     return folder / name
 
 
-def content_root(folder):
+def content_root(folder, depth=0):
     """(root, prefix): where a mod's files are and the game path they go to, or None.
 
     Accepted layouts: <mod>/dvdroot_ps4, <mod>/app0/dvdroot_ps4, <mod>/CUSA03173/dvdroot_ps4,
     one wrapper folder around any of these (an archive extracted into a folder of its name), and
     the game's folders without dvdroot_ps4 (<mod>/chr, <mod>/parts, ...)."""
     folder = Path(folder)
+    if is_link(folder):
+        raise ValueError(f'Mod links are unsupported: {folder}')
+    if depth > 16:
+        raise ValueError('Mod layout is nested too deeply')
     if not folder.is_dir():
         return None
     for wrapper in ('', 'app0', 'CUSA03173'):
         base = child(folder, wrapper) if wrapper else folder
         dvdroot = child(base, 'dvdroot_ps4')
+        if is_link(base) or is_link(dvdroot):
+            raise ValueError(f'Mod links are unsupported: {base}')
         if dvdroot.is_dir():
             return base, ''
     entries = [e for e in folder.iterdir() if not e.name.startswith('.')]
@@ -50,7 +56,7 @@ def content_root(folder):
         return folder, 'dvdroot_ps4'
     if len(folders) == 1 and not [e for e in entries if e.is_file() and
                                   e.suffix.casefold() not in ('.txt', '.md', '.jpg', '.png', '.ini')]:
-        return content_root(folders[0])
+        return content_root(folders[0], depth + 1)
     return None
 
 
@@ -59,22 +65,46 @@ def discover(root):
     root = Path(root)
     if not root.is_dir():
         return []
-    return sorted((p.name for p in root.iterdir() if p.is_dir() and content_root(p)),
-                  key=lambda name: (name.casefold(), name))
+    found = []
+    for entry in root.iterdir():
+        if not entry.is_dir() and not is_link(entry):
+            continue
+        try:
+            recognized = content_root(entry) is not None
+        except (OSError, ValueError):
+            # Keep invalid entries selectable so a disabled bad mod cannot prevent
+            # unrelated mods from loading. Active entries still fail in mod_files.
+            recognized = True
+        if recognized:
+            found.append(entry.name)
+    return sorted(found, key=lambda name: (name.casefold(), name))
+
+
+def load_config(config):
+    if not config or not Path(config).is_file():
+        return {}
+    if Path(config).stat().st_size > 1024 * 1024:
+        raise ValueError('Mod configuration is too large')
+    settings = json.loads(Path(config).read_text(encoding='utf-8-sig'))
+    if not isinstance(settings, dict):
+        raise ValueError('Mod configuration must be an object')
+    disabled_names = settings.get('disabled', [])
+    if not isinstance(disabled_names, list) or not all(isinstance(n, str) for n in disabled_names):
+        raise ValueError('Disabled mods must be a list of folder names')
+    order = settings.get('order', [])
+    if not isinstance(order, list) or not all(isinstance(n, str) for n in order):
+        raise ValueError('Mod order must be a list of folder names')
+    for key in ('legacy_enabled', 'direct_enabled'):
+        if key in settings and not isinstance(settings[key], bool):
+            raise ValueError(f'{key} must be a boolean')
+    return settings
 
 
 def selected(root, config):
     available = discover(root)
-    if not config or not Path(config).is_file():
-        return available
-    settings = json.loads(Path(config).read_text())
-    disabled_names = settings.get('disabled', [])
-    if not isinstance(disabled_names, list) or not all(isinstance(n, str) for n in disabled_names):
-        raise ValueError('Disabled mods must be a list of folder names')
-    disabled = set(disabled_names)
+    settings = load_config(config)
+    disabled = set(settings.get('disabled', []))
     order = settings.get('order', [])
-    if not isinstance(order, list) or not all(isinstance(n, str) for n in order):
-        raise ValueError('Mod order must be a list of folder names')
     # New folders are enabled automatically and appended in alphabetical order.
     return list(dict.fromkeys(n for n in [*order, *available]
                              if n in available and n not in disabled))
@@ -90,8 +120,8 @@ def mod_files(folder):
     for directory, folders, files in os.walk(root, followlinks=False):
         directory = Path(directory)
         for name in [*folders, *files]:
-            if (directory / name).is_symlink():
-                raise ValueError(f'Mod symlinks are unsupported: {directory / name}')
+            if is_link(directory / name):
+                raise ValueError(f'Mod links are unsupported: {directory / name}')
         for name in sorted(files):
             source = directory / name
             relative = Path(prefix) / source.relative_to(root) if prefix else source.relative_to(root)
@@ -108,6 +138,57 @@ def mod_files(folder):
 
 def is_link(path):
     return path.is_symlink() or (WINDOWS and path.is_junction())
+
+
+def inspect_mods(game, root):
+    """Read-only catalog for the launcher, using the runtime's layout and file rules."""
+    root = Path(root)
+    if is_link(root):
+        raise ValueError(f'Mod links are unsupported: {root}')
+    rows = []
+    total_files = 0
+
+    def inspect(folder, kind, name=None):
+        nonlocal total_files
+        row = dict(name=name or folder.name, path=str(folder.resolve()), kind=kind,
+                   files=[], error='', detail='')
+        try:
+            if not content_root(folder):
+                row['error'] = 'layout'
+            else:
+                files = []
+                for relative, _ in mod_files(folder):
+                    total_files += 1
+                    if total_files > 200_000:
+                        raise ValueError('Mod catalog exceeds 200000 files')
+                    files.append(relative.as_posix())
+                row['files'] = files
+                if not files:
+                    row['error'] = 'empty'
+        except (OSError, ValueError) as error:
+            row.update(error='invalid', detail=str(error))
+        rows.append(row)
+
+    legacy = Path(str(Path(game).resolve()) + '-mods')
+    if legacy.exists():
+        inspect(legacy, 'legacy')
+    direct = child(root, 'dvdroot_ps4').is_dir()
+    if direct:
+        inspect(root, 'direct', 'mods/dvdroot_ps4')
+    elif root.is_dir():
+        entries = sorted(root.iterdir(), key=lambda entry: (entry.name.casefold(), entry.name))
+        if len(entries) > 10_000:
+            raise ValueError('Mod catalog exceeds 10000 entries')
+        for entry in entries:
+            if entry.name.startswith('.') and not entry.is_dir():
+                continue
+            if entry.is_dir() or is_link(entry):
+                inspect(entry, 'named')
+            elif entry.suffix.casefold() in ('.zip', '.rar', '.7z', '.dll', '.exe', '.pkg', '.xml'):
+                rows.append(dict(name=entry.name, path=str(entry.resolve()), kind='unsupported',
+                                 files=[], error='archive' if entry.suffix.casefold() in ('.zip', '.rar', '.7z')
+                                 else 'type', detail=''))
+    return dict(mods=rows, direct=direct)
 
 
 def link(path, target):
@@ -218,20 +299,30 @@ def build_overlay(game, out, mods):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game', type=Path)
-    parser.add_argument('--out', required=True, type=Path)
+    parser.add_argument('--out', type=Path)
     parser.add_argument('--mods-dir', required=True, type=Path)
     parser.add_argument('--config', type=Path)
     parser.add_argument('--enabled', choices=('0', '1'), default='1')
+    parser.add_argument('--inspect', action='store_true', help='print a read-only JSON catalog')
     args = parser.parse_args()
+    if args.inspect:
+        print(json.dumps(inspect_mods(args.game, args.mods_dir)))
+        return
+    if args.out is None:
+        parser.error('--out is required when loading mods')
     layers = []
     if args.enabled == '1':
+        if is_link(args.mods_dir):
+            raise ValueError(f'Mod links are unsupported: {args.mods_dir}')
+        settings = load_config(args.config)
         # shadPS4's loose overlay convention, beside the original game.
         legacy = Path(str(args.game.resolve()) + '-mods')
-        if legacy.is_dir():
+        if legacy.is_dir() and settings.get('legacy_enabled', True):
             layers.append((legacy.name, legacy))
         # A directly selected loose overlay is also accepted.
         if child(args.mods_dir, 'dvdroot_ps4').is_dir():
-            layers.append((args.mods_dir.name, args.mods_dir))
+            if settings.get('direct_enabled', True):
+                layers.append((args.mods_dir.name, args.mods_dir))
         else:
             for name in selected(args.mods_dir, args.config):
                 layers.append((name, args.mods_dir / name))

@@ -272,6 +272,7 @@ Runtime::TransferMark::~TransferMark() {
 
 void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
                           std::span<const vk::BufferImageCopy> upload_copies) {
+    BbStats::Timer timing{BbStats::t_image_upload};
     SetBackingSamples(dst, dst->info.num_samples, false);
     scheduler.EndRendering();
     const TransferMark mark{*this, "image upload", *dst};
@@ -784,10 +785,13 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
                                bool check_read_access) {
+    if (size == 0) return false;
+    const bool guest = handle->mem_type == VideoCore::MemoryType::Sparse;
+    const u64 base = guest ? handle->cpu_addr : 0;
     const AddressRange range = {
-        .resource = reinterpret_cast<u64>(handle),
-        .range_start = offset,
-        .range_end = offset + size - 1,
+        .resource = guest ? 1 : reinterpret_cast<u64>(handle),
+        .range_start = base + offset,
+        .range_end = base + offset + size - 1,
     };
     bool has_access = barrier_tracker.FindRange(range, Access::Write);
     if (check_read_access && !has_access) {
@@ -798,14 +802,21 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 
 
 void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
                            vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access) {
+    if (size == 0) return;
+    // Sparse windows alias the same guest memory. Track hazards by guest VA,
+    // not by VkBuffer identity, so a write through one orders a read via another.
+    // Address 1 cannot be a live host object and is reserved for this resource domain.
+    const bool guest=handle->mem_type==VideoCore::MemoryType::Sparse;
+    const u64 base=guest ? handle->cpu_addr : 0;
     AddressRange range = {
-        .resource = reinterpret_cast<u64>(handle),
-        .range_start = offset,
-        .range_end = offset + size - 1,
+        .resource = guest ? 1 : reinterpret_cast<u64>(handle),
+        .range_start = base + offset,
+        .range_end = base + offset + size - 1,
     };
 
     constexpr static vk::AccessFlags2 READ_MASK =
-        vk::AccessFlagBits2::eIndexRead | vk::AccessFlagBits2::eVertexAttributeRead |
+        vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eIndexRead |
+        vk::AccessFlagBits2::eVertexAttributeRead |
         vk::AccessFlagBits2::eUniformRead | vk::AccessFlagBits2::eShaderRead |
         vk::AccessFlagBits2::eColorAttachmentRead |
         vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eTransferRead |

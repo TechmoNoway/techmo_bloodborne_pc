@@ -11,6 +11,48 @@
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL tiled overlay line %d: %s\\n",__LINE__,#x); std::_Exit(1); } } while (false)
 #include <cstring>
 #include <vector>
+#include "bbport_toggles.h"
+
+static void ScratchReuse(Vulkan::Instance& instance,Vulkan::Scheduler& scheduler,
+                         Vulkan::Runtime& runtime,VideoCore::TileManager& tiles,
+                         Common::SlotVector<VideoCore::ImageView>& views) {
+    using namespace VideoCore;
+    std::vector<std::unique_ptr<Image>> images;
+    std::vector<std::unique_ptr<Buffer>> sources;
+    const auto before=BbStats::detile_scratch_reuses.load();
+    for(u32 pass=0;pass<16;++pass) {
+        const u32 width=128u<<std::min(pass,2u);
+        ImageInfo info{};info.type=AmdGpu::ImageType::Color2D;info.pixel_format=vk::Format::eR8G8B8A8Unorm;
+        info.size={width,width,1};info.pitch=width;info.num_bits=32;info.resources={1,1};
+        info.props.is_tiled=1;info.tile_mode=AmdGpu::TileMode::Thin1DThin;
+        info.array_mode=AmdGpu::ArrayMode::Array1DTiledThin1;info.UpdateSize();
+        auto& input=sources.emplace_back(std::make_unique<Buffer>(instance,0,info.guest_size,MemoryType::HostUncached));
+        const u32 color=0xff000000u+pass*0x010d17u;
+        for(u64 i=0;i<info.guest_size;i+=4) std::memcpy(input->mapped_data.data()+i,&color,4);
+        input->Flush(0,info.guest_size);
+        auto& image=images.emplace_back(std::make_unique<Image>(instance,runtime,views,info));
+        const auto [linear,offset]=tiles.DetileImage(input.get(),0,info);
+        const vk::BufferImageCopy copy{.bufferOffset=offset,.bufferRowLength=width,.bufferImageHeight=width,
+            .imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},.imageExtent={width,width,1}};
+        runtime.UploadImage(image.get(),linear,std::span{&copy,1});
+        // No finish here: all sixteen reads must survive scratch overwrite/growth.
+    }
+    for(u32 pass=0;pass<images.size();++pass) {
+        const auto& info=images[pass]->info;
+        Buffer output(instance,0,info.guest_size,MemoryType::HostCached);
+        const vk::BufferImageCopy copy{.bufferRowLength=info.pitch,.bufferImageHeight=info.size.height,
+            .imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},.imageExtent={info.size.width,info.size.height,1}};
+        runtime.DownloadImage(images[pass].get(),&output,std::span{&copy,1});
+        scheduler.Finish();output.Invalidate(0,info.guest_size);
+        for(u64 i=0;i<info.guest_size;i+=4) {
+            u32 actual;std::memcpy(&actual,output.mapped_data.data()+i,4);
+            CHECK(actual==0xff000000u+pass*0x010d17u);
+        }
+    }
+    const bool reuse=!(std::getenv("BB_DETILE_SCRATCH_REUSE") && std::getenv("BB_DETILE_SCRATCH_REUSE")[0]=='0');
+    CHECK(BbStats::detile_scratch_reuses.load()-before==(reuse?13u:0u));
+    std::puts("PASS: sixteen queued detile uploads keep distinct pixels across scratch reuse/growth and deferred retirement");
+}
 
 int main() {
     using namespace VideoCore;
@@ -20,6 +62,7 @@ int main() {
     StreamBuffer uniforms(instance, scheduler, MemoryType::HostUncached, 1024*1024);
     TileManager tiles(instance, scheduler, runtime, uniforms);
     Common::SlotVector<ImageView> views;
+    ScratchReuse(instance,scheduler,runtime,tiles,views);
     struct Format { vk::Format format; u32 bits; };
     const Format formats[]={{vk::Format::eR8Unorm,8}, {vk::Format::eR16Uint,16},
         {vk::Format::eR8G8B8A8Unorm,32}, {vk::Format::eR16G16B16A16Sfloat,64},

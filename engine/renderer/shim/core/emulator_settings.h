@@ -74,7 +74,14 @@ public:
     bool IsDirectMemoryAccessEnabled() { static const auto value = Flag("BB_DIRECT_MEMORY_ACCESS", false); return value; }
     bool IsDumpShaders() { static const auto value = Flag("BB_DUMP_SHADERS", false); return value; }
     bool IsFsrEnabled() { static const auto value = Flag("BB_FSR1", false); return value; }
-    bool IsHdrAllowed() { static const auto value = Flag("BB_HDR", false); return value; }
+    bool IsSdrHdrOutputEnabled() {
+        static const bool value = [] { const char* v = std::getenv("BB_HDR_OUTPUT"); return v && std::string(v) == "sdr"; }();
+        return value;
+    }
+    bool IsHdrAllowed() { static const auto value = Flag("BB_HDR", false) || IsSdrHdrOutputEnabled(); return value; }
+    float GetHdrReferenceWhite() { static const auto value = float(std::clamp(Number("BB_HDR_WHITE", 203), 80l, 400l)); return value; }
+    float GetHdrPeak() { static const auto value = float(std::clamp(Number("BB_HDR_PEAK", 1000), 400l, 2000l)); return value; }
+    float GetHdrExpansion() { static const auto value = Flag("BB_HDR_EXPAND", false) ? 1.0f : 0.0f; return value; }
     bool IsNullGPU() { static const auto value = Flag("BB_NULL_GPU", false); return value; }
     bool IsPatchShaders() { return false; }
     bool IsPipelineCacheArchived() { return false; }

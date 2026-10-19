@@ -153,6 +153,10 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
+    pp_settings.hdr_white = EmulatorSettings.GetHdrReferenceWhite();
+    pp_settings.hdr_peak = EmulatorSettings.GetHdrPeak();
+    pp_settings.hdr_expand = EmulatorSettings.GetHdrExpansion();
+    SetHDR(false);
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
 }
@@ -430,7 +434,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         }
         const vk::ImageView input = fsr_pass.Render(cmdbuf, image_view, image_size,
                                                     {frame->width, frame->height}, fsr,
-                                                    frame->is_hdr);
+                                                    pp.hdr != 0);
         if (fsr_crumb) {
             Breadcrumbs::Mark(cmdbuf, stream, fsr_crumb, true);
             Breadcrumbs::Mark(cmdbuf, stream, pp_crumb, false);

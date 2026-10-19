@@ -70,6 +70,8 @@ venv/
 /bbport.ini
 /launcher-settings.json
 /mods.json
+/mods.json.bak
+/mods.json.*.tmp
 /patches.json
 /Bloodborne.cmd
 /fsr4_shaders/

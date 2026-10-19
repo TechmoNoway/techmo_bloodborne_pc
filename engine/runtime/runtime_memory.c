@@ -35,8 +35,9 @@ static uint64_t pool_size_bytes(void) {
 #define POOL_SIZE pool_size_bytes()
 #define FLEXIBLE_SIZE (UINT64_C(448) * 1024 * 1024)
 #define PAGE UINT64_C(16384)
-#define USER_MIN UINT64_C(0x1000000000)
-#define USER_MAX UINT64_C(0xfc00000000)
+#include "../address_space.h"
+#define USER_MIN BB_USER_ADDRESS_MIN
+#define USER_MAX BB_USER_ADDRESS_LIMIT
 #define LIMIT 4096
 #define INVALID ((int32_t)UINT32_C(0x80020016))
 #define NO_MEMORY ((int32_t)UINT32_C(0x8002000c))
@@ -139,7 +140,7 @@ static int host_prot(int prot) {
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 #ifdef _WIN32
 /* Host-owned guest-visible memory (image, stacks) starts at LOW_MIN; see runtime_low_map. */
-#define LOW_MIN UINT64_C(0x0800000000)
+#define LOW_MIN BB_HOST_LOW_LIMIT
 static int space(void) { return win_mem_space(LOW_MIN,USER_MAX); }
 #endif
 static int pool(void) {

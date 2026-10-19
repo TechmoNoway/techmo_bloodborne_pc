@@ -16,9 +16,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 9u; // bbport: UndefU64 and empty EXEC scope fixes
-static constexpr u32 MotionShaderBinaryVersion = 10u; // same fixes; runtime address descriptor
-static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
+static constexpr u32 ShaderBinaryVersion = 13u; // bbport: guest early depth and indirect ID semantics
+static constexpr u32 MotionShaderBinaryVersion = 14u; // same fixes; runtime address descriptor
+static constexpr u32 ShaderMetaVersion = 8u; // new fragment/vertex specialization flags
 static constexpr u32 PipelineKeyVersion = 6u; // pointer-free pipeline state + generated fragment
 } // namespace Serialization
 
@@ -500,6 +500,7 @@ void PipelineCache::WarmUp() {
 }
 
 void PipelineCache::Sync() {
+    for (const auto& [_, pipeline] : graphics_pipelines) if (pipeline) pipeline->CompleteNative();
     if (precompiler) {
         precompiler->Stop();
         std::printf("Pipeline preparation: %zu queued, %llu adopted, %.2f ms foreground waits, %zu retained\n",

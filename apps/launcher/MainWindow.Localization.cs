@@ -14,6 +14,6 @@ public partial class MainWindow
         Localization.Current.SetLanguage(state.UiLanguage);
         RefreshBindings();
         RefreshStatusCore(detectGpu: false);
-        L10n.SetText(FooterMessage, "Unsaved changes");
+        MarkSettingsChanged();
     }
 }
