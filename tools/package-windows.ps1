@@ -7,6 +7,7 @@ foreach ($required in @('builds/launcher/Techmo.Launcher.exe', 'out/bb-probe.exe
     if (!(Test-Path -LiteralPath (Join-Path $root $required))) { throw "Build missing: $required" }
 }
 $packageRoot = Join-Path $root ('builds/_internal/package-' + [Guid]::NewGuid().ToString('N'))
+try {
 $stage = Join-Path $packageRoot 'Techmo-experiment-v2'
 foreach ($directory in @('builds', 'out', 'tools/python')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage $directory) | Out-Null
@@ -29,8 +30,18 @@ foreach ($name in @('gpu-cache.id', 'gpu-cache.legacy.id')) {
 }
 Copy-Item -LiteralPath (Join-Path $root 'tools/benchmark.ps1'),(Join-Path $root 'tools/benchmark.py') -Destination (Join-Path $stage 'tools')
 if (!$PythonArchive) {
-    $PythonArchive = Join-Path $packageRoot 'python-3.12.10-embed-amd64.zip'
-    Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip' -OutFile $PythonArchive
+    $pythonCache = Join-Path $root 'builds/_internal/cache/python'
+    New-Item -ItemType Directory -Force -Path $pythonCache | Out-Null
+    $PythonArchive = Join-Path $pythonCache 'python-3.12.10-embed-amd64.zip'
+    if (!(Test-Path -LiteralPath $PythonArchive)) {
+        $download = Join-Path $pythonCache ([Guid]::NewGuid().ToString('N') + '.download')
+        try {
+            Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip' -OutFile $download
+            Move-Item -LiteralPath $download -Destination $PythonArchive -Force
+        } finally {
+            if (Test-Path -LiteralPath $download) { Remove-Item -LiteralPath $download -Force }
+        }
+    }
 }
 Expand-Archive -LiteralPath $PythonArchive -DestinationPath (Join-Path $stage 'tools/python')
 $pythonPathFile = Join-Path $stage 'tools/python/python312._pth'
@@ -49,3 +60,12 @@ Compress-Archive -LiteralPath $stage -DestinationPath $zip -CompressionLevel Opt
 $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
 Write-Host "Package: $zip"
 Write-Host "SHA256: $sha"
+} finally {
+    $temporary = [IO.Path]::GetFullPath($packageRoot)
+    $expectedParent = [IO.Path]::GetFullPath((Join-Path $root 'builds/_internal'))
+    if ((Split-Path -Parent $temporary) -ne $expectedParent -or
+        (Split-Path -Leaf $temporary) -notmatch '^package-[0-9a-f]{32}$') {
+        throw 'Refusing to remove a package directory outside the staging location.'
+    }
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }
+}
