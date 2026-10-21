@@ -79,6 +79,10 @@ jobs:
             mingw-w64-clang-x86_64-glslang
             mingw-w64-clang-x86_64-ffmpeg
             mingw-w64-clang-x86_64-zlib
+            mingw-w64-clang-x86_64-protobuf
+            mingw-w64-clang-x86_64-nlohmann-json
+            mingw-w64-clang-x86_64-openssl
+            mingw-w64-clang-x86_64-miniupnpc
       - name: Build native engine
         shell: msys2 {0}
         env:
