@@ -15,11 +15,12 @@ $restoreOptions = @("-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCac
 if ($Offline) { $restoreOptions += @('-p:RestoreIgnoreFailedSources=true', '-p:NuGetAudit=false') }
 & $dotnetPath publish (Join-Path $projectRoot 'apps\launcher\Techmo.Launcher.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false @restoreOptions -o $outputPath
 if ($LASTEXITCODE -ne 0) { throw 'Techmo launcher publish failed.' }
-$retiredBackendConfig = Join-Path $outputPath 'Techmo.LanternBackend.runtimeconfig.json'
+$retiredBackendConfig = Join-Path $outputPath 'Techmo.EngineBackend.runtimeconfig.json'
 if (Test-Path -LiteralPath $retiredBackendConfig) { Remove-Item -LiteralPath $retiredBackendConfig }
 $noticePath = Join-Path $outputPath 'licenses'
 New-Item -ItemType Directory -Force -Path $noticePath | Out-Null
-Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $noticePath 'Lantern-GPL-2.0.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $noticePath 'Upstream-GPL-2.0.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\SOURCE-NOTICES.md') -Destination $noticePath
 Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\Techmo-GPL-3.0.txt') -Destination $noticePath
 Copy-Item -Path (Join-Path $projectRoot 'licenses\launcher\*') -Destination $noticePath
 $executable = Get-Item -LiteralPath (Join-Path $outputPath 'Techmo.Launcher.exe')

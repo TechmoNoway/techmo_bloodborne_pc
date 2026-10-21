@@ -1,0 +1,110 @@
+name: Build Techmo Windows
+
+on:
+  push:
+    branches: [experiment-v2]
+  pull_request:
+    branches: [experiment-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: techmo-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launcher:
+    name: Launcher and checks
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python regression checks
+        run: python -B -m unittest discover -s tests -v
+      - name: WPF integration checks
+        run: dotnet run --project tests/TechmoHosted/TechmoHosted.csproj -c Release -p:NuGetAudit=false -- "$env:GITHUB_WORKSPACE"
+      - name: Publish launcher
+        run: ./tools/build-launcher.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Techmo-launcher-win-x64
+          path: builds/launcher/
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    name: Native engine and Windows package
+    needs: launcher
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore pinned native source
+        run: ./tools/bootstrap-engine.ps1
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            git
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-vulkan-headers
+            mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-SDL3
+            mingw-w64-clang-x86_64-fmt
+            mingw-w64-clang-x86_64-boost
+            mingw-w64-clang-x86_64-robin-map
+            mingw-w64-clang-x86_64-xxhash
+            mingw-w64-clang-x86_64-zydis
+            mingw-w64-clang-x86_64-vulkan-memory-allocator
+            mingw-w64-clang-x86_64-glslang
+            mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-zlib
+      - name: Build native engine
+        shell: msys2 {0}
+        env:
+          BB_JOBS: '2'
+          BB_MARCH: x86-64-v3
+        run: bash build.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: Techmo-launcher-win-x64
+          path: builds/launcher/
+      - name: Package Windows build
+        run: ./tools/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Techmo-experiment-v2-win-x64
+          path: dist/Techmo-experiment-v2-win-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload native failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Techmo-native-build-logs
+          path: |
+            engine/native/out/*build.log
+            engine/native/out/gpu/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7

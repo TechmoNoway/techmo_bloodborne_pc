@@ -54,7 +54,7 @@ public partial class MainWindow
             ("Graphics", NavGraphics, GraphicsPage), ("Controller", NavController, ControllerPage),
             ("Mods", NavMods, ModsPage), ("Online", NavOnline, OnlinePage),
             ("Advanced", NavAdvanced, AdvancedPage), ("General", NavGeneral, GeneralPage)
-        }.Concat(lanternNavigation).ToArray();
+        }.Concat(engineNavigation).ToArray();
         if (!pages.Any(p => p.id == page)) return;
         currentHubPage = page;
         if (page == "Mods") { RefreshSaveLists(); _ = RefreshModsAsync(); }
@@ -70,7 +70,7 @@ public partial class MainWindow
             }
         }
         UpdateBreadcrumb();
-        if (lanternPages.TryGetValue(page, out var nativePage)) nativePage.OnShown();
+        if (enginePages.TryGetValue(page, out var nativePage)) nativePage.OnShown();
     }
 
     void UpdateBreadcrumb() => PageBreadcrumb.Text = Localization.Current[currentHubPage switch
@@ -135,7 +135,7 @@ public partial class MainWindow
         string output = ComboText(ResolutionCombo, "1920x1080");
         if (output == "auto")
         {
-            var size = Techmo.Lantern.Core.Choices.OutputSize(output);
+            var size = Techmo.Engine.Core.Choices.OutputSize(output);
             output = $"{size.W}x{size.H}";
         }
         string[] dimensions = output.Split('x');

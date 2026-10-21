@@ -34,4 +34,4 @@ if ($LASTEXITCODE) {
 Copy-Item -LiteralPath (Join-Path $root 'engine\win_compat.h') -Destination (Join-Path $native 'gpu\win_compat.h')
 git -C $native submodule update --init --recursive
 if ($LASTEXITCODE) { throw 'Pinned native submodules could not be restored.' }
-Write-Host "Engine ready: Lantern $($lock.upstream_version), base $head"
+Write-Host "Techmo engine ready: pinned engine $($lock.upstream_version), base $head"

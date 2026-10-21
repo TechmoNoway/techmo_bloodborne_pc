@@ -2,7 +2,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using N = Techmo.Lantern.Core;
+using N = Techmo.Engine.Core;
 
 namespace BloodborneLauncher;
 
@@ -38,7 +38,7 @@ public partial class MainWindow
             SetComboContent(ResolutionCombo, ini.Get("output_res"));
             SetComboTag(FpsCombo, recommendation.Settings.Str("fps_mode"));
             N.Workspace.Current.Ini.Set("object_motion", ini.Get("object_motion"));
-            var motion = lanternOptionSources["GraphicsPage"].HostedRows.Single(row => row.Title == "Object motion vectors");
+            var motion = engineOptionSources["GraphicsPage"].HostedRows.Single(row => row.Title == "Object motion vectors");
             ((Wpf.Ui.Controls.ToggleSwitch)motion.Editor!).IsChecked = ini.Flag("object_motion");
         }
         finally { syncing = false; }
@@ -49,7 +49,7 @@ public partial class MainWindow
 
     void RecommendGraphics_Click(object sender, RoutedEventArgs e)
     {
-        if (!lanternOptionsReady) return;
+        if (!engineOptionsReady) return;
         var recommendation = CreateGraphicsRecommendation(N.Hardware.Detect());
         if (BuildGraphicsRecommendationDialog(recommendation).ShowDialog() == true)
             StageGraphicsRecommendation(recommendation);

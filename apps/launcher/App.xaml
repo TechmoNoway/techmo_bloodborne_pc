@@ -4,8 +4,8 @@
             <ResourceDictionary.MergedDictionaries>
                 <ui:ThemesDictionary Theme="Dark" />
                 <ui:ControlsDictionary />
-                <ResourceDictionary Source="/Techmo.LanternBackend;component/Themes/Charcoal.xaml" />
-                <ResourceDictionary Source="/Techmo.LanternBackend;component/Themes/Styles.xaml" />
+                <ResourceDictionary Source="/Techmo.EngineBackend;component/Themes/Charcoal.xaml" />
+                <ResourceDictionary Source="/Techmo.EngineBackend;component/Themes/Styles.xaml" />
                 <ResourceDictionary Source="Themes/LauncherTheme.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>

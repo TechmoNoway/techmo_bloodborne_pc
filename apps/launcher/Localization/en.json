@@ -423,7 +423,7 @@
   "Saves.Backup_folder": "Open backups",
   "Saves.Safety": "Close the game before backup or restore. Restoring replaces only the selected title and user, including its metadata. Techmo creates a safety backup first. Import accepts Techmo backup ZIP files.",
   "Hdr.Enable": "HDR output (experimental)",
-  "Hdr.Description": "Uses Lantern native scene HDR by default. Enable highlight expansion to derive HDR from the final SDR image instead. Verify brightness on your display.",
+  "Hdr.Description": "Uses native scene HDR by default. Enable highlight expansion to derive HDR from the final SDR image instead. Verify brightness on your display.",
   "Hdr.White": "Reference white / UI brightness",
   "Hdr.Expand": "Expand SDR highlights (experimental)",
   "Hdr.Peak": "Highlight target (match your display)",

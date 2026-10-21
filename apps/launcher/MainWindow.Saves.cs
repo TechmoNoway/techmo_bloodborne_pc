@@ -14,7 +14,7 @@ public partial class MainWindow
 
     void InitializeSaves()
     {
-        string user = LanternSavesDirectory;
+        string user = EngineSavesDirectory;
         saveDataStore = new(Path.GetFullPath(user, root), IsSaveDataInUse);
         SaveRootText.Text = saveDataStore.SaveRoot;
         RefreshSaveLists();

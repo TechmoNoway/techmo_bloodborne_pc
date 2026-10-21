@@ -14,7 +14,10 @@ try {
         return
     }
     $projectRoot = Split-Path -Parent $PSScriptRoot
-    $python = Join-Path $projectRoot 'builds\_internal\toolchain\clang64\bin\python.exe'
+    $python = Join-Path $projectRoot 'tools\python\python.exe'
+    if (!(Test-Path -LiteralPath $python)) {
+        $python = Join-Path $projectRoot 'builds\_internal\toolchain\clang64\bin\python.exe'
+    }
     if (!(Test-Path -LiteralPath $python)) {
         $python = Join-Path $projectRoot '..\techmo_launcher\builds\_internal\toolchain\clang64\bin\python.exe'
     }

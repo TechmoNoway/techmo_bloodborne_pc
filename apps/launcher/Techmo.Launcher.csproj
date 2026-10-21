@@ -23,7 +23,7 @@
     <EmbeddedResource Include="Localization/*.json" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../lantern-backend/Techmo.Launcher.csproj" />
+    <ProjectReference Include="../engine-backend/Techmo.Launcher.csproj" />
     <PackageReference Include="WPF-UI" Version="4.3.0" />
   </ItemGroup>
 </Project>

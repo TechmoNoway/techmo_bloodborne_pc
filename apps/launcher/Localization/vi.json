@@ -423,7 +423,7 @@
   "Saves.Backup_folder": "Mở thư mục sao lưu",
   "Saves.Safety": "Đóng game trước khi sao lưu hoặc khôi phục. Khôi phục chỉ thay bộ save của mã game và người dùng đã chọn, gồm cả metadata. Techmo tạo bản dự phòng trước khi thay. Chỉ nhập file ZIP sao lưu do Techmo tạo.",
   "Hdr.Enable": "Xuất HDR (thử nghiệm)",
-  "Hdr.Description": "Mặc định dùng HDR từ dữ liệu cảnh của Lantern. Bật mở rộng vùng sáng để tạo HDR từ ảnh SDR cuối thay cho đường native. Kiểm tra độ sáng trên màn hình của bạn.",
+  "Hdr.Description": "Mặc định dùng HDR từ dữ liệu cảnh. Bật mở rộng vùng sáng để tạo HDR từ ảnh SDR cuối thay cho đường native. Kiểm tra độ sáng trên màn hình của bạn.",
   "Hdr.White": "Độ sáng trắng tham chiếu / giao diện",
   "Hdr.Expand": "Mở rộng vùng sáng SDR (thử nghiệm)",
   "Hdr.Peak": "Mức sáng vùng sáng (chọn theo màn hình)",

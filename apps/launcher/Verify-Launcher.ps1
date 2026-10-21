@@ -415,12 +415,12 @@ static class Program
         ClickNav("Display");
         Check(Get<CheckBox>("HdrOutputCheck").IsChecked==false && !Get<ComboBox>("HdrWhiteCombo").IsEnabled,"HDR defaults to Off with calibration disabled");
         Get<CheckBox>("HdrOutputCheck").IsChecked=true;
-        Check(Get<ComboBox>("HdrWhiteCombo").IsEnabled && Get<ComboBox>("HdrPeakCombo").IsEnabled,"Lantern HDR enables paper white and peak calibration");
+        Check(Get<ComboBox>("HdrWhiteCombo").IsEnabled && Get<ComboBox>("HdrPeakCombo").IsEnabled,"Engine HDR enables paper white and peak calibration");
         Get<CheckBox>("HdrExpandCheck").IsChecked=true;Select("HdrWhiteCombo","250");Select("HdrPeakCombo","800");Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
         Check(Get<ComboBox>("HdrPeakCombo").IsEnabled && Tag("HdrWhiteCombo")=="250" && Tag("HdrPeakCombo")=="800","HDR controls survive save/reload");
         var psi=new System.Diagnostics.ProcessStartInfo();psi.Environment["BB_HDR"]="1";psi.Environment["BB_HDR_OUTPUT"]="inherited";
         Call("ConfigureHdrLaunch",psi);
-        Check(psi.Environment["BB_HDR_PAPER_WHITE"]=="250" && psi.Environment["BB_HDR_PEAK"]=="800" && psi.Environment["BB_HDR_MODE"]=="expand" && psi.Environment["BB_HDR"]=="1" && !psi.Environment.ContainsKey("BB_HDR_OUTPUT"),"HDR launch uses Lantern conversion settings and removes retired keys");
+        Check(psi.Environment["BB_HDR_PAPER_WHITE"]=="250" && psi.Environment["BB_HDR_PEAK"]=="800" && psi.Environment["BB_HDR_MODE"]=="expand" && psi.Environment["BB_HDR"]=="1" && !psi.Environment.ContainsKey("BB_HDR_OUTPUT"),"HDR launch uses Engine conversion settings and removes retired keys");
         Get<ScrollViewer>("DisplayPage").ScrollToBottom();Pump();Render(Path.Combine(output,"control-hub-hdr-en.png"));
         Select("UiLanguageCombo","vi");Render(Path.Combine(output,"control-hub-hdr-vi.png"));Select("UiLanguageCombo","en");
         Get<CheckBox>("HdrOutputCheck").IsChecked=false;Call("SaveSettings");Call("ConfigureHdrLaunch",psi);

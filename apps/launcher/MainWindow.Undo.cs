@@ -50,7 +50,7 @@ public partial class MainWindow
             // Profile rename/delete operations are immediate and are not undone here.
             activeProfile = profileLibrary.Profiles.FirstOrDefault(profile => profile.Id == saved.ProfileId) ?? activeProfile;
             ApplyStateToUi();
-            ReloadLanternOptions();
+            ReloadEngineOptions();
             syncing = true;
             OnlinePasswordBox.Password = new NetworkCredential("", saved.Password).Password;
             OnlineTokenBox.Password = new NetworkCredential("", saved.Token).Password;

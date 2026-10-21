@@ -8,8 +8,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using BloodborneLauncher;
-using N = Techmo.Lantern.Core;
-using V = Techmo.Lantern.Views;
+using N = Techmo.Engine.Core;
+using V = Techmo.Engine.Views;
 
 static class Program
 {
@@ -25,6 +25,12 @@ static class Program
     static int checks;
     static void Check(bool ok, string message) { if (!ok) throw new Exception(message); checks++; }
     static void Pump() => window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+    static string SourceHash(string path)
+    {
+        var utf8 = System.Text.Encoding.UTF8;
+        var bytes = utf8.GetBytes(utf8.GetString(File.ReadAllBytes(path)).Replace("\r\n", "\n"));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+    }
     static IEnumerable<T> Visuals<T>(DependencyObject root) where T : DependencyObject
     {
         if (root is T match) yield return match;
@@ -54,8 +60,8 @@ static class Program
         Check(Get<Image>("HeroImage").Source is BitmapSource, "Techmo hero artwork is present");
         Check(Get<DataGrid>("KeyBindingsGrid").Items.Count == 29, "Techmo keeps all 29 action bindings");
         Check(Get<Button>("KeyboardTab") != null && Get<Button>("UndoSettingsButton") != null, "Techmo tabs and Apply/Undo stay present");
-        Check(Field<bool>("lanternOptionsReady"), "Additional native engine options initialized");
-        var pages = Field<Dictionary<string, V.LauncherPage>>("lanternOptionSources");
+        Check(Field<bool>("engineOptionsReady"), "Additional native engine options initialized");
+        var pages = Field<Dictionary<string, V.LauncherPage>>("engineOptionSources");
         Check(pages.Count >= 9, "Native option catalogs remain available through the Techmo presentation");
         void Shot(string page)
         {
@@ -65,7 +71,7 @@ static class Program
             using var stream = File.Create(Path.Combine(output, page + ".png")); encoder.Save(stream);
         }
         foreach (var page in new[] { "Home", "Display", "Graphics", "Controller", "General", "Online", "Trophies", "Engine" }) Shot(page);
-        foreach (var entry in Field<List<(string id, Button button, FrameworkElement view)>>("lanternNavigation"))
+        foreach (var entry in Field<List<(string id, Button button, FrameworkElement view)>>("engineNavigation"))
         {
             entry.button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump(); window.UpdateLayout();
             var scroll = (ScrollViewer)entry.view;
@@ -112,7 +118,7 @@ static class Program
         Call("LoadState"); Call("ApplyStateToUi");
         transform = Get<DataGrid>("KeyBindingsGrid").Items.Cast<MainWindow.KeyBindingRow>().Single(row => row.Key == "transform");
         Check(transform.Binding == "C, Left Shift + Mouse2", "Reload restores Techmo's mouse numbering without changing the chord");
-        var launch = new ProcessStartInfo(); Call("ConfigureLanternLaunch", launch);
+        var launch = new ProcessStartInfo(); Call("ConfigureEngineLaunch", launch);
         Check(launch.Environment["BB_USER_DIR"]?.StartsWith(fixture) == true, "Launch saves remain isolated");
         Check(launch.Environment["TECHMO_USE_SELECTED_USER"] == "1", "Selected save/profile folder reaches the session wrapper");
         var fps = Get<ComboBox>("FpsCombo");
@@ -134,7 +140,7 @@ static class Program
         }
         string Selected(string name) { var item = (ComboBoxItem)Get<ComboBox>(name).SelectedItem; return (item.Tag ?? item.Content).ToString()!; }
         Select("UpscalerCombo", "fsr4"); Select("PresetCombo", "4"); Select("FpsCombo", "30"); Select("ResolutionCombo", "3840x2160");
-        var motion = (Wpf.Ui.Controls.ToggleSwitch)Field<Dictionary<string, V.LauncherPage>>("lanternOptionSources")["GraphicsPage"]
+        var motion = (Wpf.Ui.Controls.ToggleSwitch)Field<Dictionary<string, V.LauncherPage>>("engineOptionSources")["GraphicsPage"]
             .HostedRows.Single(row => row.Title == "Object motion vectors").Editor!;
         motion.IsChecked = true;
         Check((bool)Call("SaveSettings")!, "Recommendation fixture baseline saved");
@@ -210,11 +216,12 @@ static class Program
         Check(Get<Button>("RecommendGraphicsButton").Content.ToString() == "Đề xuất…", "Recommendation card follows Techmo's Vietnamese language setting");
         BloodborneLauncher.Localization.Current.SetLanguage("en");
         Shot("Graphics");
-        File.WriteAllText(Path.Combine(output, "options.json"), JsonSerializer.Serialize(Field<List<object>>("lanternInventory"), new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(Path.Combine(output, "options.json"), JsonSerializer.Serialize(Field<List<object>>("engineInventory"), new JsonSerializerOptions { WriteIndented = true }));
         // Preserve the exact Techmo input/capture implementation, not the upstream binding editor.
-        foreach (var file in new[] { "MainWindow.Input.cs", "MainWindow.InputCapture.cs", "InputKeyNames.cs" })
-            Check(File.ReadAllBytes(Path.Combine(source, "apps", "launcher", file)).SequenceEqual(
-                File.ReadAllBytes(Path.Combine(source, "builds", "_internal", "ui-before-lantern-parity", file))), "Techmo input source preserved: " + file);
+        var inputHashes = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(Path.Combine(source, "tests", "fixtures", "techmo-input-sha256.json")))!;
+        foreach (var (file, expectedHash) in inputHashes)
+            Check(SourceHash(Path.Combine(source, "apps", "launcher", file))
+                .Equals(expectedHash, StringComparison.OrdinalIgnoreCase), "Techmo input source preserved: " + file);
         typeof(MainWindow).GetField("hasUnsavedChanges", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
         window.Close(); app.Shutdown();
         Console.WriteLine($"PASS: {checks} checks; Techmo shell, input, native options, recommendations, Apply/Undo, launch environment and page previews.");

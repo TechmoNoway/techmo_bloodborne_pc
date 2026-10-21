@@ -113,7 +113,7 @@ public partial class MainWindow : Window
         InitializeSaves();
         InitializeMods();
         InitializeUndo();
-        InitializeLanternOptions();
+        InitializeEngineOptions();
     }
 
     static string FindProjectRoot()
@@ -223,7 +223,7 @@ public partial class MainWindow : Window
             {
                 string value = line[(equals + 1)..].Trim();
                 return key.StartsWith("bind.", StringComparison.Ordinal) && File.Exists(Path.Combine(root, "engine.lock.json"))
-                    ? SwapLanternMouseTokens(value) : value;
+                    ? SwapEngineMouseTokens(value) : value;
             }
         }
         return null;
@@ -348,7 +348,7 @@ public partial class MainWindow : Window
         CollectUi();
         if (!profilesUnavailable && activeProfile is not null) ValidateProfile(CaptureProfile(activeProfile.Name, activeProfile.Id));
         ValidateModSettings();
-        SaveLanternOptions();
+        SaveEngineOptions();
         Directory.CreateDirectory(Path.Combine(root, "out"));
         AtomicSettingsFile.Write(statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
         if (!string.IsNullOrWhiteSpace(state.GamePath))
@@ -392,10 +392,10 @@ public partial class MainWindow : Window
         };
         SaveInputSettings(ini);
         RewriteIni(Path.Combine(root, "bbport.ini"), ini);
-        if (!lanternOptionsReady) SaveOnlineSettings();
+        if (!engineOptionsReady) SaveOnlineSettings();
         SaveActiveProfile();
         SaveModSettings();
-        SyncLanternSettings();
+        SyncEngineSettings();
         RememberAppliedSettings();
         hasUnsavedChanges = false;
         UpdateSaveState();
@@ -417,7 +417,7 @@ public partial class MainWindow : Window
     {
         if (File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "engine.lock.json")))
             values = values.ToDictionary(pair => pair.Key, pair => pair.Key.StartsWith("bind.", StringComparison.Ordinal)
-                ? SwapLanternMouseTokens(pair.Value) : pair.Value);
+                ? SwapEngineMouseTokens(pair.Value) : pair.Value);
         var lines = File.Exists(path) ? File.ReadAllLines(path).ToList() : new List<string>();
         var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < lines.Count; ++i)
@@ -577,7 +577,7 @@ public partial class MainWindow : Window
             return;
         }
         if (!SaveSettings()) return;
-        if (!lanternOptionsReady && !ValidateOnlineForLaunch()) return;
+        if (!engineOptionsReady && !ValidateOnlineForLaunch()) return;
         if (!File.Exists(Path.Combine(state.GamePath, "eboot.bin")))
         {
             MessageBox.Show(L10n.Text("Select a valid Bloodborne folder first."), "Techmo Bloodborne", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -634,8 +634,8 @@ public partial class MainWindow : Window
             else psi.Environment.Remove("BB_GPU_PROFILE");
             if (state.DeveloperMode && state.AudioStats) psi.Environment["BB_AUDIO_STATS"] = "1";
             if (state.DeveloperMode && state.FsrProfile) psi.Environment["BB_FSR4_PROFILE"] = "1";
-            if (!lanternOptionsReady) ConfigureOnlineLaunch(psi);
-            ConfigureLanternLaunch(psi);
+            if (!engineOptionsReady) ConfigureOnlineLaunch(psi);
+            ConfigureEngineLaunch(psi);
             var gameProcess = new Process
             {
                 StartInfo = psi,

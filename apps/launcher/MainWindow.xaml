@@ -1087,7 +1087,7 @@
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock x:Name="FooterMessage" Text="{local:Loc Key=Hub.Up_to_date}" FontSize="12" Foreground="{DynamicResource MutedBrush}" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" />
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                            <TextBlock Text="experiment-v2 · Lantern 0.9.34 · Windows x64" FontSize="11" Foreground="{DynamicResource DimBrush}" />
+                            <TextBlock Text="experiment-v2 · Engine 0.9.34 · Windows x64" FontSize="11" Foreground="{DynamicResource DimBrush}" />
                             <TextBlock x:Name="FooterGpu" Foreground="{DynamicResource DimBrush}" FontSize="11" MaxWidth="340" TextTrimming="CharacterEllipsis" />
                             <TextBlock x:Name="FooterFps" Foreground="{DynamicResource DimBrush}" FontSize="11" />
                         </StackPanel>

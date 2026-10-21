@@ -79,7 +79,7 @@ def main():
                 copied.add(name.lower())
                 queued.append(target)
     source_digest = hashlib.sha256()
-    for folder in ('apps/launcher', 'apps/lantern-backend', 'tools', 'scripts'):
+    for folder in ('apps/launcher', 'apps/engine-backend', 'tools', 'scripts'):
         for path in sorted((ROOT / folder).rglob('*')):
             if not path.is_file() or any(part in ('__pycache__', 'build', 'bin', 'obj') for part in path.parts):
                 continue

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Techmo.EngineBackend</AssemblyName>
+    <RootNamespace>Techmo.Engine</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.9.34</Version>
+    <Product>Techmo Bloodborne experiment-v2</Product>
+    <InformationalVersion>0.9.34+techmo.experiment-v2</InformationalVersion>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="App.xaml.cs" />
+    <Page Remove="App.xaml" />
+    <!-- The source fingerprint the builder writes beside the exe; shared so both agree on it. -->
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="app.ico" />
+    <EmbeddedResource Include="Localization\zh-CN.json" LogicalName="Techmo.Engine.Localization.zh-CN.json" />
+    <Resource Include="lantern-beta.ico" />
+    <Resource Include="lantern-stable.ico" />
+    <Resource Include="lantern-j3loo.ico" />
+    <Resource Include="Assets\backdrop.jpg" />
+    <Resource Include="Assets\hunter-background.png" />
+    <Resource Include="Assets\discord-logo.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>
