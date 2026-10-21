@@ -513,5 +513,7 @@
   "Hub.Undone": "Unapplied changes undone",
   "Overlay.Cpu": "Show CPU usage (%)",
   "Overlay.Gpu": "Show GPU usage (%)",
+  "Overlay.Vram": "Show VRAM (used / total GiB)",
+  "Overlay.VramDescription": "Game process local GPU memory / physical dedicated VRAM on the card rendering the game. Shared system RAM is excluded.",
   "Overlay.Description": "Choose which stats appear together in the corner. CPU shows overall system load; GPU shows usage of the card running the game. Samples update about twice per second. N/A means the counter is unavailable."
 }

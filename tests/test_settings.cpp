@@ -33,12 +33,14 @@ int main() {
 
     BbSettings::Load();
     auto& s = BbSettings::Get();
-    assert(!s.show_cpu && !s.show_gpu);
-    s.show_cpu=true;s.show_gpu=true;
+    assert(!s.show_cpu && !s.show_gpu && !s.show_vram);
+    s.show_cpu=true;s.show_gpu=true;s.show_vram=true;
     BbSettings::Save();
-    s.show_cpu=false;s.show_gpu=false;
+    s.show_cpu=false;s.show_gpu=false;s.show_vram=false;
     BbSettings::Load();
-    assert(s.show_cpu && s.show_gpu && !s.show_fps);
+    assert(s.show_cpu && s.show_gpu && s.show_vram && !s.show_fps);
+    s.show_vram=false;BbSettings::Save();s.show_vram=true;BbSettings::Load();
+    assert(!s.show_vram && s.show_cpu && s.show_gpu);
     s.show_cpu=false;BbSettings::Save();s.show_cpu=true;BbSettings::Load();
     assert(!s.show_cpu && s.show_gpu);
     assert(s.upscaler == BbSettings::UpscalerFsr3 && !s.show_fps && s.menu_x < 0.0f);
