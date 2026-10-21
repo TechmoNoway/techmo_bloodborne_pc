@@ -13,10 +13,12 @@
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
 
-int main() {
+int main(int argc, char** argv) {
     using namespace VideoCore;
     Vulkan::Instance instance{-1, false};
-    Vulkan::Scheduler scheduler{instance, false};
+    const bool threaded = argc == 2 && !std::strcmp(argv[1], "--threaded");
+    Vulkan::Scheduler scheduler{instance, threaded};
+    assert(!threaded || scheduler.IsRecordingDeferred());
     Vulkan::Runtime runtime{instance, scheduler};
     Common::SlotVector<ImageView> views;
     Common::SlotVector<Image> images;
@@ -69,5 +71,6 @@ int main() {
         }
         std::printf("PASS: GPU image -> VRAM +%u -> GPU image, frame color %08x\n", Offset, rgba);
     }
-    puts("PASS: image/buffer command order, repeated submissions and untouched buffer guards");
+    std::printf("PASS: image/buffer command order, repeated submissions and untouched buffer guards (%s)\n",
+                threaded ? "threaded recording" : "direct recording");
 }

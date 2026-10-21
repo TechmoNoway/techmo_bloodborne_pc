@@ -12,6 +12,7 @@
 
 #include "common/serdes.h"
 #include "common/assert.h"
+#include "shader_recompiler/constant_buffer.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_discard_frag.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -20,6 +21,7 @@
 #include "video_core/renderer_vulkan/vk_object_motion.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/pipeline_replay_metrics.h"
 
 namespace Vulkan {
 
@@ -44,6 +46,14 @@ GraphicsPipeline::GraphicsPipeline(
     bool speculative, NativeSchedule schedule)
     : Pipeline{instance, scheduler, desc_heap, profile, pipeline_cache}, key{key_},
       fetch_shader{std::move(fetch_shader_)} {
+    ReplayMetrics::Scope state_timing{ReplayMetrics::Phase::PipelineState};
+    for (u32 stage = 0; stage < u32(Shader::SwStage::Compute); ++stage) {
+        if (infos[stage] && (stage >= modules.size() || !modules[stage])) {
+            throw std::invalid_argument{fmt::format(
+                "graphics pipeline {:#x}: missing shader module for stage {}",
+                std::hash<GraphicsPipelineKey>{}(key_), stage)};
+        }
+    }
     using Clock = std::chrono::steady_clock;
     const auto frontend_begin = Clock::now();
     const vk::Device device = instance.GetDevice();
@@ -51,6 +61,7 @@ GraphicsPipeline::GraphicsPipeline(
     // Keep them owned on error paths as well as successful speculative builds.
     boost::container::static_vector<vk::UniqueShaderModule, 3> generated_modules;
     const auto compile_generated = [&](std::span<const u32> code) {
+        ReplayMetrics::Scope module_timing{ReplayMetrics::Phase::ShaderModule};
         auto [result, module] = device.createShaderModuleUnique({
             .codeSize = code.size_bytes(), .pCode = code.data()});
         if (speculative && result != vk::Result::eSuccess)
@@ -72,6 +83,7 @@ GraphicsPipeline::GraphicsPipeline(
 
     std::array<vk::DescriptorSetLayout, 2> set_layouts{*desc_layout, {}};
     if (key.motion_vectors) {
+        ReplayMetrics::Scope descriptor_timing{ReplayMetrics::Phase::DescriptorLayout};
         motion_address_layout = ObjectMotion::CreateAddressLayout(device);
         set_layouts[Shader::MotionVectors::DescriptorSet] = *motion_address_layout;
     }
@@ -81,7 +93,10 @@ GraphicsPipeline::GraphicsPipeline(
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &push_constants,
     };
-    auto [layout_result, layout] = instance.GetDevice().createPipelineLayoutUnique(layout_info);
+    auto [layout_result, layout] = [&] {
+        ReplayMetrics::Scope timing{ReplayMetrics::Phase::PipelineLayout};
+        return instance.GetDevice().createPipelineLayoutUnique(layout_info);
+    }();
     if (speculative && layout_result != vk::Result::eSuccess) {
         throw std::runtime_error{"background graphics layout: " + vk::to_string(layout_result)};
     }
@@ -527,7 +542,10 @@ GraphicsPipeline::GraphicsPipeline(
         ASSERT(!owned->data.multisampling.pNext && !owned->data.multisampling.pSampleMask);
         const auto snapshot_end = Clock::now();
         pending_native = schedule([device, pipeline_cache, owned, debug_str] {
-            auto [result, pipe] = device.createGraphicsPipelineUnique(pipeline_cache, owned->info);
+            auto [result, pipe] = [&] {
+                ReplayMetrics::Scope timing{ReplayMetrics::Phase::NativePipeline};
+                return device.createGraphicsPipelineUnique(pipeline_cache, owned->info);
+            }();
             if (result != vk::Result::eSuccess)
                 throw std::runtime_error{"first-use graphics pipeline: " + vk::to_string(result)};
             SetObjectName(device, *pipe, "Graphics Pipeline {}", debug_str);
@@ -545,8 +563,10 @@ GraphicsPipeline::GraphicsPipeline(
                         ms(snapshot_end - state_end), ms(enqueue_end - snapshot_end));
         return;
     }
-    auto [pipeline_result, pipe] =
-        device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+    auto [pipeline_result, pipe] = [&] {
+        ReplayMetrics::Scope timing{ReplayMetrics::Phase::NativePipeline};
+        return device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+    }();
     if ((preloading || speculative) && pipeline_result != vk::Result::eSuccess) {
         // bbport: a pipeline from the cache the driver rejects is a damaged cache entry: the
         // cache is rebuilt (PipelineCache::WarmUp) instead of stopping the game at every start.
@@ -633,7 +653,8 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading, bool speculative) {
                            : buffer.GetSharp(*stage); // See for the comment in compute PL creation
             bindings.push_back({
                 .binding = binding++,
-                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                .descriptorType = buffer.buffer_type == Shader::BufferType::Flatbuf && Shader::UniformConstants(profile, *stage)
+                    ? vk::DescriptorType::eUniformBuffer : vk::DescriptorType::eStorageBuffer,
                 .descriptorCount = 1,
                 .stageFlags = stage_bit,
             });
@@ -667,8 +688,10 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading, bool speculative) {
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),
     };
-    auto [layout_result, layout] =
-        instance.GetDevice().createDescriptorSetLayoutUnique(desc_layout_ci);
+    auto [layout_result, layout] = [&] {
+        ReplayMetrics::Scope timing{ReplayMetrics::Phase::DescriptorLayout};
+        return instance.GetDevice().createDescriptorSetLayoutUnique(desc_layout_ci);
+    }();
     if (speculative && layout_result != vk::Result::eSuccess) {
         throw std::runtime_error{"background descriptor layout: " + vk::to_string(layout_result)};
     }

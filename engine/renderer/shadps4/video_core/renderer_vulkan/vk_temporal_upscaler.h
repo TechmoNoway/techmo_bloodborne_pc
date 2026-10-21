@@ -257,6 +257,7 @@ private:
     std::unique_ptr<Fsr4Upscaler> fsr4;
     std::unique_ptr<DlssUpscaler> dlss; ///< NVIDIA devices only; records the FSR 4 frame
     bool fsr4_failed = false;
+    bool fsr4_building = false;
     VideoCore::UniqueImage motion_image;
     VideoCore::UniqueImage output_image;
     vk::UniqueImageView motion_view;

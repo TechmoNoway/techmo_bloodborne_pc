@@ -222,10 +222,8 @@ Id EmitContext::GetBufferSize(const u32 sharp_idx) {
     ASSERT(srt_flatbuf.buffer_type == BufferType::Flatbuf);
     const auto [id, pointer_type] = srt_flatbuf.Alias(PointerType::U32);
 
-    const auto rsrc1{
-        OpLoad(U32[1], OpAccessChain(pointer_type, id, u32_zero_value, ConstU32(sharp_idx + 1)))};
-    const auto rsrc2{
-        OpLoad(U32[1], OpAccessChain(pointer_type, id, u32_zero_value, ConstU32(sharp_idx + 2)))};
+    const auto rsrc1 = EmitFlatbufferLoad(ConstU32(sharp_idx + 1));
+    const auto rsrc2 = EmitFlatbufferLoad(ConstU32(sharp_idx + 2));
 
     const auto stride{OpBitFieldUExtract(U32[1], rsrc1, ConstU32(16u), ConstU32(14u))};
     const auto num_records{rsrc2};
@@ -826,6 +824,24 @@ void EmitContext::DefinePushDataBlock() {
 
 EmitContext::BufferSpv EmitContext::DefineBuffer(bool is_written, bool is_coherent, u32 elem_shift,
                                                  BufferType buffer_type, Id data_type) {
+    if (buffer_type == BufferType::Flatbuf && UniformConstants(profile, info)) {
+        ASSERT(elem_shift == 2 && data_type.value == U32[1].value);
+        const auto array = TypeArray(U32[4], ConstU32((info.srt_info.flattened_bufsize_dw + 3) / 4));
+        const auto block = TypeStruct(array);
+        if (std::ranges::find(buf_type_ids, array.value, &Id::value) == buf_type_ids.end()) {
+            Decorate(array, spv::Decoration::ArrayStride, 16U);
+            Decorate(block, spv::Decoration::Block);
+            MemberDecorate(block, 0, spv::Decoration::Offset, 0U);
+            buf_type_ids.push_back(array);
+        }
+        const auto storage = spv::StorageClass::Uniform;
+        const auto id = AddGlobalVariable(TypePointer(storage, block), storage);
+        Decorate(id, spv::Decoration::Binding, binding.unified);
+        Decorate(id, spv::Decoration::DescriptorSet, 0U);
+        Name(id, "uniform_srt_constants");
+        interfaces.push_back(id);
+        return {id, TypePointer(storage, U32[1])};
+    }
     // Define array type.
     const Id record_array_type{TypeRuntimeArray(data_type)};
     // Define block struct type. Don't perform decorations twice on the same Id.

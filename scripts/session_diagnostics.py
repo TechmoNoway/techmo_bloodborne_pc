@@ -8,6 +8,7 @@ import platform
 import re
 import statistics
 import uuid
+from native_identity import identify_runtime
 
 SAFE_SETTINGS = {
     'output_res', 'upscaler', 'preset', 'live_resolution', 'fullscreen', 'sharpen',
@@ -26,8 +27,11 @@ SAFE_ENV = {
     'BB_ASYNC_SUBMIT', 'BB_DIRECT_SEGMENT', 'BB_FSR4_OPT',
     'BB_GC_BUDGET_MB', 'BB_GC_IDLE_SECONDS', 'BB_GC_PRESSURE_IDLE_SECONDS', 'BB_VRAM_IDLE_SECONDS',
     'BB_VMA_DEDICATED_MB', 'BB_GUEST_IN_PLACE', 'BB_GARLIC_VRAM', 'BB_GPU_DATA_CHECK',
+    'BB_IMAGE_REQUIREMENTS_CACHE',
     'BB_PIPELINE_PREP', 'BB_STAGING_REUSE_SLACK',
-    'BB_COMPUTE_PREP', 'BB_PIPELINE_RETRY', 'BB_PREP_WORKERS',
+    'BB_RANGE_BACKING_EPOCH',
+    'BB_REQUIRED_PIPELINE_PRIORITY',
+    'BB_COMPUTE_PREP', 'BB_FIRST_USE_COMPUTE', 'BB_PIPELINE_RETRY', 'BB_PREP_WORKERS',
     'BB_RED_ZONE',
     'BB_IMAGE_WRITEBACK_GC', 'BB_WRITE_TRACKING', 'BB_MEMORY_SAFE', 'BB_AUTO_DMEM', 'BB_RENDER_POOLS',
     'BB_KEEP_MIP_HASHES', 'BB_PARALLEL_IMAGE_HASH', 'BB_DETILE_SCRATCH_REUSE', 'BB_COMPUTE_SCAN', 'BB_GRAPHICS_SCAN', 'BB_GRAPHICS_SCAN_SPREAD', 'BB_FIRST_USE_PIPELINE', 'BB_PIPELINE_EARLY_FRONTEND', 'BB_REUSE_GPU_SOURCE_HASH', 'BB_IMAGE_RECYCLE_MB',
@@ -83,6 +87,7 @@ def frame_summary(path, start=0, end=None):
         'p99_frame_ms': percentile(.99), 'worst_frame_ms': max(samples),
         'frames_over_33_33_ms': sum(ms > 1000/30 for ms in samples),
         'frames_over_50_ms': sum(ms > 50 for ms in samples), 'skipped_rows': skipped,
+        'frames_over_100_ms': sum(ms > 100 for ms in samples),
     }
     for name in ('stage_a_cpu_ms', 'present_wait_ms', 'tick_wait_ms', 'compiles', 'pipeline_wait_ms'):
         values = []
@@ -95,6 +100,13 @@ def frame_summary(path, start=0, end=None):
                 pass
         if values:
             result['mean_' + name] = statistics.mean(values)
+            if name == 'pipeline_wait_ms':
+                result['pipeline_blocking'] = {
+                    'measurement': 'per-flip pipeline wait counter, including native bind waits',
+                    'samples': len(values), 'total_ms': sum(values), 'peak_ms': max(values),
+                    'frames_over_2_ms': sum(value > 2 for value in values),
+                    'note': 'Overlaps preparation and timeline evidence; do not add those totals.',
+                }
     return result
 
 
@@ -200,17 +212,20 @@ def memory_summary(path):
 def compilation_summary(path):
     """Stream bounded compile evidence; slow events do not count all compilations."""
     patterns = (
-        ('foreground', re.compile(r'Compile stall: (shader module|graphics pipeline|graphics frontend|compute pipeline) (\w+) (\d+(?:\.\d+)?) ms \(foreground\)')),
+        ('foreground', re.compile(r'Compile stall: (shader module|graphics pipeline|graphics frontend|compute pipeline|compute frontend) (\w+) (\d+(?:\.\d+)?) ms \(foreground\)')),
         ('background', re.compile(r'Pipeline prepared: (gfx|compute) (\w+) (\d+(?:\.\d+)?) ms \(background\)')),
         ('wait', re.compile(r'Pipeline preparation wait: (gfx|compute) (\w+) (\d+(?:\.\d+)?) ms')),
     )
-    counts = {'shader module': 0, 'graphics pipeline': 0, 'graphics frontend': 0, 'compute pipeline': 0}
+    counts = {'shader module': 0, 'graphics pipeline': 0, 'graphics frontend': 0, 'compute pipeline': 0, 'compute frontend': 0}
     foreground_ms = background_ms = wait_ms = 0.0
     background_events = wait_events = failures = skipped = 0
     largest = []
     timelines = []
     timeline_count = 0
+    timeline_stages = {}
     frontend_events = []
+    cache_paths = []
+    cache_path_counts = {}
     required_reasons = {stage: {reason: 0 for reason in ('cold_shader', 'new_permutation', 'not_prepared')}
                         for stage in ('graphics pipeline', 'compute pipeline')}
     result = {'available': False,
@@ -266,13 +281,38 @@ def compilation_summary(path):
                 if re.search(r'Pipeline first use: gfx (?:0x)?[0-9a-fA-F]+ native queued; wait at bind', line):
                     result['first_use_deferred'] = result.get('first_use_deferred', 0) + 1
                     result['available'] = True
+                if re.search(r'Pipeline first use: compute (?:0x)?[0-9a-fA-F]+ native queued; wait at bind', line):
+                    result['compute_first_use_deferred'] = result.get('compute_first_use_deferred', 0) + 1
+                    result['available'] = True
+                cache_path = re.search(r'Pipeline cache lookup: (gfx|compute) (0x[0-9a-fA-F]+) warmup=(not_run|disabled|unavailable|profile_missing|profile_mismatch|absent|loaded|rejected) rejection=(none|invalid_record|missing_metadata|stage_mismatch|unsupported_motion_feature|legacy_auxiliary_missing|compiler_mismatch|missing_compiler_stamp|incompatible_metadata|invalid_spirv|specialization_conflict|record_version_or_type|record_exception) shader=(cold_shader|new_permutation|known) preparation=(foreground|lookahead|required_worker|first_use_deferred)', line)
+                if cache_path:
+                    stage, key, state, rejection, shader, preparation = cache_path.groups()
+                    category = f'{stage}:{state}:{rejection}:{preparation}'
+                    cache_path_counts[category] = cache_path_counts.get(category, 0) + 1
+                    if len(cache_paths) < 64:
+                        cache_paths.append(dict(stage=stage, hash=key, warmup=state, rejection=rejection,
+                                                shader=shader, preparation=preparation, log_line=line_number))
+                    result.update(available=True, cache_paths=cache_paths, cache_path_counts=cache_path_counts)
                 seed = re.search(r'Pipeline native cache: (\d+) compatible seed bytes', line)
                 saved = re.search(r'Pipeline native cache: saved (\d+) payload bytes', line)
                 if seed: result['native_cache_seed_bytes'] = int(seed[1])
                 if saved: result['native_cache_saved_bytes'] = int(saved[1])
                 warm = re.search(r'Pipeline warmup: (\d+) loaded, (\d+) rejected, (\d+) records', line)
                 if warm: result['warmup'] = dict(loaded=int(warm[1]), rejected=int(warm[2]), records=int(warm[3]))
-                timeline = re.search(r'Pipeline timeline: (gfx_frontend|gfx_bind|gfx|compute) (0x[0-9a-fA-F]+) origin=(required|lookahead) queued=([\d.]+) start=([\d.]+) need=([\d.]+) queue_ms=([\d.]+) compile_ms=([\d.]+) lead_ms=(-?[\d.]+) remaining_ms=([\d.]+)', line)
+                rejection = re.search(r'Pipeline warmup rejected: (compiler_mismatch|missing_compiler_stamp|missing_metadata|incompatible_metadata|invalid_spirv|stage_mismatch|unsupported_motion_feature|legacy_auxiliary_missing|specialization_conflict|record_version_or_type|record_exception|invalid_record) (\d+)', line)
+                if rejection:
+                    result.setdefault('startup_rejection_counts', {})[rejection[1]] = int(rejection[2])
+                    result['available'] = True
+                repair = re.search(r'Shader repair scan: (\d+) candidates, (\d+) previous failures unchanged', line)
+                if repair:
+                    result['shader_repair_scan'] = dict(candidates=int(repair[1]), suppressed_unchanged=int(repair[2]))
+                    result['available'] = True
+                rebuild = re.search(r'Shader rebuild summary: (\d+) rebuilt, (\d+) current, (\d+) skipped, (?:(\d+) uncaptured, )?(\d+(?:\.\d+)?) ms', line)
+                if rebuild and math.isfinite(float(rebuild[5])):
+                    result['shader_rebuild'] = dict(rebuilt=int(rebuild[1]), current=int(rebuild[2]),
+                        skipped=int(rebuild[3]), uncaptured=int(rebuild[4] or 0), wall_ms=float(rebuild[5]))
+                    result['available'] = True
+                timeline = re.search(r'Pipeline timeline: (gfx_frontend|gfx_bind|gfx|compute_bind|compute) (0x[0-9a-fA-F]+) origin=(required|lookahead) queued=([\d.]+) start=([\d.]+) need=([\d.]+) queue_ms=([\d.]+) compile_ms=([\d.]+) lead_ms=(-?[\d.]+) remaining_ms=([\d.]+)', line)
                 if timeline:
                     try:
                         values = list(map(float, timeline.groups()[3:]))
@@ -281,6 +321,14 @@ def compilation_summary(path):
                         timeline_count += 1
                         event = dict(zip(('queued_at_ms', 'started_at_ms', 'needed_at_ms', 'queue_ms', 'compile_ms', 'lead_ms', 'remaining_ms'), values))
                         event.update(stage=timeline[1], hash=timeline[2], origin=timeline[3], log_line=line_number)
+                        stage = timeline_stages.setdefault(timeline[1], {
+                            'events': 0, 'remaining_ms': 0.0, 'peak_remaining_ms': 0.0,
+                            'peak_compile_ms': 0.0,
+                        })
+                        stage['events'] += 1
+                        stage['remaining_ms'] += event['remaining_ms']
+                        stage['peak_remaining_ms'] = max(stage['peak_remaining_ms'], event['remaining_ms'])
+                        stage['peak_compile_ms'] = max(stage['peak_compile_ms'], event['compile_ms'])
                         capacity = re.search(r'capacity_ms=([\d.]+)', line)
                         if capacity:
                             value = float(capacity[1])
@@ -341,6 +389,7 @@ def compilation_summary(path):
                   preparation_failures=failures, skipped_events=skipped, largest_events=largest)
     result['required_miss_reasons'] = required_reasons
     result['timeline_events'] = timeline_count
+    result['timeline_stages'] = timeline_stages
     result['timeline_largest'] = timelines
     result['frontend_largest'] = frontend_events
     return result
@@ -358,7 +407,9 @@ def resource_work_summary(path):
             reader = csv.DictReader(stream)
             if not set(fields) <= set(reader.fieldnames or ()):
                 return {'available': False}
-            optional = ('image_alloc_ms', 'image_view_ms', 'image_format_ms', 'image_recycle_hits')
+            optional = ('image_alloc_ms', 'image_view_ms', 'image_format_ms', 'image_recycle_hits',
+                        'image_query_ms', 'image_vma_ms', 'image_query_hits', 'image_query_misses',
+                        'image_query_bypasses')
             for key in optional:
                 if key in (reader.fieldnames or ()):
                     fields.append(key); totals[key] = peaks[key] = 0.0
@@ -384,12 +435,28 @@ def resource_work_summary(path):
 
 def texture_activity_summary(path):
     """Bounded sampled evidence; cumulative counters for an object are not summed."""
-    objects, creates = {}, []
+    objects, creates, allocations = {}, [], []
     reuse_summary = {}
     events = 0
     try:
         with Path(path).open(encoding='utf-8', errors='replace') as stream:
             for line_number, line in enumerate(stream, 1):
+                allocation = re.search(r'Image allocation: width=(\d+) height=(\d+) depth=(\d+) format=(\d+) mips=(\d+) layers=(\d+) bytes=(\d+) dedicated=([01]) query_ms=([\d.]+) vma_ms=([\d.]+)', line)
+                if allocation:
+                    try:
+                        query, vma = map(float, allocation.groups()[-2:])
+                        if not all(math.isfinite(v) and v >= 0 for v in (query, vma)):
+                            continue
+                        event = dict(zip(('width', 'height', 'depth', 'format', 'mips', 'layers', 'size_bytes'), map(int, allocation.groups()[:7])))
+                        event.update(dedicated=bool(int(allocation[8])), query_ms=query, vma_ms=vma,
+                                     wall_ms=query + vma, log_line=line_number)
+                        cache = re.search(r'query_cache=(hit|miss|bypass|skipped)\b', line)
+                        if cache: event['query_cache'] = cache[1]
+                        allocations.append(event)
+                        allocations.sort(key=lambda e: e['wall_ms'], reverse=True)
+                        del allocations[20:]
+                    except ValueError:
+                        pass
                 match = re.search(r'Texture refresh: uid=(\d+) address=(0x[0-9a-fA-F]+) size=(\d+) count=(\d+) flags=(\d+) new_backing=([01]) source_total_mb=([\d.]+) uploaded_mb=([\d.]+) unchanged_mb=([\d.]+) outcome=(uploaded|whole_match|mips_match)', line)
                 if match:
                     uid, address, size, count, flags, backing, source, uploaded, unchanged, outcome = match.groups()
@@ -431,9 +498,9 @@ def texture_activity_summary(path):
                     del creates[20:]
     except OSError:
         pass
-    return dict(available=bool(events or creates or reuse_summary), hash_reuse=reuse_summary, sampled_refresh_events=events,
+    return dict(available=bool(events or creates or reuse_summary or allocations), hash_reuse=reuse_summary, sampled_refresh_events=events,
                 repeated_images=sorted(objects.values(), key=lambda event: event['source_total_mb'], reverse=True)[:20],
-                slow_creates=creates, note='Sampled per-object cumulative evidence. Do not sum snapshots or infer all invalidations. Dirty flags overlap; new_backing also covers layout changes.')
+                slow_creates=creates, slow_allocations=allocations, note='Sampled per-object cumulative evidence. Do not sum snapshots or infer all invalidations. Dirty flags overlap; new_backing also covers layout changes. Allocation query and VMA times are parts of image-create time, not additional costs.')
 
 
 def upload_summary(path):
@@ -475,15 +542,17 @@ def upload_summary(path):
 def classify_exit(code, phase, fault=None, log_tail=''):
     fault = fault or {}
     exception = str(fault.get('exception_code', '')).lower()
+    evidence = 'native exception record'
     if not exception:
         found = re.search(r'(?:Guest|Host) fault (0x[0-9a-fA-F]{8})', log_tail)
         exception = found.group(1).lower() if found else ''
+        evidence = 'native exception log'
     if exception:
         reasons = {'0xc0000005': 'access_violation', '0xc000001d': 'illegal_instruction',
                    '0xc00000fd': 'stack_overflow', '0xc0000094': 'divide_by_zero',
                    '0xe0424223': 'renderer_assertion'}
         return {'category': 'crash', 'reason': reasons.get(exception, 'native_exception'),
-                'exception_code': exception, 'evidence': 'native exception record'}
+                'exception_code': exception, 'evidence': evidence}
     unsigned = int(code) & 0xffffffff
     if code == 0:
         return {'category': 'normal', 'reason': 'normal_exit'}
@@ -500,7 +569,10 @@ def classify_exit(code, phase, fault=None, log_tail=''):
     if unsigned == 0xc000007b:
         return {'category': 'startup_error', 'reason': 'invalid_binary'}
     if unsigned in (0xc0000005, 0xc000001d, 0xc00000fd, 0xc0000094):
-        return classify_exit(code, phase, {'exception_code': f'0x{unsigned:08x}'})
+        result = classify_exit(code, phase, {'exception_code': f'0x{unsigned:08x}'})
+        result.update(evidence='process exit code only',
+                      note='No exception context was recorded; the fault instruction and cause are unknown.')
+        return result
     return {'category': 'abnormal_exit', 'reason': 'unknown_exit',
             'note': 'The exit code alone does not establish the root cause.'}
 
@@ -550,6 +622,13 @@ class Session:
         for key in ('changed_sites', 'conflicting_sites', 'outside_code_sites'):
             self.report['red_zone'][key] = len(protection.get(key, []))
 
+    def record_runtime(self, executable):
+        identity, manifest = identify_runtime(executable)
+        self.report['runtime_identity'] = identity
+        self.report['native_build'] = manifest
+        write_json(self.directory / 'session.json', self.report)
+        return identity
+
     def set_phase(self, phase):
         self.report['stage'] = phase
         self.snapshot()
@@ -575,11 +654,32 @@ class Session:
                            texture_activity=texture_activity_summary(self.env['BB_LOG_FILE']),
                            memory=memory_summary(self.directory / 'vram.csv'), native_fault=fault)
         self.report['minidump'] = read_json(self.directory / 'minidump.json')
+        self.report['diagnostics'] = read_json(self.directory / 'diagnostics.json')
+        if self.report['outcome']['category'] == 'crash':
+            fault_path = self.directory / 'fault.json'
+            try:
+                fault_state = 'recorded' if fault else 'empty' if fault_path.stat().st_size == 0 else 'invalid'
+            except OSError:
+                fault_state = 'missing_or_unreadable'
+            self.report['crash_evidence'] = {
+                'fault_record': fault_state,
+                'dump_present': (self.directory / 'crash.dmp').is_file(),
+                'diagnostics_available': bool(self.report['diagnostics']),
+                'note': 'An exit code alone does not identify the fault instruction or cause.',
+            }
         self.report['artifacts'] = [path.name for path in self.directory.iterdir() if path.is_file() and not path.name.endswith('.tmp')]
         write_json(self.directory / 'session.json', self.report)
         outcome = self.report['outcome']
         text = [f"Techmo session: {outcome['category']} ({outcome['reason']})",
                 f"Exit: {code} / {self.report['exit_code_hex']}", f"Stage: {self.report['stage']}"]
+        identity = self.report.get('runtime_identity', {})
+        if identity:
+            text += [f"Runtime EXE SHA-256: {identity.get('sha256', 'unavailable')}; manifest: {identity.get('manifest_status', 'unavailable')}"]
+        if 'crash_evidence' in self.report:
+            evidence = self.report['crash_evidence']
+            text += [f"Crash evidence: fault={evidence['fault_record']}; dump present={evidence['dump_present']}"]
+            if not fault:
+                text += ['Fault instruction/cause unavailable; inspect diagnostics.json and minidump.json for collection failures.']
         performance = self.report['performance']
         if performance.get('available'):
             text += [f"Average: {performance['average_fps']:.2f} FPS; 1% low: {performance['one_percent_low_fps']:.2f} FPS",
@@ -587,9 +687,17 @@ class Session:
                      f"Scope: {performance['scope']}"]
         memory = self.report['memory']
         compilation = self.report['compilation']
+        blocking = performance.get('pipeline_blocking')
+        if blocking:
+            text += [f"Pipeline blocking (frame CSV, includes native bind): {blocking['total_ms']:.2f} ms total; peak {blocking['peak_ms']:.2f} ms; {blocking['frames_over_2_ms']} frames over 2 ms"]
         if compilation.get('available'):
             text += [f"Slow foreground compile events: {sum(compilation['foreground_slow_events'].values())}; accumulated: {compilation['foreground_slow_ms']:.2f} ms",
-                     f"Logged pipeline waits: {compilation['logged_wait_events']}; accumulated: {compilation['logged_wait_ms']:.2f} ms"]
+                     f"Legacy wait log events: {compilation['logged_wait_events']}; accumulated: {compilation['logged_wait_ms']:.2f} ms (excludes native bind timelines)"]
+            native = compilation.get('timeline_stages', {}).get('gfx_bind')
+            if native:
+                text += [f"Native graphics bind timelines: {native['events']} logged; peak remaining wait {native['peak_remaining_ms']:.2f} ms; peak native compile {native['peak_compile_ms']:.2f} ms"]
+            if blocking or native:
+                text += ['Pipeline counters and timeline/preparation waits overlap; do not add them.']
             if 'preparation' in compilation:
                 prep = compilation['preparation']
                 text += [f"Prepared pipelines: {prep['adopted']} adopted / {prep['queued']} queued; total foreground waits: {prep['foreground_wait_ms']:.2f} ms"]
@@ -610,6 +718,8 @@ class Session:
         if work.get('available') and 'image_alloc_ms' in work['totals']:
             totals = work['totals']
             text += [f"Image setup CPU: allocation {totals['image_alloc_ms']:.2f} ms; views {totals.get('image_view_ms', 0):.2f} ms; format queries {totals.get('image_format_ms', 0):.2f} ms; retired-image reuses {totals.get('image_recycle_hits', 0):.0f}"]
+            if 'image_query_ms' in totals:
+                text += [f"Image allocation size queries: {totals['image_query_ms']:.2f} ms; VMA creation/allocation {totals.get('image_vma_ms', 0):.2f} ms; cache hits/misses/bypasses {totals.get('image_query_hits', 0):.0f}/{totals.get('image_query_misses', 0):.0f}/{totals.get('image_query_bypasses', 0):.0f}"]
         if uploads.get('available'):
             text += [f"Upload peaks per flip: image {uploads['peak_image_mb_per_flip']:.2f} MB; buffer {uploads['peak_buffer_mb_per_flip']:.2f} MB (separate stages)",
                      f"Large upload flips >=64 MB: {uploads['flips_with_upload_counter_at_least_64_mb']}; also >33.33 ms: {uploads['large_upload_flips_over_33_33_ms']}"]

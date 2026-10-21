@@ -10,6 +10,7 @@ cxxflags=(-std=c++23 -DFMT_HEADER_ONLY -DNDEBUG -DNOMINMAX -DWIN32_LEAN_AND_MEAN
 out/low-alloc-test.exe
 "$CC" "${cflags[@]}" tests/test_memory_probe.c engine/runtime/win32_memory.c -o out/memory-probe-test.exe
 out/memory-probe-test.exe
+python -m unittest discover -s tests -p 'test_memory_lease_native.py'
 "$CC" "${cflags[@]}" -ffunction-sections -fdata-sections tests/test_audio_allocations.c out/libatrac9.a -Wl,--gc-sections -o out/audio-allocations-test.exe
 out/audio-allocations-test.exe
 "$CC" "${cflags[@]}" -ffunction-sections -fdata-sections tests/test_save_allocations.c engine/runtime/win32_compat.c -Wl,--gc-sections -lws2_32 -o out/save-allocations-test.exe
@@ -20,6 +21,6 @@ out/save-allocations-test.exe "$save_fixture"
 "$CC" "${cflags[@]}" -c engine/runtime/win32_diagnostics.c -o out/diagnostics-test.o
 "$CC" "${cflags[@]}" tests/test_win32_diagnostics.c out/diagnostics-test.o -o out/diagnostics-test.exe
 "$CXX" "${cxxflags[@]}" tests/test_renderer_assert.cpp tests/test_log_sink.cpp engine/renderer/shim/common/assert.cpp out/diagnostics-test.o -lwinpthread -o out/renderer-assert-test.exe
-"$CXX" "${cxxflags[@]}" tests/test_user_data.cpp tests/test_log_sink.cpp engine/renderer/shim/common/assert.cpp -lwinpthread -o out/user-data-test.exe
+"$CXX" "${cxxflags[@]}" tests/test_user_data.cpp tests/test_log_sink.cpp engine/renderer/shim/common/assert.cpp engine/renderer/shadps4/shader_recompiler/compile_memory.cpp -lwinpthread -o out/user-data-test.exe
 out/user-data-test.exe
 python -m unittest discover -s tests -p 'test_native_crash_reporter.py'

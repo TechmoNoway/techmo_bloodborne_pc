@@ -19,6 +19,8 @@ enum class BlobType : u32 {
     ShaderBinary,
     PipelineKey,
     ShaderProfile,
+    ShaderInputs,
+    ShaderCompiler,
 };
 
 class DataBase {
@@ -28,11 +30,15 @@ public:
     }
 
     void Open();
+    // Offline diagnostics: no worker, writes, migration or cache invalidation.
+    void OpenReadOnly(const std::filesystem::path& directory);
     void Close();
     [[nodiscard]] bool IsOpened() const {
         return opened;
     }
+    [[nodiscard]] bool IsReadOnly() const { return read_only_directory; }
     void FinishPreload();
+    const std::filesystem::path& Path() const { return cache_path; }
     /// bbport: removes every cached blob (an incompatible cache is rebuilt, not ignored).
     void Clear();
 
@@ -49,6 +55,7 @@ private:
     std::jthread io_worker{};
     std::filesystem::path cache_path{};
     std::atomic<bool> opened{};
+    bool read_only_directory{};
 };
 
 } // namespace Storage

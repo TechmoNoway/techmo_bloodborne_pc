@@ -43,13 +43,15 @@ struct UniqueImage {
     explicit UniqueImage() = default;
     explicit UniqueImage(vk::Device device, VmaAllocator allocator)
         : device{device}, allocator{allocator} {}
+    explicit UniqueImage(const Vulkan::Instance& instance);
     ~UniqueImage();
 
     UniqueImage(const UniqueImage&) = delete;
     UniqueImage& operator=(const UniqueImage&) = delete;
 
     UniqueImage(UniqueImage&& other)
-        : device{other.device}, allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
+        : device{other.device}, instance{std::exchange(other.instance, nullptr)},
+          allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
           allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
           image{std::exchange(other.image, VK_NULL_HANDLE)}, image_ci{std::move(other.image_ci)},
           size_bytes{std::exchange(other.size_bytes, 0)} {}
@@ -57,6 +59,7 @@ struct UniqueImage {
         if (this == &other) return *this;
         Destroy();
         device = other.device;
+        instance = std::exchange(other.instance, nullptr);
         image = std::exchange(other.image, VK_NULL_HANDLE);
         allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
         allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
@@ -79,6 +82,7 @@ struct UniqueImage {
 
 public:
     vk::Device device{};
+    const Vulkan::Instance* instance{}; // Optional device-owned size cache; same lifetime as device.
     VmaAllocator allocator{};
     VmaAllocation allocation{};
     vk::Image image{};

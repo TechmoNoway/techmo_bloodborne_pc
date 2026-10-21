@@ -359,6 +359,9 @@ static void DeduplicateSccs(std::vector<PhiScc>& sccs) {
             group.queued = true;
         }
     }
+    // Structural hashes contain block addresses. Keep optimization order independent
+    // of allocator/ASLR-dependent bucket order: SCC indices follow program traversal.
+    std::ranges::sort(worklist, {}, [](const SccGroup* group) { return group->sccs.front(); });
 
     while (!worklist.empty()) {
         auto* group = worklist.back();

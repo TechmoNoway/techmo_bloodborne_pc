@@ -29,12 +29,14 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/index_buffer_range.h"
+#include "video_core/renderer_vulkan/prepared_vertex_inputs.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
+#include "shader_recompiler/constant_buffer.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_hle.h"
@@ -835,6 +837,7 @@ bool Rasterizer::PendingWriteOverlaps(VAddr address, u64 size) {
 
 void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                            boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out) {
+    const bool uniform_constants = Shader::UniformConstants(pipeline_cache.GetProfile(), stage);
     const PreparedStage* prepared_stage = nullptr;
     if (prepared && !BbToggle::Disabled(BbToggle::PreparedResources)) {
         for (u32 i = 0; i < prepared->num_stages; ++i) {
@@ -848,8 +851,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     }
     const u64 alignment = std::max<u64>(instance.StorageMinAlignment(),
                                         instance.UniformMinAlignment());
-    const auto copy = [&](u32 index, const void* source, VAddr address, u64 size) {
-        const auto offset = constant_ring->Allocate(size, alignment);
+    const auto copy = [&](u32 index, const void* source, VAddr address, u64 size, bool uniform = false) {
+        const u64 allocated = uniform ? (size + 15) & ~u64{15} : size;
+        const auto offset = constant_ring->Allocate(allocated, alignment);
         if (!offset) {
             return false;
         }
@@ -859,8 +863,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         } else {
             memory->CopySparseMemory(address, dst, size);
         }
-        constant_ring->Flush(*offset, size);
-        out.push_back({index, static_cast<u32>(size), *offset, address});
+        if (allocated > size) std::memset(dst + size, 0, allocated - size);
+        constant_ring->Flush(*offset, allocated);
+        out.push_back({index, static_cast<u32>(allocated), *offset, address});
         return true;
     };
     // Compute stages may run as HLE copy shaders, which read their buffers on the recording
@@ -872,7 +877,8 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             if (desc.buffer_type == Shader::BufferType::Flatbuf &&
                 !stage.flattened_ud_buf.empty()) {
                 copy(index, stage.flattened_ud_buf.data(), 0,
-                     stage.flattened_ud_buf.size() * sizeof(u32));
+                     stage.flattened_ud_buf.size() * sizeof(u32),
+                     uniform_constants);
             }
             continue;
         }
@@ -1001,13 +1007,16 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             const auto& regs = liverpool->regs;
             const u32 index_size =
                 regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2 : 4;
-            const VAddr index_address =
-                regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
-            const u64 index_bytes = u64(regs.num_indices) * index_size;
-            if (BbCeStats::Enabled()) {
-                BbCeStats::Check(BbCeStats::Index, index_address, index_bytes);
+            const u32 count = indirect
+                ? VideoCore::IndirectIndexCount(regs.num_indices, regs.max_index_size)
+                : regs.num_indices;
+            const auto range = VideoCore::ResolveIndexBufferRange(
+                regs.index_base_address.Address<VAddr>(), index_offset, index_size, count,
+                [this](VAddr address, u64 bytes) { return memory->ClampRangeSize(address, bytes); });
+            if (range.size && BbCeStats::Enabled()) {
+                BbCeStats::Check(BbCeStats::Index, range.address, range.size);
             }
-            NotePendingRead(index_address, index_bytes);
+            if (range.size) NotePendingRead(range.address, range.size);
         }
     }
     size += AlignPacket(u32(vsharps.size() * sizeof(AmdGpu::Buffer)));
@@ -2305,20 +2314,25 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             ? &prepared->vertex
             : nullptr;
     if (ready) {
-        attributes.assign(ready->attributes, ready->attributes + ready->count);
-        bindings.assign(ready->bindings, ready->bindings + ready->count);
-        guest_buffers.assign(ready->buffers, ready->buffers + ready->count);
+        const bool matches = PreparedVertexMatchesPacket<AmdGpu::Buffer>(
+            std::span{ready->buffers, ready->count}, packet_vsharps);
         if (BbCeStats::Enabled() && packet_vsharps.size() == ready->count) {
             static u64 compared = 0, differed = 0;
             ++compared;
-            differed += std::memcmp(ready->buffers, packet_vsharps.data(),
-                                    ready->count * sizeof(AmdGpu::Buffer)) != 0;
+            differed += !matches;
             if ((compared & 0xFFFF) == 0) {
                 std::printf("CE stats: prepared V#s differed from the packet's in %llu of %llu "
                             "draws\n",
                             (unsigned long long)differed, (unsigned long long)compared);
             }
         }
+        // The packet owns the descriptors for this draw. Never bind an older worker snapshot.
+        if (!matches) ready = nullptr;
+    }
+    if (ready) {
+        attributes.assign(ready->attributes, ready->attributes + ready->count);
+        bindings.assign(ready->bindings, ready->bindings + ready->count);
+        guest_buffers.assign(ready->buffers, ready->buffers + ready->count);
     } else {
         pipeline->GetVertexInputs(attributes, bindings, divisors, guest_buffers,
                                   regs.vgt_instance_step_rate_0, regs.vgt_instance_step_rate_1,
@@ -2472,7 +2486,8 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset, bool is_indirect) {
     const u32 index_size = is_index16 ? sizeof(u16) : sizeof(u32);
     const auto range = VideoCore::ResolveIndexBufferRange(
         regs.index_base_address.Address<VAddr>(), index_offset, index_size,
-        is_indirect ? regs.max_index_size : regs.num_indices,
+        is_indirect ? VideoCore::IndirectIndexCount(regs.num_indices, regs.max_index_size)
+                    : regs.num_indices,
         [this](VAddr address, u64 size) { return memory->ClampRangeSize(address, size); });
     const auto [buffer, offset] = range.size
         ? buffer_cache.ObtainBuffer(range.address, range.size, false)
@@ -2700,7 +2715,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
     BB_SECTION(BindBuffers);
-    const u64 alignment = instance.StorageMinAlignment();
+    const bool uniform_constants = Shader::UniformConstants(pipeline_cache.GetProfile(), stage);
+    const u64 alignment = std::max(instance.StorageMinAlignment(), instance.UniformMinAlignment());
     for (u32 buffer_index = 0; buffer_index < stage.buffers.size(); ++buffer_index) {
         const auto& desc = stage.buffers[buffer_index];
         const vk::PipelineStageFlags2 src_stage = stage.sw_stage == Shader::SwStage::Compute
@@ -2731,9 +2747,16 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     FrameCapture::Buffer(stage.pgm_hash, binding.buffer, 0,
                                          stage.FlatUserData().data(), ubo_size);
                 }
-                const u64 offset =
-                    vk_buffer.Copy(stage.FlatUserData().data(), ubo_size, alignment);
-                buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
+                if (uniform_constants) {
+                    std::vector<u32> padded(stage.FlatUserData().begin(), stage.FlatUserData().end());
+                    padded.resize((padded.size() + 3) & ~size_t{3});
+                    const auto bytes = padded.size() * sizeof(u32);
+                    const auto offset = vk_buffer.Copy(padded.data(), bytes, alignment);
+                    buffer_infos.emplace_back(vk_buffer.Handle(), offset, bytes);
+                } else {
+                    const auto offset = vk_buffer.Copy(stage.FlatUserData().data(), ubo_size, alignment);
+                    buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
+                }
             } else if (desc.buffer_type == Shader::BufferType::ClipPlanes) {
                 // Permutations compiled without enabled planes never read the buffer, so the
                 // declared binding is satisfied with a null descriptor instead of a copy.
@@ -2830,7 +2853,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         set_write.dstBinding = binding.unified++;
         set_write.dstArrayElement = 0;
         set_write.descriptorCount = 1;
-        set_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        set_write.descriptorType = desc.buffer_type == Shader::BufferType::Flatbuf &&
+            uniform_constants
+                ? vk::DescriptorType::eUniformBuffer : vk::DescriptorType::eStorageBuffer;
         set_write.pBufferInfo = &buffer_infos.back();
         ++binding.buffer;
     }

@@ -103,7 +103,7 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e
-          ninja -C out/gpu -j2 pipeline-precompiler-test pipeline-key-test liverpool-tasks-test pipeline-precompile-gpu-test buffer-access-test shader-memory-test hdr-shader-test
+          ninja -C out/gpu -j2 pipeline-precompiler-test pipeline-key-test liverpool-tasks-test pipeline-precompile-gpu-test buffer-access-test shader-memory-test hdr-shader-test native-constants-test fsr-preparation-test
           out/gpu/pipeline-precompiler-test.exe
           out/gpu/pipeline-key-test.exe
           out/gpu/liverpool-tasks-test.exe
@@ -160,6 +160,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_upscaler_assets.py'
           python -m unittest discover -s tests -p 'test_fsr4cap_dll_info.py'
           python -m unittest discover -s tests -p 'test_session_diagnostics.py'
+          python -m unittest discover -s tests -p 'test_native_identity.py'
           python -m unittest discover -s tests -p 'test_red_zone.py'
           python -m unittest discover -s tests -p 'test_native_package.py'
 
@@ -229,12 +230,12 @@ jobs:
           mkdir -p package/out package/scripts package/patches package/mods package/launcher-assets
           cp -f launcher-publish/Techmo.Launcher.exe package/
           cp -f run.bat build.sh package/
-          cp -f out/bb-probe.exe out/bb-gpu-capabilities.exe out/bb-engine-assets.exe out/bb-crash-reporter.exe out/native-build.json package/out/
+          cp -f out/bb-probe.exe out/bb-gpu-capabilities.exe out/bb-engine-assets.exe out/bb-crash-reporter.exe out/bb-shader-lab.exe out/native-build.json package/out/
           cp -f apps/launcher/Assets/bloodborne.ico package/out/
           test ! -f out/nvngx_dlss.dll || cp -f out/nvngx_dlss.dll package/out/
           cp -rf scripts/* package/scripts/
           mkdir -p package/tools/experiments
-          cp -f tools/experiments/test-vram-writeback.cmd package/tools/experiments/
+          cp -f tools/experiments/test-vram-writeback.cmd tools/experiments/test-native-constants.cmd package/tools/experiments/
           test ! -d patches || cp -rf patches/* package/patches/
           test ! -d fsr4_shaders || cp -rf fsr4_shaders package/
           for document in LICENSE LICENSING.md NOTICE.md DEPENDENCIES.md THIRD_PARTY_NOTICES.txt; do

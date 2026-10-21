@@ -368,6 +368,11 @@ bool TemporalUpscaler::OnFrameStart() {
         if (BbSettings::IsFrameUpscaler(upscaler)) BbSettings::Get().fsr4_problem = nullptr;
     }
     if (applied_upscaler != upscaler) fsr4_failed = false; // retry after a menu change
+    if (applied_upscaler != upscaler) fsr4_building = false;
+    if (fsr4_building && !fsr4->Preparing()) {
+        fsr4_building = false;
+        changed = true;
+    }
     // Dynamic scene resolution scaling (live preset switching) works on all GPUs.
     // On GPUs without D32S8 blit support, UI depth is cleared instead of copied from scene.
     if (!scaled_session) {
@@ -2213,7 +2218,7 @@ bool TemporalUpscaler::UseFsr4() const {
     const bool supported = selected == BbSettings::UpscalerFsr411
                                ? instance.IsFsr411Supported()
                                : instance.IsFsr4Int8Supported();
-    return BbSettings::IsFsr4(selected) && supported && !fsr4_failed;
+    return BbSettings::IsFsr4(selected) && supported && !fsr4_failed && !fsr4_building;
 }
 
 bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color,
@@ -2258,7 +2263,10 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
         BbSettings::Get().fsr4_problem = kept[next].c_str();
         next = (next + 1) % kept.size();
     }
-    if (!ok && (use_dlss ? dlss->Fatal() : fsr4->Fatal())) {
+    if (!ok && !use_dlss && fsr4->Preparing()) {
+        fsr4_building = true;
+        reset = true;
+    } else if (!ok && (use_dlss ? dlss->Fatal() : fsr4->Fatal())) {
         std::printf("Upscaler: falling back to FSR 3.1\n");
         BbSettings::Get().upscaler = BbSettings::UpscalerFsr3;
         fsr4_failed = true; // EnsureResources creates the FSR 3 context next frame

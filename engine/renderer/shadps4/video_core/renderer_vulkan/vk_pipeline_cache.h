@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/pipeline_precompiler.h"
+#include "video_core/renderer_vulkan/pipeline_warmup_evidence.h"
 
 template <>
 struct std::hash<vk::ShaderModule> {
@@ -135,8 +136,10 @@ struct PrecacheProgress {
 
 class PipelineCache {
 public:
+    enum class Mode { Game, OfflineReplay };
     explicit PipelineCache(const Instance& instance, Scheduler& scheduler,
-                           AmdGpu::Liverpool* liverpool, u32 sparse_page_shift);
+                           AmdGpu::Liverpool* liverpool, u32 sparse_page_shift,
+                           Mode mode = Mode::Game);
     ~PipelineCache();
 
     void WarmUp();
@@ -192,6 +195,7 @@ public:
 
 private:
     friend struct PipelinePrecompileTest;
+    friend struct PipelineReplay;
     void StartPreparation();
     void QueuePreparedPipeline(const PipelineSelection& selection);
     void QueuePreparedCompute(const PipelineSelection& selection, ComputePipelineKey key);
@@ -217,6 +221,7 @@ private:
     struct PreparedCompute {
         std::shared_ptr<PipelineSnapshot> snapshot;
         std::unique_ptr<ComputePipeline> pipeline;
+        vk::UniquePipeline native;
         ComputePipeline::SerializationSupport serialization;
     };
     using ComputePrecompiler = PipelinePrecompiler<ComputePipelineKey, PreparedCompute>;
@@ -226,8 +231,13 @@ private:
     std::function<PreparedCompute()> MakeComputeWork(const PipelineSelection& selection,
                                                    ComputePipelineKey key);
     Pipeline::NativeSchedule FirstUseSchedule(const GraphicsPipelineKey& key);
+    Pipeline::NativeSchedule FirstUseComputeSchedule(ComputePipelineKey key);
+    void TraceCacheLookup(const char* kind, u64 hash, const char* preparation) const;
     void CreateNativeCache();
     void SaveNativeCache();
+    void RollbackWarmupModules();
+    struct WarmupModule { u64 hash; size_t permutation; vk::ShaderModule module; };
+    std::vector<WarmupModule> warmup_modules;
     // Only pipeline creation and shutdown snapshots take this lock, never cache hits.
     std::mutex native_cache_mutex;
     static std::mutex progress_mutex;
@@ -244,6 +254,9 @@ private:
     vk::ShaderModule CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                    const std::span<const u32>& code, size_t perm_idx,
                                    Shader::Backend::Bindings& binding);
+    std::pair<vk::ShaderModule, Shader::StageSpecialization> CompileAndRegister(
+        Shader::Info& info, Shader::RuntimeInfo& runtime, std::span<const u32> code,
+        size_t permutation, Shader::Backend::Bindings& binding);
     const Shader::RuntimeInfo& BuildRuntimeInfo(PipelineSelection& sel, Shader::HwStage stage,
                                                 Shader::SwStage l_stage);
 
@@ -253,6 +266,7 @@ private:
 
 private:
     const Instance& instance;
+    bool offline_replay{};
     Scheduler& scheduler;
     AmdGpu::Liverpool* liverpool;
     DescriptorHeap desc_heap;
@@ -272,6 +286,9 @@ private:
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
     bool object_motion_enabled{};
     bool early_frontend = false;
+    bool require_compiler_stamp = false;
+    PipelineWarmupEvidence warmup_evidence;
+    std::string_view last_cache_rejection = "invalid_record";
     vk::UniquePipelineCache preparation_cache;
     std::unique_ptr<Precompiler> precompiler;
     vk::UniquePipelineCache compute_preparation_cache;

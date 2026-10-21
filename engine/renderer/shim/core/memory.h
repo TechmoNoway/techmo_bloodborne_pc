@@ -5,6 +5,7 @@
 #include "common/singleton.h"
 #include "core/address_space.h"
 #include "bbport_write_epoch.h"
+#include <cstdlib>
 
 namespace Vulkan { class Rasterizer; }
 
@@ -22,6 +23,13 @@ public:
     bool TryWriteBacking(void* address, const void* data, u64 size);
     u64 MappingGeneration() const;
     u64 BackingWriteGeneration() const { return backing_writes.Snapshot(); }
+    u64 BackingWriteGeneration(VAddr address, u64 size) const {
+        static const bool ranged = [] {
+            const char* value = std::getenv("BB_RANGE_BACKING_EPOCH");
+            return !value || value[0] != '0';
+        }();
+        return ranged ? backing_writes.Snapshot(address, size) : backing_writes.Snapshot();
+    }
     void ReadBacking(VAddr address, void* data, u64 size);
     bool TryWriteBackingUnchanged(VAddr address, const void* data, u64 size, u64 generation);
     /// CPU wrote guest memory outside page tracking (e.g. decoded video frames).

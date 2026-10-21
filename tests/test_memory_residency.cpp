@@ -25,7 +25,9 @@ int main() {
         get_device_proc(static_cast<VkDevice>(instance.GetDevice()), "vkCmdPipelineBarrier2"));
     const auto clear_fn = reinterpret_cast<PFN_vkCmdClearColorImage>(
         get_device_proc(static_cast<VkDevice>(instance.GetDevice()), "vkCmdClearColorImage"));
-    assert(barrier_fn && clear_fn);
+    const auto requirements_fn = reinterpret_cast<PFN_vkGetImageMemoryRequirements>(
+        get_device_proc(static_cast<VkDevice>(instance.GetDevice()), "vkGetImageMemoryRequirements"));
+    assert(barrier_fn && clear_fn && requirements_fn);
 
     const auto baseline = BbStats::vk_image_bytes.load();
     const auto before = instance.GetDeviceMemorySnapshot();
@@ -40,9 +42,26 @@ int main() {
         .usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
     };
     u64 allocated = 0;
+    bool hit = false, cacheable = false;
+    const auto hint = instance.GetImageAllocationSize(ci, hit, cacheable);
+    const bool cache_enabled = !(std::getenv("BB_IMAGE_REQUIREMENTS_CACHE") &&
+                                std::string_view{std::getenv("BB_IMAGE_REQUIREMENTS_CACHE")} == "0");
+    assert(!hit && cacheable == cache_enabled);
+    assert(instance.GetImageAllocationSize(ci, hit, cacheable) == hint && hit == cache_enabled);
+    const auto query_hits_before = BbStats::image_query_hits.load();
+    const auto query_bypass_before = BbStats::image_query_bypasses.load();
     for (unsigned n = 0; n < 8; ++n) {
-        auto image = std::make_unique<VideoCore::UniqueImage>(instance.GetDevice(), instance.GetAllocator());
+        auto image = std::make_unique<VideoCore::UniqueImage>(instance);
         image->Create(ci);
+        VkMemoryRequirements actual{};
+        requirements_fn(static_cast<VkDevice>(instance.GetDevice()), static_cast<VkImage>(image->image), &actual);
+        assert(actual.size == hint);
+        if (n == 0) {
+            VideoCore::UniqueImage moved{std::move(*image)};
+            assert(moved.instance == &instance && image->instance == nullptr);
+            *image = std::move(moved);
+            assert(image->instance == &instance && moved.instance == nullptr);
+        }
         std::fprintf(stderr, "Memory test: recording image %u\n", n);
         allocated += image->size_bytes;
         const auto cmd = scheduler.CommandBuffer();
@@ -67,6 +86,16 @@ int main() {
                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &raw_range);
         images.push_back(std::move(image));
     }
+    if (BbStats::enabled) {
+        const auto hits = BbStats::image_query_hits.load() - query_hits_before;
+        const auto bypasses = BbStats::image_query_bypasses.load() - query_bypass_before;
+        const char* threshold = std::getenv("BB_VMA_DEDICATED_MB");
+        const bool queries_enabled = !threshold || std::strtoull(threshold, nullptr, 10) != 0;
+        assert(hits == (queries_enabled && cache_enabled ? 8u : 0u));
+        assert(bypasses == (queries_enabled && !cache_enabled ? 8u : 0u));
+        std::printf("Image query counters: hits=%llu bypasses=%llu\n",
+                    (unsigned long long)hits, (unsigned long long)bypasses);
+    }
     assert(allocated >= 8ull * 1024 * 1024 * 4);
     assert(BbStats::vk_image_bytes.load() == baseline + allocated);
     const auto live = instance.GetDeviceMemorySnapshot();
@@ -86,5 +115,5 @@ int main() {
                     (unsigned long long)before.usage, (unsigned long long)live.usage,
                     (unsigned long long)freed.usage, (unsigned long long)allocated);
     }
-    puts("PASS: production image accounting, paired memory query and GPU-deferred release");
+    puts("PASS: cached size matches actual Vulkan requirements, device cache survives image moves, image accounting and GPU-deferred release");
 }

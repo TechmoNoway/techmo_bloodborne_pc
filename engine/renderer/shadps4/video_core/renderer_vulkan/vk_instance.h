@@ -4,6 +4,7 @@
 #pragma once
 
 #include <span>
+#include <memory>
 #include <unordered_map>
 
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -19,6 +20,7 @@ struct WindowSystemInfo;
 VK_DEFINE_HANDLE(VmaAllocator)
 
 namespace Vulkan {
+class ImageAllocationSizeCache;
 
 class Instance {
 public:
@@ -66,6 +68,10 @@ public:
     VmaAllocator GetAllocator() const {
         return allocator;
     }
+
+    /// Size hint for dedicated allocations; cache lifetime is this logical device's.
+    vk::DeviceSize GetImageAllocationSize(const vk::ImageCreateInfo& ci,
+                                         bool& hit, bool& cacheable) const;
 
     /// Returns a list of the available physical devices
     std::span<const vk::PhysicalDevice> GetPhysicalDevices() const {
@@ -578,6 +584,7 @@ private:
     vk::UniqueDebugUtilsMessengerEXT debug_callback{};
     std::string vendor_name;
     VmaAllocator allocator{};
+    std::unique_ptr<ImageAllocationSizeCache> image_allocation_sizes;
     vk::Queue present_queue;
     vk::Queue graphics_queue;
     vk::Queue readback_queue;

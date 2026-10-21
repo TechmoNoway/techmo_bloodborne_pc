@@ -73,13 +73,14 @@ gpu_inputs=(out/gpu/libbbgpu.a out/gpu/bbgpu_link.txt)
 for dependency in "${gpu[@]}"; do
     [[ ! -f $dependency ]] || gpu_inputs+=("$dependency")
 done
-if [[ -f out/bb-probe.exe && -f out/bb-gpu-capabilities.exe &&
+if [[ -f out/bb-probe.exe && -f out/bb-shader-lab.exe && -f out/bb-gpu-capabilities.exe &&
       -z $(find engine/runtime engine/address_space.h engine/renderer/bbgpu.h "${gpu_inputs[@]}" out/libatrac9.a build.sh \
-               tools/gpu_capabilities.c -newer out/bb-probe.exe -print -quit) ]]; then
+               tools/gpu_capabilities.c tools/shader_lab.c -newer out/bb-probe.exe -print -quit) ]]; then
     echo "Up to date: $PWD/out/bb-probe.exe"
 else
 "$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${includes[@]}" -I. -Iengine/runtime engine/runtime/probe.c "${runtime[@]}" engine/runtime/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/bb-probe.exe
 echo "Built $PWD/out/bb-probe.exe"
+"$CC" "${cstd[@]}" -O2 -g -Wall -Wextra -Werror "${includes[@]}" -I. -Iengine/runtime tools/shader_lab.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" "${link[@]}" -o out/bb-shader-lab.exe
 # GPU and controller inventory; keep the Windows C dialect and include SDL headers.
 "$CC" "${cstd[@]}" -O2 -Wall -Wextra -Werror "${includes[@]}" tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities.exe
 fi

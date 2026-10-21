@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <algorithm>
+#include <optional>
 #include "video_core/texture_cache/memory_pressure.h"
 
 namespace VideoCore {
 struct ResidencyPolicy {
+    static std::optional<std::uint64_t> DemotionWait(std::uint64_t requested,
+        std::uint64_t last_use, std::uint64_t submitted_below) {
+        const auto wait = std::max(requested, last_use);
+        return wait < submitted_below ? std::optional{wait} : std::nullopt;
+    }
     static constexpr std::uint64_t ChunkBytes = 64ull << 20;
     static bool Fits(std::uint64_t usage, std::uint64_t growth, std::uint64_t bytes,
                      std::uint64_t pressure) {

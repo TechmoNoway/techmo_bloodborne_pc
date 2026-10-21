@@ -8,6 +8,13 @@ int main() {
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
     using VideoCore::ResolveIndexBufferRange;
+    using VideoCore::IndirectIndexCount;
+    assert(IndirectIndexCount(12, 4000) == 4000);
+    assert(IndirectIndexCount(4000, 12) == 4000);
+    assert(IndirectIndexCount(12, 0) == 12);
+    assert(IndirectIndexCount(12, 0xffffffffu) == 12);
+    assert(IndirectIndexCount(0, 4u << 20) == (4u << 20));
+    assert(IndirectIndexCount(12, (4u << 20) + 1) == 12);
     unsigned calls = 0;
     std::uint64_t seen = 0, requested = 0, mapped = 1000;
     auto clamp = [&](std::uint64_t address, std::uint64_t size) {
@@ -23,6 +30,8 @@ int main() {
     auto range = ResolveIndexBufferRange(base, 3, 2, 10, clamp);
     assert(range.address == base + 6 && range.size == 20 && requested == 20);
     mapped = 19;
+    range = ResolveIndexBufferRange(base, 0, 4, IndirectIndexCount(1, 4000), clamp);
+    assert(requested == 16000 && range.size == 16);
     assert(ResolveIndexBufferRange(base, 3, 2, 10, clamp).size == 18);
     assert(ResolveIndexBufferRange(base, 3, 4, 10, clamp).size == 16);
     mapped = 1;
@@ -35,5 +44,5 @@ int main() {
     assert(requested == 0xfffffffcu);
     range = ResolveIndexBufferRange(limit - 8, 0, 4, 0xffffffffu, clamp);
     assert(range.size == 8 && requested == 8);
-    puts("PASS: null/unmapped bases, partial mappings, 16/32-bit alignment, wide offsets and count limits");
+    puts("PASS: direct/indirect counts, garbage capacity, null/unmapped bases, alignment and wide offsets");
 }

@@ -496,7 +496,9 @@ void VideoOutDriver::Flip(const Request& req) {
                                    "free_mb,pipeline_wait_ms,hash_ms,hash_snapshot_ms,hash_mb,"
                                    "hash_reused_mb,unchanged_mip_mb,hash_parallel_jobs,detile_ms,"
                                    "upload_record_ms,host_copy_ms,detile_scratch_reuses,"
-                                   "image_alloc_ms,image_view_ms,image_format_ms,image_recycle_hits\n");
+                                   "image_alloc_ms,image_view_ms,image_format_ms,image_recycle_hits,"
+                                   "image_query_ms,image_vma_ms,image_query_hits,image_query_misses,"
+                                   "image_query_bypasses\n");
             }
             return file;
         }();
@@ -505,7 +507,7 @@ void VideoOutDriver::Flip(const Request& req) {
             static u64 log_twf, log_tick, log_present, log_compiles, log_rf, log_preupload;
             static u64 log_alloc, log_free;
             static u64 log_pipeline_wait;
-            static std::array<u64, 14> log_upload{};
+            static std::array<u64, 19> log_upload{};
             const u64 tick = BbStats::tick_wait_ns.load(), present = BbStats::present_wait_ns.load();
             const u64 compiles_now = Vulkan::g_bb_compiles.load();
             // tick_wait_ns and the compile count are reset every stats window.
@@ -541,9 +543,11 @@ void VideoOutDriver::Flip(const Request& req) {
                 BbStats::image_unchanged_bytes.load(), BbStats::image_hash_parallel_jobs.load(),
                 BbStats::t_detile.load(), BbStats::t_image_upload.load(), BbStats::t_copy.load(),
                 BbStats::detile_scratch_reuses.load(), BbStats::t_image_alloc.load(),
-                 BbStats::t_image_view.load(), BbStats::t_image_format.load(), BbStats::image_recycle_hits.load()};
+                 BbStats::t_image_view.load(), BbStats::t_image_format.load(), BbStats::image_recycle_hits.load(),
+                BbStats::t_image_query.load(), BbStats::t_image_vma.load(), BbStats::image_query_hits.load(),
+                BbStats::image_query_misses.load(), BbStats::image_query_bypasses.load()};
             for (std::size_t index = 0; index < std::size(detail); ++index) {
-                const double scale = index == 5 || index == 9 || index == 13 ? 1.0 : 1e6;
+                const double scale = index == 5 || index == 9 || index == 13 || index >= 16 ? 1.0 : 1e6;
                 std::fprintf(frame_log, ",%.3f", delta(detail[index], log_upload[index]) / scale);
             }
             std::fputc('\n', frame_log);
@@ -611,6 +615,11 @@ void VideoOutDriver::Flip(const Request& req) {
                         frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
                         frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
             VideoCore::PageManager::ReportFaultSites();
+            if (const u64 relays = BbStats::copy_fault_relays.exchange(0)) {
+                std::printf("Copy fault relay: %llu requests, %llu declined (handled on waiting caller)\n",
+                    static_cast<unsigned long long>(relays),
+                    static_cast<unsigned long long>(BbStats::copy_fault_declines.exchange(0)));
+            }
             if (const u64 notes = BbStats::cpu_write_notes.exchange(0)) {
                 std::printf("Write notices: %.0f/s, %.2f MB/s (libc copies over pages the GPU side "
                             "watches)\n",

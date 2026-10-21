@@ -6,6 +6,7 @@
 #include <vector>
 #include "bbport_toggles.h"
 #include "common/assert.h"
+#include "common/serdes.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 
@@ -53,6 +54,24 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
     if (!info.has_fetch_shader) {
         return std::nullopt;
     }
+    if (info.compile_memory && info.compile_memory->replay) {
+        if (info.compile_memory->fetch.empty()) throw std::runtime_error("shader replay needs fetch inputs");
+        auto bytes = info.compile_memory->fetch;
+        Serialization::Archive ar{std::move(bytes)};
+        FetchShaderData data;
+        if (!data.Deserialize(ar)) throw std::runtime_error("invalid fetch replay");
+        return data;
+    }
+    const auto capture = [&](const FetchShaderData& data) {
+        if (info.compile_memory) {
+            Serialization::Archive ar;
+            data.Serialize(ar);
+            auto bytes = ar.TakeOff();
+            if (!info.compile_memory->fetch.empty() && info.compile_memory->fetch != bytes)
+                info.compile_memory->valid = false;
+            info.compile_memory->fetch = std::move(bytes);
+        }
+    };
 
     const auto* code = GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
 
@@ -67,6 +86,7 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
     if (const auto it = cache.find(code);
         !BbToggle::Disabled(BbToggle::FetchShaderCache) && it != cache.end() &&
         std::memcmp(code, it->second.code.data(), it->second.code.size() * sizeof(u32)) == 0) {
+        capture(it->second.data);
         return it->second.data;
     }
 
@@ -131,6 +151,7 @@ std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info) {
         cache.clear();
     }
     cache[code] = CachedParse{std::vector<u32>(code, code_slice.position()), data};
+    capture(data);
     return data;
 }
 

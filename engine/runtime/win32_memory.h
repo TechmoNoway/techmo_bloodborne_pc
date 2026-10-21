@@ -11,6 +11,8 @@ int win_mem_space(uintptr_t start, uintptr_t end);
 int win_mem_section(uint64_t size, void **backing);
 /* Advisory allocation probe, releases both the view and section before returning. */
 int win_mem_probe_section(uint64_t size);
+/* Hold the successful preflight allocation until the launcher's stdin pipe closes. */
+int win_mem_hold_section(uint64_t size);
 /* Called for each piece of a view that had to be remapped around a removed range; it must
  * re-apply the pieces' protection (a fresh view is read/write). */
 typedef void (*WinMemRestore)(uintptr_t start, uintptr_t end);

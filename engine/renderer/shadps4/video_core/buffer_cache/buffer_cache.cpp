@@ -27,6 +27,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
+#include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/texture_cache.h"
 
@@ -1790,10 +1791,13 @@ void BufferCache::ProcessDemotions() {
     const u64 submitted_below = scheduler.CurrentTick(); // ticks under it are submitted
     std::erase_if(demotions_waiting, [&](const Demotion& request) {
         const auto [block, tick, cpu_written, idle, force] = request;
-        if (tick >= submitted_below) {
-            return false; // its uploads are still being recorded
-        }
         const VAddr address = block << block_shift;
+        // A forced chunk evacuation can outlive the draw which queued it. New draws
+        // may bind the same block meanwhile; include their latest use before reusing
+        // its VRAM slot. Work in the current command buffer must first be submitted.
+        const auto wait = ResidencyPolicy::DemotionWait(tick,
+            group_use_tick[address >> USE_GROUP_BITS], submitted_below);
+        if (!wait) return false;
         if (cpu_written) {
             dynamic_blocks.Add({block, block + 1}); // bound in place when it is next used
         }
@@ -1858,7 +1862,7 @@ void BufferCache::ProcessDemotions() {
             }
         }
         // Its uploads up to `tick` land in the VRAM copy first; the rebind waits for them.
-        bind_wait_tick = std::max(bind_wait_tick, tick);
+        bind_wait_tick = std::max(bind_wait_tick, *wait);
         // Never uploaded or protected again: writes go to the memory the GPU reads.
         memory_tracker->MarkRegionAsCpuModified(address, block_size);
         if (idle) {
@@ -2627,7 +2631,8 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
                                  copies[i].size);
     };
     if (total_size_bytes >= 2_MB && copies.size() > 1) {
-        BbCopy::ParallelFor(copies.size(), copy);
+        BbCopy::ParallelFor(copies.size(), copy,
+            memory->GetRasterizer() && memory->GetRasterizer()->IsGpuSideThread());
     } else {
         for (std::size_t i = 0; i < copies.size(); ++i) {
             copy(i);

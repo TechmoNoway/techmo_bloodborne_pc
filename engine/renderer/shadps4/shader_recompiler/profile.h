@@ -54,6 +54,7 @@ struct Profile {
     bool needs_unorm_fixup{};
     bool needs_clip_distance_emulation{};
     bool supports_shader_stencil_export{};
+    bool native_constants{}; // Opt-in host-owned constants as uniform buffers.
 
     bool operator==(const Profile&) const = default;
 };

@@ -151,6 +151,7 @@ def main():
                        '--config', os.environ.get('BB_MODS_CONFIG', data / 'mods.json'),
                        '--enabled', os.environ.get('BB_MODS_ENABLED', '1')], capture=True))
     overlay = merged if merged.resolve() != original else None
+    memory_leases = []
     try:
         for script, extra in (('prepare.py', []), ('link_libc.py', []),
                               ('content_profile.py', ['--sku', os.environ.get('BB_CONTENT_SKU', 'full')])):
@@ -217,7 +218,7 @@ def main():
         probe = ROOT / os.environ.get('BB_PROBE', out / 'bb-probe.exe')
         try:
             render,output=configure_memory(probe,os.environ,
-                os.environ.get('BB_RENDER_RES'),os.environ.get('BB_OUTPUT_RES'),live=='1')
+                os.environ.get('BB_RENDER_RES'),os.environ.get('BB_OUTPUT_RES'),live=='1',leases=memory_leases)
             if render:
                 os.environ['BB_RENDER_RES']=render
         except (OSError,ValueError) as error:
@@ -239,6 +240,16 @@ def main():
         phase('native_startup')
         if not probe.is_file():
             sys.exit(f'Native runtime not found: {probe}. Build Techmo with tools/build-native.ps1 first.')
+        if SESSION is not None:
+            identity = SESSION.record_runtime(probe)
+            print(f"Runtime identity: SHA-256={identity.get('sha256', 'unavailable')}; "
+                  f"manifest={identity.get('manifest_status', 'unavailable')}", flush=True)
+            if build_identity := identity.get('build_identity'):
+                print(f"Runtime build: app={build_identity.get('app_version', 'unknown')}; "
+                      f"source={build_identity.get('description', build_identity.get('commit', 'unknown'))}; "
+                      f"modified={build_identity.get('dirty', 'unknown')}", flush=True)
+            if identity.get('manifest_match') is False:
+                print('Runtime identity: build metadata differs from the selected EXE; version claims are unverified.', flush=True)
         command = [probe, out / 'boot-linked.bin', '--content-profile', out / 'content.bin',
                    '--patches', out / 'patches.bin', '--app0', merged,
                    '--user', os.environ.get('BB_USER_DIR', data / 'user'),
@@ -262,6 +273,8 @@ def main():
         print(f'bb-probe exited with code {status}', flush=True)
         return status
     finally:
+        for lease in memory_leases:
+            lease.close()
         if overlay:
             remove_overlay(overlay)
 

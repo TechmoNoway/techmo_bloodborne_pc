@@ -3,6 +3,7 @@
 
 #include <boost/container/small_vector.hpp>
 #include "bbport_toggles.h"
+#include "bbport_copy.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -298,6 +299,10 @@ struct PageManager::Impl {
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
+        bool handled;
+        if (BbCopy::RelayFault(context, fault_address, &GuestFaultSignalHandler, handled)) {
+            return handled;
+        }
         const auto addr = reinterpret_cast<VAddr>(fault_address);
         NoteFaultSite(context, addr);
         // bbport: the draw recording thread handles its faults inline too (vk_draw_pipe.h).

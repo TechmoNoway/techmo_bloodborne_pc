@@ -48,8 +48,25 @@ int win_mem_space(uintptr_t start, uintptr_t end) {
     return 0;
 }
 int win_mem_section(uint64_t size, void **backing) {
-    HANDLE candidate = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT,
+    HANDLE candidate = NULL;
+    const char *pid_text=getenv("BB_POOL_PID"), *handle_text=getenv("BB_POOL_HANDLE"), *size_text=getenv("BB_POOL_BYTES");
+    if (pid_text || handle_text || size_text) {
+        char *end1=NULL,*end2=NULL,*end3=NULL;
+        uint64_t pid=pid_text ? strtoull(pid_text,&end1,10) : 0;
+        uint64_t remote=handle_text ? strtoull(handle_text,&end2,10) : 0;
+        uint64_t held=size_text ? strtoull(size_text,&end3,10) : 0;
+        if (!pid || pid>UINT32_MAX || !remote || held!=size || !end1 || *end1 || !end2 || *end2 || !end3 || *end3) {
+            SetLastError(ERROR_INVALID_PARAMETER); report("invalid held memory pool",0,size); return -1;
+        }
+        HANDLE owner=OpenProcess(PROCESS_DUP_HANDLE,FALSE,(DWORD)pid);
+        if (!owner) { report("opening held memory pool owner",0,size); return -1; }
+        BOOL copied=DuplicateHandle(owner,(HANDLE)(uintptr_t)remote,GetCurrentProcess(),&candidate,0,FALSE,DUPLICATE_SAME_ACCESS);
+        DWORD error=GetLastError(); CloseHandle(owner); SetLastError(error);
+        if (!copied) { report("importing held memory pool",0,size); return -1; }
+    } else {
+        candidate = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT,
                                  (DWORD)(size >> 32), (DWORD)size, NULL);
+    }
     if (!candidate) { report("creating the memory pool section", 0, size); return -1; }
     void *view = MapViewOfFile(candidate, FILE_MAP_ALL_ACCESS, 0, 0, size);
     if (!view) {
@@ -57,6 +74,20 @@ int win_mem_section(uint64_t size, void **backing) {
         report("mapping the memory pool", 0, size); return -1;
     }
     section=candidate; *backing=view;
+    if (pid_text) fprintf(stdout,"Memory pool: adopted preflight section (%llu MiB); no second commit allocation\n",(unsigned long long)(size>>20));
+    return 0;
+}
+int win_mem_hold_section(uint64_t size) {
+    if (!size || size>UINT64_C(17408)*1024*1024) return 2;
+    HANDLE held=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_EXECUTE_READWRITE|SEC_COMMIT,
+                                  (DWORD)(size>>32),(DWORD)size,NULL);
+    if (!held) return 1;
+    void *view=MapViewOfFile(held,FILE_MAP_ALL_ACCESS,0,0,size);
+    if (!view) { CloseHandle(held); return 1; }
+    printf("BB_POOL %lu %llu %llu\n",GetCurrentProcessId(),(unsigned long long)(uintptr_t)held,(unsigned long long)size);
+    fflush(stdout);
+    while (getchar()!=EOF) {}
+    UnmapViewOfFile(view); CloseHandle(held);
     return 0;
 }
 int win_mem_probe_section(uint64_t size) {

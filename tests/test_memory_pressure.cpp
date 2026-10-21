@@ -61,6 +61,9 @@ int main() {
     }
     puts("PASS: memory pressure, shrinking budgets, recovery hysteresis and low-VRAM thresholds");
     using VideoCore::ResidencyPolicy;
+    assert(!ResidencyPolicy::DemotionWait(4, 8, 8)); // rebound in the recording submission
+    assert(ResidencyPolicy::DemotionWait(4, 8, 9) == 8); // latest reader, not the queued tick
+    assert(ResidencyPolicy::DemotionWait(8, 4, 9) == 8); // uploads must also complete
     for (auto budget : {4 * GiB, 6 * GiB, 8 * GiB}) {
         const auto pressure = MemoryPressure::Percent(budget, 85);
         assert(ResidencyPolicy::Fits(pressure - 2 * ResidencyPolicy::ChunkBytes,

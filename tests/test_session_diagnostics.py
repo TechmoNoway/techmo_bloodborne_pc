@@ -15,6 +15,27 @@ import run_windows
 
 
 class SessionDiagnosticsTests(unittest.TestCase):
+    def test_startup_repair_and_rejection_evidence_are_separate(self):
+        path = self.root / 'repair.log'
+        path.write_text('Shader repair scan: 2 candidates, 3 previous failures unchanged\n'
+            'Shader rebuild summary: 2 rebuilt, 10 current, 3 skipped, 4 uncaptured, 15.25 ms\n'
+            'Pipeline warmup rejected: compiler_mismatch 7\n'
+            'Pipeline warmup rejected: missing_compiler_stamp 9\n'
+            'Pipeline warmup rejected: arbitrary_text 123\n')
+        result = compilation_summary(path)
+        self.assertEqual(result['shader_repair_scan'], dict(candidates=2, suppressed_unchanged=3))
+        self.assertEqual(result['shader_rebuild'], dict(rebuilt=2,current=10,skipped=3,uncaptured=4,wall_ms=15.25))
+        self.assertEqual(result['startup_rejection_counts'], dict(compiler_mismatch=7,missing_compiler_stamp=9))
+        self.assertEqual(result['foreground_slow_ms'], 0)
+        self.assertEqual(result['logged_wait_ms'], 0)
+
+    def test_old_or_malformed_shader_rebuild_summary(self):
+        path = self.root / 'old-repair.log'
+        path.write_text('Shader rebuild summary: 1 rebuilt, 2 current, 3 skipped, 4.50 ms\n'
+                        'Shader rebuild summary: 9 rebuilt, 9 current, 9 skipped, .. ms\n')
+        result = compilation_summary(path)
+        self.assertEqual(result['shader_rebuild'], dict(rebuilt=1,current=2,skipped=3,uncaptured=0,wall_ms=4.5))
+
     def test_pipeline_timeline_keeps_queue_compile_and_overlap_separate(self):
         path = self.root / 'timeline.log'
         lines = ['Pipeline native cache: 123 compatible seed bytes',
@@ -80,6 +101,23 @@ class SessionDiagnosticsTests(unittest.TestCase):
         path.write_text('Compute lookahead: 1 scanner attempts, 2 known selections\n')
         self.assertNotIn('compute_lookahead',compilation_summary(path))
 
+    def test_image_query_columns_and_cache_evidence(self):
+        path = self.root / 'query.csv'
+        fields = ('hash_ms hash_snapshot_ms hash_mb hash_reused_mb unchanged_mip_mb '
+                  'hash_parallel_jobs detile_ms upload_record_ms host_copy_ms detile_scratch_reuses '
+                  'image_query_ms image_vma_ms image_query_hits image_query_misses image_query_bypasses').split()
+        path.write_text('frame_ms,' + ','.join(fields) + '\n16,' + ','.join(['2'] * len(fields)) + '\n')
+        result = resource_work_summary(path)
+        self.assertEqual(result['totals']['image_query_ms'], 2)
+        self.assertEqual(result['totals']['image_vma_ms'], 2)
+        self.assertEqual(result['totals']['image_query_hits'], 2)
+        log = self.root / 'query.log'
+        log.write_text('Image allocation: width=128 height=128 depth=1 format=37 mips=1 '
+                       'layers=1 bytes=65536 dedicated=0 query_ms=0.005 vma_ms=20 query_cache=hit\n')
+        event = texture_activity_summary(log)['slow_allocations'][0]
+        self.assertEqual(event['query_cache'], 'hit')
+        self.assertEqual(event['vma_ms'], 20)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -119,6 +157,18 @@ class SessionDiagnosticsTests(unittest.TestCase):
         report = frame_summary(path)
         self.assertEqual(report['mean_compiles'], 0)
         self.assertAlmostEqual(report['mean_pipeline_wait_ms'], 17.5005)
+        self.assertAlmostEqual(report['pipeline_blocking']['total_ms'], 35.001)
+        self.assertEqual(report['pipeline_blocking']['peak_ms'], 35)
+        self.assertEqual(report['pipeline_blocking']['frames_over_2_ms'], 1)
+
+    def test_pipeline_blocking_keeps_missing_and_invalid_counters_unknown(self):
+        path = self.root / 'frames.csv'
+        path.write_text('t_s,frame_ms,pipeline_wait_ms\n0,10,NaN\n1,20,-1\n2,30,\n')
+        self.assertNotIn('pipeline_blocking', frame_summary(path))
+        path.write_text('t_s,frame_ms,pipeline_wait_ms\n0,10,1\n1,120,114.008\n2,20,inf\n')
+        report = frame_summary(path, 1, 2)
+        self.assertAlmostEqual(report['pipeline_blocking']['total_ms'], 114.008)
+        self.assertEqual(report['frames_over_100_ms'], 1)
 
     def test_tiled_gc_counters_are_cumulative_and_old_headers_remain_compatible(self):
         import csv
@@ -237,6 +287,9 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report['timeline_largest'][0]['capacity_wait_ms'], 39)
         self.assertEqual(report['timeline_largest'][0]['admission_wait_ms'], 2)
         self.assertEqual(report['timeline_events'], 2)
+        self.assertEqual(report['timeline_stages']['gfx_bind']['peak_compile_ms'], 200)
+        self.assertEqual(report['timeline_stages']['gfx_bind']['remaining_ms'], 199)
+        self.assertEqual(report['timeline_stages']['gfx_frontend']['remaining_ms'], 0)
 
     def test_hash_block_reasons_keep_cumulative_multicauses_and_ignore_truncation(self):
         path = self.root / 'hash-reasons.log'
@@ -309,6 +362,27 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report['largest_events'][0]['stage'], 'compute pipeline')
         self.assertEqual(report['skipped_events'], 0)
 
+    def test_deferred_compute_and_warmup_provenance_keep_bind_wait_separate(self):
+        path = self.root / 'compute.log'
+        path.write_text('Pipeline first use: compute 0x12 native queued; wait at bind\n'
+                        'Pipeline cache lookup: compute 0x12 warmup=rejected rejection=missing_compiler_stamp shader=cold_shader preparation=first_use_deferred\n'
+                        'Pipeline cache lookup: gfx 0x34 warmup=absent rejection=none shader=known preparation=lookahead\n'
+                        'Compile stall: compute frontend 0x12 9.00 ms (foreground)\n'
+                        'Pipeline timeline: compute_bind 0x12 origin=required queued=1 start=2 need=30 queue_ms=1 compile_ms=139 lead_ms=29 remaining_ms=110 capacity_ms=0 admission_ms=0\n')
+        report = compilation_summary(path)
+        self.assertEqual(report['compute_first_use_deferred'], 1)
+        self.assertEqual(report['foreground_slow_events']['compute frontend'], 1)
+        self.assertEqual(report['cache_paths'][0]['warmup'], 'rejected')
+        self.assertEqual(report['cache_paths'][0]['rejection'], 'missing_compiler_stamp')
+        self.assertEqual(report['cache_path_counts']['compute:rejected:missing_compiler_stamp:first_use_deferred'], 1)
+        self.assertEqual(report['timeline_stages']['compute_bind']['peak_remaining_ms'], 110)
+        self.assertEqual(report['foreground_slow_ms'], 9)
+        self.assertEqual(report['logged_wait_ms'], 0)
+        path.write_text('Pipeline cache lookup: compute 0x12 warmup=absent rejection=none shader=known preparation=lookahead\n' * 100)
+        report = compilation_summary(path)
+        self.assertEqual(len(report['cache_paths']), 64)
+        self.assertEqual(report['cache_path_counts']['compute:absent:none:lookahead'], 100)
+
     def test_upload_report_keeps_counters_separate_and_finds_large_slow_flips(self):
         path = self.root / 'frames.csv'
         path.write_text('t_s,frame_ms,image_mb,buffer_mb,alloc_mb\n'
@@ -335,6 +409,41 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(session.report['environment']['BB_STAGING_REUSE_SLACK'], '0')
         self.assertEqual(session.report['compilation']['foreground_slow_ms'], 20)
         self.assertIn('Slow foreground compile events: 1', (session.directory / 'summary.txt').read_text())
+
+    def test_summary_includes_native_bind_blocking_without_adding_overlapping_counters(self):
+        session = Session(self.root, {})
+        (session.directory / 'frames.csv').write_text(
+            't_s,frame_ms,pipeline_wait_ms\n0,16,0.001\n1,187,114.008\n')
+        Path(session.env['BB_LOG_FILE']).write_text(
+            'Pipeline preparation wait: gfx 0x12 21.15 ms\n'
+            'Pipeline timeline: gfx_bind 0x12 origin=required queued=1 start=2 need=30 queue_ms=1 compile_ms=139 lead_ms=29 remaining_ms=110\n')
+        session.finish(0)
+        text = (session.directory / 'summary.txt').read_text()
+        self.assertIn('Pipeline blocking (frame CSV, includes native bind): 114.01 ms total; peak 114.01 ms', text)
+        self.assertIn('peak remaining wait 110.00 ms; peak native compile 139.00 ms', text)
+        self.assertIn('do not add them', text)
+
+    def test_image_allocation_parts_keep_bounded_evidence_and_accept_old_logs(self):
+        path = self.root / 'allocations.log'
+        template = ('Image allocation: width=512 height=512 depth=1 format=37 mips=1 '
+                    'layers=1 bytes=1048576 dedicated=0 query_ms=2 vma_ms={}\n')
+        path.write_text(''.join(template.format(i) for i in range(30)) + template.format('..'))
+        report = texture_activity_summary(path)
+        self.assertTrue(report['available'])
+        self.assertEqual(len(report['slow_allocations']), 20)
+        self.assertEqual(report['slow_allocations'][0]['wall_ms'], 31)
+        self.assertEqual(report['slow_allocations'][0]['query_ms'], 2)
+        self.assertFalse(report['slow_allocations'][0]['dedicated'])
+        path.write_text('older log\n')
+        self.assertEqual(texture_activity_summary(path)['slow_allocations'], [])
+
+    def test_csv_pipeline_blocking_is_reported_even_without_compile_log_events(self):
+        session = Session(self.root, {})
+        (session.directory / 'frames.csv').write_text('t_s,frame_ms,pipeline_wait_ms\n1,187,114.008\n')
+        session.finish(0)
+        self.assertFalse(session.report['compilation']['available'])
+        self.assertIn('Pipeline blocking (frame CSV, includes native bind): 114.01 ms total',
+                      (session.directory / 'summary.txt').read_text())
 
     def write_memory(self, rows, buffer_columns=False):
         path = self.root / 'vram.csv'

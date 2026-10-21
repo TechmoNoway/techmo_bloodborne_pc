@@ -1154,7 +1154,7 @@ void TextureCache::RefreshImage(Image& image) {
 
     auto* memory = Core::Memory::Instance();
     const auto mapping = memory->MappingGeneration();
-    const auto backing_epoch = memory->BackingWriteGeneration();
+    const auto backing_epoch = memory->BackingWriteGeneration(image.info.guest_address, image.info.guest_size);
     std::optional<u64> checked_whole_hash;
     if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
         False(image.flags & ImageFlagBits::CpuDirty)) {
@@ -1298,7 +1298,8 @@ void TextureCache::RefreshImage(Image& image) {
     image.cpu_hash_mapping = WriteTracking() && mapping == memory->MappingGeneration() &&
         !(mapping & 1) && image.track_addr == image.info.guest_address &&
         image.track_addr_end == image.info.guest_address + image.info.guest_size ? mapping : ~0ULL;
-    image.cpu_hash_backing_epoch = backing_epoch == memory->BackingWriteGeneration() ? backing_epoch : ~0ULL;
+    image.cpu_hash_backing_epoch = backing_epoch == memory->BackingWriteGeneration(
+        image.info.guest_address, image.info.guest_size) ? backing_epoch : ~0ULL;
 }
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,

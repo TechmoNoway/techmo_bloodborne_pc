@@ -5,6 +5,8 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+import shutil
+from unittest.mock import patch
 import unittest
 
 
@@ -56,12 +58,112 @@ class NativeCrashReporterTests(unittest.TestCase):
         self.assertEqual(fault['reason'], 'Synthetic "assertion"\\path\nsecond line')
         self.assertTrue(json.loads((self.session / 'minidump.json').read_text())['success'])
 
+    def isolated_fixture(self, helper=None):
+        directory = self.session / 'isolated runtime'
+        directory.mkdir()
+        original = self.fixture
+        self.fixture = directory / original.name
+        shutil.copy2(original, self.fixture)
+        if helper:
+            shutil.copy2(original, directory / 'bb-crash-reporter.exe')
+        return directory
+
+    def test_real_write_fault_on_main_and_worker_captures_context(self):
+        for mode in ('--write', '--worker', '--guest'):
+            with self.subTest(mode=mode):
+                result = self.invoke(mode)
+                self.assertEqual(result.returncode, 139, result.stderr)
+                fault = json.loads((self.session / 'fault.json').read_text())
+                self.assertEqual(fault['access_kind'], 'write')
+                self.assertNotEqual(int(fault['instruction_address'], 16), 0)
+                self.assertNotEqual(int(fault['registers']['rsp'], 16), 0)
+                self.assertEqual(len(fault['instruction_bytes']), 32)
+                self.assertEqual(fault['origin'], 'guest' if mode == '--guest' else 'host')
+                state = json.loads((self.session / 'diagnostics.json').read_text())
+                self.assertEqual(state['dump_state'], 'written')
+                self.assertEqual(state['fault_write_error'], 0)
+                dump = (self.session / 'crash.dmp').read_bytes()
+                streams, directory = struct.unpack_from('<II', dump, 8)
+                contexts = []
+                for index in range(streams):
+                    kind, _, offset = struct.unpack_from('<III', dump, directory + index * 12)
+                    if kind == 6:
+                        size, rva = struct.unpack_from('<II', dump, offset + 160)
+                        self.assertGreaterEqual(size, 256)
+                        contexts.append((struct.unpack_from('<Q', dump, rva + 248)[0],
+                                         struct.unpack_from('<Q', dump, rva + 152)[0]))
+                self.assertEqual(contexts, [(int(fault['instruction_address'], 16),
+                                             int(fault['registers']['rsp'], 16))])
+
+    def test_missing_reporter_still_writes_fault_and_reason(self):
+        self.isolated_fixture()
+        result = self.invoke('--write')
+        self.assertEqual(result.returncode, 139, result.stderr)
+        self.assertEqual(json.loads((self.session / 'fault.json').read_text())['access_kind'], 'write')
+        state = json.loads((self.session / 'diagnostics.json').read_text())
+        self.assertFalse(state['reporter_ready'])
+        self.assertEqual(state['startup_stage'], 'reporter_path')
+        self.assertNotEqual(state['startup_error'], 0)
+        self.assertEqual(state['dump_state'], 'reporter_unavailable')
+
+    def test_fault_file_open_failure_keeps_remote_dump(self):
+        (self.session / 'fault.json').mkdir()
+        result = self.invoke('--write')
+        self.assertEqual(result.returncode, 139, result.stderr)
+        state = json.loads((self.session / 'diagnostics.json').read_text())
+        self.assertNotEqual(state['fault_open_error'], 0)
+        self.assertNotEqual(state['fault_write_error'], 0)
+        self.assertEqual(state['dump_state'], 'written')
+
+    def test_fault_error_does_not_wait_for_another_threads_stderr_lock(self):
+        (self.session / 'fault.json').mkdir()
+        result = self.invoke('--locked-stderr')
+        self.assertEqual(result.returncode, 139, result.stderr)
+        state = json.loads((self.session / 'diagnostics.json').read_text())
+        self.assertNotEqual(state['fault_write_error'], 0)
+        self.assertEqual(state['dump_state'], 'written')
+
+    def test_dump_status_file_failure_does_not_hide_a_successful_dump(self):
+        (self.session / 'minidump.json').mkdir()
+        result = self.invoke('--write')
+        self.assertEqual(result.returncode, 139, result.stderr)
+        state = json.loads((self.session / 'diagnostics.json').read_text())
+        self.assertEqual(state['dump_state'], 'written')
+        self.assertNotEqual(state['status_error'], 0)
+        self.assertEqual((self.session / 'crash.dmp').read_bytes()[:4], b'MDMP')
+
+    def test_dump_file_failure_is_acknowledged(self):
+        (self.session / 'crash.dmp').mkdir()
+        result = self.invoke('--write')
+        self.assertEqual(result.returncode, 139, result.stderr)
+        status = json.loads((self.session / 'minidump.json').read_text())
+        self.assertFalse(status['success'])
+        self.assertNotEqual(status['error_code'], 0)
+        state = json.loads((self.session / 'diagnostics.json').read_text())
+        self.assertEqual(state['dump_state'], 'failed')
+        self.assertEqual(state['dump_error'], status['error_code'])
+
+    def test_reporter_exit_startup_error_timeout_and_death_during_dump(self):
+        self.isolated_fixture(helper=True)
+        for mode, stage, dump_state in (
+                ('exit', 'reporter_exited_before_ready', 'reporter_unavailable'),
+                ('startup-error', 'handshake', 'reporter_unavailable'),
+                ('timeout', 'handshake', 'reporter_unavailable'),
+                ('dump-exit', 'ready', 'reporter_exited')):
+            with self.subTest(mode=mode), patch.dict(os.environ, BB_DIAGNOSTIC_FIXTURE_HELPER=mode):
+                result = self.invoke('--write')
+                self.assertEqual(result.returncode, 139, result.stderr)
+                state = json.loads((self.session / 'diagnostics.json').read_text())
+                self.assertEqual(state['startup_stage'], stage)
+                self.assertEqual(state['dump_state'], dump_state)
+                if mode != 'dump-exit': self.assertNotEqual(state['startup_error'], 0)
+
 
 @unittest.skipUnless(os.name == 'nt', 'Windows renderer assertion reporter')
 class RendererAssertionTests(NativeCrashReporterTests):
     def setUp(self):
         super().setUp()
-        self.fixture = ROOT / 'out/renderer-assert-test.exe'
+        self.fixture = self.fixture.with_name('renderer-assert-test.exe')
         if not self.fixture.is_file():
             self.skipTest('Compile renderer-assert-test.exe first.')
 
@@ -69,6 +171,13 @@ class RendererAssertionTests(NativeCrashReporterTests):
     test_fault_produces_remote_minidump_with_original_exception = None
     test_normal_exit_does_not_create_dump = None
     test_synthetic_fatal_escapes_reason_and_writes_dump = None
+    test_real_write_fault_on_main_and_worker_captures_context = None
+    test_missing_reporter_still_writes_fault_and_reason = None
+    test_fault_file_open_failure_keeps_remote_dump = None
+    test_fault_error_does_not_wait_for_another_threads_stderr_lock = None
+    test_dump_status_file_failure_does_not_hide_a_successful_dump = None
+    test_dump_file_failure_is_acknowledged = None
+    test_reporter_exit_startup_error_timeout_and_death_during_dump = None
 
     def test_main_worker_and_concurrent_assertions_have_one_complete_dump(self):
         for mode in ('main', 'worker', 'concurrent', 'concurrent'):

@@ -11,6 +11,13 @@ struct IndexBufferRange {
     std::uint32_t size{};
 };
 
+// NUM_INDICES need not belong to an indirect draw. Sync at least its declared
+// index-buffer capacity as well. Bloodborne's valid capacities fit in 4M indices;
+// ignore unbounded/garbage capacity registers rather than requesting a multi-GB upload.
+inline std::uint32_t IndirectIndexCount(std::uint32_t draw_count, std::uint32_t capacity) {
+    return std::max(draw_count, capacity <= (4u << 20) ? capacity : 0u);
+}
+
 // Validate before consulting guest mappings: a null base must stay null even
 // with a nonzero offset. BufferCache represents a 40-bit guest address space.
 template <typename Clamp>

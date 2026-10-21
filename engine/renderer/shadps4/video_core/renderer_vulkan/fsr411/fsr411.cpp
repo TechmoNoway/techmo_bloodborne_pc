@@ -631,6 +631,18 @@ struct Upscaler::Impl {
         uploaded = true;
     }
 
+    bool Prepare(uint32_t ow, uint32_t oh, bool ultra_performance) {
+        if (!ow || !oh || ow > 3840 || oh > 2160) {
+            error = "unsupported output size"; return false;
+        }
+        const bool tier2160 = ow > 1920 || oh > 1080;
+        const std::string wanted = std::string(tier2160 ? "t2160" : "t1080") +
+                                   (ultra_performance ? "_m1" : "_m0");
+        if (ready && wanted == set && ow == out_w && oh == out_h) return true;
+        if (Create(wanted, ow, oh, tier2160)) return true;
+        Destroy(); return false;
+    }
+
     bool Record(const Frame& f) {
         error.clear();
         const uint32_t ow = f.output.width, oh = f.output.height;
@@ -837,6 +849,9 @@ Upscaler::~Upscaler() = default;
 
 bool Upscaler::Record(const Frame& frame) {
     return impl->Record(frame);
+}
+bool Upscaler::Prepare(uint32_t width, uint32_t height, bool ultra_performance) {
+    return impl->Prepare(width, height, ultra_performance);
 }
 
 const std::string& Upscaler::Error() const noexcept {

@@ -45,11 +45,13 @@ public:
     /// Records FSR 4 into `frame.cmdbuf`; the output stays in General. False when FSR 4
     /// cannot run (Problem() says why; missing assets or device features are permanent).
     bool Record(const Frame& frame);
+    bool Prepare(const Frame& frame);
 
     /// Why the last Record failed, or null.
     [[nodiscard]] const char* Problem() const noexcept;
     /// Assets or device features are missing: FSR 4 will not run in this session.
     [[nodiscard]] bool Fatal() const noexcept;
+    [[nodiscard]] bool Preparing() const noexcept;
 
 private:
     struct Impl;

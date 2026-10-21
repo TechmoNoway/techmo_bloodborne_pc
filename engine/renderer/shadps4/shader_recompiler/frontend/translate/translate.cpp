@@ -1159,7 +1159,7 @@ void Translator::EmitFetch(const GcnInst& inst) {
     fetch_data = ParseFetchShader(info);
     ASSERT(fetch_data.has_value());
 
-    if (EmulatorSettings.IsDumpShaders()) {
+    if (EmulatorSettings.IsDumpShaders() && !(info.compile_memory && info.compile_memory->replay)) {
         using namespace Common::FS;
         const auto dump_dir = GetUserPath(PathType::ShaderDir) / "dumps";
         if (!std::filesystem::exists(dump_dir)) {

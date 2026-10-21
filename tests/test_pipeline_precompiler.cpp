@@ -29,6 +29,48 @@ int main() {
     puts("PASS: graphics scanner samples head and final draw, spreads exactly 16 selections without overflow");
 
     {
+        BbBackingWriteEpoch epochs;
+        constexpr std::uint64_t address = 0x100ff000, size = 8192;
+        constexpr auto unrelated = address + (16ull << 20);
+        const auto original = epochs.Snapshot(address, size);
+        const auto other = epochs.Snapshot(unrelated, size);
+        { BbBackingWriteEpoch::Write write{epochs, unrelated, size};
+          assert(epochs.Snapshot() == BbBackingWriteEpoch::Invalid);
+          assert(epochs.Snapshot(address, size) == original);
+          assert(epochs.Snapshot(unrelated, size) == BbBackingWriteEpoch::Invalid); }
+        assert(epochs.Snapshot(address, size) == original);
+        assert(epochs.Snapshot(unrelated, size) != other);
+        std::promise<void> started, release;
+        auto gate = release.get_future().share();
+        std::thread writer{[&] {
+            BbBackingWriteEpoch::Write write{epochs, address + 4096, 4};
+            started.set_value(); gate.wait();
+        }};
+        started.get_future().wait();
+        { BbBackingWriteEpoch::Write overlap{epochs, address + 4096, 4}; }
+        for (unsigned i = 0; i < 1000; ++i) {
+            assert(epochs.Snapshot(address, size) == BbBackingWriteEpoch::Invalid);
+            assert(epochs.Snapshot(unrelated, size) != BbBackingWriteEpoch::Invalid);
+        }
+        release.set_value(); writer.join();
+        const auto changed = epochs.Snapshot(address, size);
+        assert(changed != original && changed != BbBackingWriteEpoch::Invalid);
+        // Hash-stripe aliasing is allowed to invalidate extra ranges, never to miss a write.
+        { BbBackingWriteEpoch::Write alias{epochs, address + (1024ull << 20), size};
+          assert(epochs.Snapshot(address, size) == BbBackingWriteEpoch::Invalid); }
+        assert(epochs.Snapshot(address, size) != changed);
+        { BbBackingWriteEpoch::Write unknown{epochs};
+          assert(epochs.Snapshot(address, size) == BbBackingWriteEpoch::Invalid); }
+        { BbBackingWriteEpoch::Write large{epochs, unrelated, 65ull << 20};
+          assert(epochs.Snapshot(address, size) == BbBackingWriteEpoch::Invalid); }
+        { BbBackingWriteEpoch::Write overflow{epochs, BbBackingWriteEpoch::Invalid - 3, 8};
+          assert(epochs.Snapshot(address, size) == BbBackingWriteEpoch::Invalid); }
+        assert(epochs.Snapshot(address, size) != BbBackingWriteEpoch::Invalid);
+        puts("PASS: ranged backing epochs ignore unrelated writes, catch boundary/overlapping "
+             "writers, and conservatively cover alias/unknown/large/overflow ranges");
+    }
+
+    {
         PipelinePrecompiler<int,int> deferred{2};
         std::promise<void> started,release;
         auto gate=release.get_future().share();
@@ -99,6 +141,48 @@ int main() {
         caught=false;try { failures.TakeOrReserve(2); } catch(const std::logic_error&) { caught=true; }
         assert(caught);
         puts("PASS: frontend future publishes before continuation, shutdown drains, timing/error/missing-publication remain safe");
+    }
+    {
+        PipelinePrecompiler<int, int> yielding{4};
+        std::promise<void> published, release;
+        auto gate = release.get_future().share();
+        std::vector<int> order;
+        assert(yielding.QueueEarly(1, [&] { return [&](auto publish, auto) {
+            publish(1); published.set_value(); gate.wait();
+            yielding.Continue(1, [&] { order.push_back(1); });
+        }; }));
+        published.get_future().wait();
+        auto required = yielding.SubmitReserved(2, [&] { order.push_back(2); return 2; });
+        assert(yielding.Queue(3, [&] { return [&] { order.push_back(3); return 3; }; }));
+        release.set_value();
+        assert(required(nullptr) == 2);
+        yielding.Stop();
+        assert((order == std::vector<int>{2, 1, 3}));
+        assert(yielding.TakeOrReserve(1) == 1 && yielding.TakeOrReserve(3) == 3);
+        assert(yielding.Outstanding() == 0 && yielding.Queued() == 3);
+        bool rejected = false;
+        try { yielding.Continue(4, [] {}); } catch (const std::logic_error&) { rejected = true; }
+        assert(rejected);
+        puts("PASS: lookahead yields before native continuation to pending required work; no extra worker or speculative result slot");
+    }
+    {
+        PipelinePrecompiler<int, int> draining{2};
+        std::promise<void> published, release;
+        auto gate = release.get_future().share();
+        std::vector<int> order;
+        assert(draining.QueueEarly(1, [&] { return [&](auto publish, auto) {
+            publish(1); published.set_value(); gate.wait();
+            draining.Continue(1, [&] { order.push_back(1); });
+        }; }));
+        published.get_future().wait();
+        // The already adopted frontend's continuation is now required itself.
+        assert(draining.TakeOrReserve(1) == 1);
+        auto later = draining.SubmitReserved(2, [&] { order.push_back(2); return 2; });
+        auto stopped = std::async(std::launch::async, [&] { draining.Stop(); });
+        assert(stopped.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
+        release.set_value(); stopped.get();
+        assert(later(nullptr) == 2 && (order == std::vector<int>{1, 2}));
+        puts("PASS: adopted frontend continuation stays urgent and survives shutdown while its frontend is running");
     }
     PipelinePrecompiler<int, std::unique_ptr<int>> compiler{2};
     std::promise<void> release, started;

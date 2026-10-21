@@ -2,17 +2,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <unordered_set>
+#include <ranges>
 #include "common/serdes.h"
 #include "common/hash.h"
 #include <algorithm>
+#include <map>
 #include <stdexcept>
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
+#include "shader_recompiler/compile_inputs.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/pipeline_replay_metrics.h"
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
@@ -21,6 +25,19 @@ static constexpr u32 MotionShaderBinaryVersion = 14u; // same fixes; runtime add
 static constexpr u32 ShaderMetaVersion = 8u; // new fragment/vertex specialization flags
 static constexpr u32 PipelineKeyVersion = 6u; // pointer-free pipeline state + generated fragment
 } // namespace Serialization
+
+namespace Shader::Cache {
+std::vector<u8> Metadata(const Info& info, const StageSpecialization& spec, size_t permutation) {
+    Serialization::Archive ar;
+    Serialization::Writer w{ar};
+    w.Write(Serialization::ShaderMetaVersion);
+    w.Write(info.hw_stage == HwStage::Vertex && spec.runtime_info.hw.vs.motion_vectors
+        ? Serialization::MotionShaderBinaryVersion : Serialization::ShaderBinaryVersion);
+    w.Write(HashCombine(info.pgm_hash, permutation)); w.Write(permutation);
+    spec.Serialize(ar); info.Serialize(ar);
+    return ar.TakeOff();
+}
+}
 
 namespace Vulkan {
 
@@ -164,23 +181,29 @@ bool ComputePipeline::SerializationSupport::Deserialize(Serialization::Archive& 
 }
 
 bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
+    ReplayMetrics::Scope decode{ReplayMetrics::Phase::RecordDecode};
     compute_key.Deserialize(ar);
 
     ComputePipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
+    decode.Stop();
 
     std::vector<u8> meta_blob;
-    Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
-                                       fmt::format("{:#018x}", compute_key.value), meta_blob);
+    {
+        ReplayMetrics::Scope read{ReplayMetrics::Phase::MetadataRead};
+        Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
+                                           fmt::format("{:#018x}", compute_key.value), meta_blob);
+    }
     if (meta_blob.empty()) {
+        last_cache_rejection = "missing_metadata";
         return false;
     }
 
     Serialization::Archive meta_ar{std::move(meta_blob)};
 
-    if (!LoadPipelineStage(meta_ar, 0, compute_key.value) ||
-        sel.infos[0]->hw_stage != Shader::HwStage::Compute) {
-        return false;
+    if (!LoadPipelineStage(meta_ar, 0, compute_key.value)) return false;
+    if (sel.infos[0]->hw_stage != Shader::HwStage::Compute) {
+        last_cache_rejection = "stage_mismatch"; return false;
     }
 
     if (compute_pipelines.contains(compute_key)) {
@@ -262,9 +285,11 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
 }
 
 bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy) {
+    ReplayMetrics::Scope decode{ReplayMetrics::Phase::RecordDecode};
     sel.graphics_key.Deserialize(ar);
     if (sel.graphics_key.motion_vectors &&
         !instance.GetPhysicalDevice().getFeatures().vertexPipelineStoresAndAtomics) {
+        last_cache_rejection = "unsupported_motion_feature";
         return false;
     }
 
@@ -272,10 +297,12 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy
     if (!sdata.Deserialize(ar, legacy)) {
         return false;
     }
+    decode.Stop();
     // v5 did not save the generated clip-discard fragment shader. Only this ambiguous
     // legacy variant needs rebuilding; ordinary v5 pipelines remain usable.
     if (legacy && profile.needs_clip_distance_emulation &&
         !sel.graphics_key.stage_hashes[u32(Shader::SwStage::Fragment)]) {
+        last_cache_rejection = "legacy_auxiliary_missing";
         return false;
     }
 
@@ -286,17 +313,21 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy
         }
 
         std::vector<u8> meta_blob;
-        Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
-                                           fmt::format("{:#018x}", hash), meta_blob);
+        {
+            ReplayMetrics::Scope read{ReplayMetrics::Phase::MetadataRead};
+            Storage::DataBase::Instance().Load(Storage::BlobType::ShaderMeta,
+                                               fmt::format("{:#018x}", hash), meta_blob);
+        }
         if (meta_blob.empty()) {
+            last_cache_rejection = "missing_metadata";
             return false;
         }
 
         Serialization::Archive meta_ar{std::move(meta_blob)};
 
-        if (!LoadPipelineStage(meta_ar, stage_idx, hash) ||
-            u32(sel.infos[stage_idx]->sw_stage) != stage_idx) {
-            return false;
+        if (!LoadPipelineStage(meta_ar, stage_idx, hash)) return false;
+        if (u32(sel.infos[stage_idx]->sw_stage) != stage_idx) {
+            last_cache_rejection = "stage_mismatch"; return false;
         }
     }
 
@@ -316,47 +347,74 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, bool legacy
 }
 
 bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, u64 expected_hash) {
+    auto& database = Storage::DataBase::Instance();
+    const auto name = fmt::format("{:#018x}", expected_hash);
+    std::vector<u8> stamp;
+    if (!EmulatorSettings.IsPipelineCacheArchived()) {
+        ReplayMetrics::Scope read{ReplayMetrics::Phase::MetadataRead};
+        database.Load(Storage::BlobType::ShaderCompiler, name, stamp);
+        if (!stamp.empty() && std::string(stamp.begin(), stamp.end()) != Shader::Cache::CompilerKey()) {
+            last_cache_rejection = "compiler_mismatch"; return false;
+        }
+        if (stamp.empty() && require_compiler_stamp) {
+            last_cache_rejection = "missing_compiler_stamp"; return false;
+        }
+    }
     auto program = std::make_unique<Program>();
     Shader::StageSpecialization spec{};
     spec.info = &program->info;
     std::optional<Shader::Gcn::FetchShaderData> fetch;
     size_t perm_idx{};
-    if (!LoadShaderMeta(ar, program->info, fetch, spec, perm_idx, expected_hash)) {
-        return false;
+    {
+        ReplayMetrics::Scope decode{ReplayMetrics::Phase::MetadataDecode};
+        if (!LoadShaderMeta(ar, program->info, fetch, spec, perm_idx, expected_hash)) {
+            last_cache_rejection = "incompatible_metadata"; return false;
+        }
     }
 
     std::vector<u32> spv;
-    Storage::DataBase::Instance().Load(Storage::BlobType::ShaderBinary,
-        fmt::format("{:#018x}_{}", program->info.pgm_hash, perm_idx), spv);
+    {
+        ReplayMetrics::Scope read{ReplayMetrics::Phase::SpirvRead};
+        Storage::DataBase::Instance().Load(Storage::BlobType::ShaderBinary,
+            fmt::format("{:#018x}_{}", program->info.pgm_hash, perm_idx), spv);
+    }
+    ReplayMetrics::Scope validate{ReplayMetrics::Phase::SpirvValidate};
     if (spv.size() < 5 || spv[0] != 0x07230203) {
+        last_cache_rejection = "invalid_spirv";
         return false;
     }
     // Reject truncated instructions before passing cached SPIR-V to the driver.
     for (size_t word = 5; word < spv.size();) {
         const u32 count = spv[word] >> 16;
         if (!count || count > spv.size() - word) {
+            last_cache_rejection = "invalid_spirv";
             return false;
         }
         word += count;
     }
+    validate.Stop();
 
     auto it = program_cache.find(program->info.pgm_hash);
     Program* target = it == program_cache.end() ? program.get() : it->second.get();
     vk::ShaderModule module;
+    bool created_module = false;
     if (perm_idx < target->modules.size() && target->modules[perm_idx].module) {
         // The persisted index is part of the pipeline key. Equal specializations at other
         // indices are not conflicts: equality deliberately ignores some unused bindings.
         if (!(target->modules[perm_idx].spec == spec)) {
+            last_cache_rejection = "specialization_conflict";
             return false;
         }
         module = target->modules[perm_idx].module;
     } else {
+        ReplayMetrics::Scope create{ReplayMetrics::Phase::ShaderModule};
         const auto [result, compiled] = instance.GetDevice().createShaderModule(
             {.codeSize = spv.size() * sizeof(u32), .pCode = spv.data()});
         if (result != vk::Result::eSuccess) {
             throw Serialization::CorruptData{"cached SPIR-V rejected by the driver"};
         }
         module = compiled;
+        created_module = true;
     }
     // Rebind before moving: a temporary Program may have supplied this permutation's Info.
     // Never retain a pointer to that temporary in a cached StageSpecialization.
@@ -375,10 +433,34 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         const auto hash = program->info.pgm_hash;
         program_cache.emplace(hash, std::move(program));
     }
+    if (created_module) warmup_modules.push_back({target->info.pgm_hash, perm_idx, module});
+    if (stamp.empty() && !EmulatorSettings.IsPipelineCacheArchived()) {
+        const auto key = Shader::Cache::CompilerKey();
+        database.Save(Storage::BlobType::ShaderCompiler, name, std::vector<u8>{key.begin(), key.end()});
+    }
     return true;
 }
 
+void PipelineCache::RollbackWarmupModules() {
+    for (const auto& entry : warmup_modules | std::views::reverse) {
+        const auto found = program_cache.find(entry.hash);
+        if (found == program_cache.end()) continue;
+        auto& modules = found->second->modules;
+        if (entry.permutation < modules.size() && modules[entry.permutation].module == entry.module) {
+            instance.GetDevice().destroyShaderModule(entry.module);
+            // A surviving higher permutation keeps this slot in the vector.
+            // Invalidate its specialization as well as its handle; persistent
+            // pipeline keys require the remaining indices to stay unchanged.
+            modules[entry.permutation] = {};
+            while (!modules.empty() && !modules.back().module) modules.pop_back();
+            if (modules.empty()) program_cache.erase(found);
+        }
+    }
+    warmup_modules.clear();
+}
+
 void PipelineCache::WarmUp() {
+    warmup_evidence.Reset("disabled");
     {
         std::scoped_lock lock{progress_mutex};
         precache_progress = {};
@@ -394,6 +476,7 @@ void PipelineCache::WarmUp() {
     }
 
     Storage::DataBase::Instance().Open();
+    warmup_evidence.Reset("unavailable");
     if (!Storage::DataBase::Instance().IsOpened()) {
         complete();
         return;
@@ -409,6 +492,7 @@ void PipelineCache::WarmUp() {
     std::vector<u8> profile_data{};
     Storage::DataBase::Instance().Load(Storage::BlobType::ShaderProfile, "profile", profile_data);
     if (profile_data.empty()) {
+        warmup_evidence.Reset("profile_missing");
         // Without a profile the remaining records have no proven shader-feature compatibility.
         Storage::DataBase::Instance().Clear();
         Storage::DataBase::Instance().FinishPreload();
@@ -420,15 +504,18 @@ void PipelineCache::WarmUp() {
         complete();
         return;
     }
-    if (profile_data.size() != sizeof(Shader::Profile)) {
+    const bool legacy_profile = !profile.native_constants &&
+        profile_data.size() == offsetof(Shader::Profile, native_constants);
+    if (profile_data.size() != sizeof(Shader::Profile) && !legacy_profile) {
         LOG_WARNING(Render, "Pipeline cache profile has unexpected size ({} != {})",
                     profile_data.size(), sizeof(Shader::Profile));
     }
     Shader::Profile cached_profile{};
-    if (profile_data.size() == sizeof(Shader::Profile)) {
-        std::memcpy(&cached_profile, profile_data.data(), sizeof(cached_profile));
+    if (profile_data.size() == sizeof(Shader::Profile) || legacy_profile) {
+        std::memcpy(&cached_profile, profile_data.data(), profile_data.size());
     }
-    if (profile_data.size() != sizeof(Shader::Profile) || cached_profile != profile) {
+    if ((!legacy_profile && profile_data.size() != sizeof(Shader::Profile)) || cached_profile != profile) {
+        warmup_evidence.Reset("profile_mismatch");
         // bbport: upstream closed the cache for the session here, so it was never rewritten
         // and every later session compiled every shader again (stutters on each new area).
         // Start a fresh cache for this build and GPU instead.
@@ -443,12 +530,22 @@ void PipelineCache::WarmUp() {
         return;
     }
 
+    if (!EmulatorSettings.IsPipelineCacheArchived()) {
+        std::vector<u8> stamp;
+        if (!legacy_profile && !database.IsReadOnly()) Shader::Cache::RebuildBeforeWarmUp(database.Path());
+        database.Load(Storage::BlobType::ShaderCompiler, "translator", stamp);
+        require_compiler_stamp = !stamp.empty();
+    }
     const auto* regs = sel.regs;
+    warmup_evidence.Reset("ready");
     u32 damaged = 0;
+    std::map<std::string_view, u32> rejections;
     // Sequential by design: selection, programs, SRT walker allocation and archive reads are
     // shared. A worker pool needs isolated reconstruction state before it can be safe.
     for (const auto& name : names) {
         bool loaded = false;
+        last_cache_rejection = "invalid_record";
+        warmup_modules.clear();
         sel = {.regs = regs}; // Clear partial state after rejection, including runtime/fetch.
         try {
             std::vector<u8> data;
@@ -461,46 +558,51 @@ void PipelineCache::WarmUp() {
             if ((version == 5 || version == Serialization::PipelineKeyVersion) && is_compute <= 1) {
                 loaded = is_compute ? LoadComputePipeline(ar)
                                     : LoadGraphicsPipeline(ar, version == 5);
+                if (loaded) {
+                    const auto actual = is_compute ? fmt::format("c_{:#018x}", compute_key.value)
+                        : fmt::format("g_{:#018x}", std::hash<GraphicsPipelineKey>{}(sel.graphics_key));
+                    warmup_evidence.Record(actual, true, "none");
+                }
+            } else {
+                last_cache_rejection = "record_version_or_type";
             }
         } catch (const std::exception& error) {
+            last_cache_rejection = "record_exception";
             ++damaged;
             LOG_WARNING(Render, "Skipping pipeline {}: {}", name, error.what());
+        }
+        warmup_evidence.Record(name, loaded, last_cache_rejection);
+        if (!loaded) {
+            ++rejections[last_cache_rejection];
+            RollbackWarmupModules();
         }
         std::scoped_lock lock{progress_mutex};
         loaded ? ++precache_progress.loaded : ++precache_progress.rejected;
     }
+    warmup_modules.clear();
     sel = {.regs = regs};
     if (damaged) {
-        // A failed reconstruction may have inserted earlier stages of the damaged record.
-        // 0.4 discards those too, while retaining the fork's preload progress reporting.
-        graphics_pipelines.clear();
-        compute_pipelines.clear();
-        std::unordered_set<VkShaderModule> modules;
-        for (const auto& [_, program] : program_cache) {
-            if (!program) continue;
-            for (const auto& permutation : program->modules) {
-                if (permutation.module) modules.insert(VkShaderModule(permutation.module));
-            }
-        }
-        for (const auto module : modules) instance.GetDevice().destroyShaderModule(vk::ShaderModule{module});
-        program_cache.clear();
-        database.Clear();
-        database.FinishPreload();
-        profile_data.resize(sizeof(profile));
-        std::memcpy(profile_data.data(), &profile, sizeof(profile));
-        database.Save(Storage::BlobType::ShaderProfile, "profile", std::move(profile_data));
-        std::scoped_lock lock{progress_mutex};
-        precache_progress.loaded = 0;
+        LOG_WARNING(Render, "Ignored {} damaged pipeline records; compatible entries retained", damaged);
     }
     const auto status = GetPrecacheProgress();
     LOG_INFO(Render, "Preloaded {} of {} pipelines ({} rejected)", status.loaded, status.total,
              status.rejected);
+    for (const auto& [reason, count] : rejections)
+        std::printf("Pipeline warmup rejected: %.*s %u\n", int(reason.size()), reason.data(), count);
     database.FinishPreload();
+    if (legacy_profile) {
+        profile_data.resize(sizeof(profile));
+        std::memcpy(profile_data.data(), &profile, sizeof(profile));
+        database.Save(Storage::BlobType::ShaderProfile, "profile", std::move(profile_data));
+        std::puts("Pipeline cache profile: migrated legacy standard profile; existing records retained");
+    }
     complete();
 }
 
 void PipelineCache::Sync() {
+    if (offline_replay) return;
     for (const auto& [_, pipeline] : graphics_pipelines) if (pipeline) pipeline->CompleteNative();
+    for (const auto& [_, pipeline] : compute_pipelines) if (pipeline) pipeline->CompleteNative();
     if (precompiler) {
         precompiler->Stop();
         std::printf("Pipeline preparation: %zu queued, %llu adopted, %.2f ms foreground waits, %zu retained\n",
@@ -589,6 +691,9 @@ void PersistentSrtInfo::Serialize(Serialization::Archive& ar) const {
 
 bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     Serialization::Reader srt{ar};
+    // The read-only diagnostics database has no guest process. Retaining host
+    // walkers there would also exhaust the fixed JIT arena across replay rounds.
+    const bool restore_host_code = !Storage::DataBase::Instance().IsReadOnly();
 
     srt.Read(this, sizeof(*this));
 
@@ -597,7 +702,11 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
         // a cut-short file must not have bytes past its end run as the walker.
         const auto code = ar.CurrPtr();
         ar.Advance(walker_func_size);
-        walker_func = RegisterWalkerCode(code, walker_func_size);
+        walker_func = restore_host_code ? RegisterWalkerCode(code, walker_func_size) : nullptr;
+    }
+    if (!restore_host_code) {
+        walker_func = nullptr;
+        walker_func_size = 0;
     }
 
     return true;
@@ -607,7 +716,9 @@ void StageSpecialization::Serialize(Serialization::Archive& ar) const {
     Serialization::Writer spec{ar};
 
     spec.Write(start);
-    spec.Write(runtime_info);
+    auto persistent_runtime = runtime_info;
+    if (persistent_runtime.hw_stage == HwStage::Geometry) persistent_runtime.hw.gs.vs_copy = {};
+    spec.Write(persistent_runtime);
 
     spec.Write(bitset.to_string());
 
@@ -630,6 +741,7 @@ bool StageSpecialization::Deserialize(Serialization::Archive& ar) {
 
     spec.Read(start);
     spec.Read(runtime_info);
+    if (runtime_info.hw_stage == HwStage::Geometry) runtime_info.hw.gs.vs_copy = {};
 
     std::string bits{};
     spec.Read(bits);

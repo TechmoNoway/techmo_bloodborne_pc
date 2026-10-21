@@ -231,11 +231,15 @@ struct TiledWritebackTest {
         cache.UpdateImage(id);read(0xff778899);
         CHECK(False(image.flags&ImageFlagBits::Dirty));
         CHECK(!BbStats::enabled || (image.hash_reuse_last_blockers&(1u<<BbHashReuse::CpuDirty)));
-        // A host backing write bypasses page protection: even an unrelated write
-        // conservatively invalidates the reusable CPU reference.
+        // Host writes bypass page faults. Unrelated ranges may keep their CPU
+        // reference; writes into this image must still force a fresh hash.
         const u32 host=0xffabcdef;
         CHECK(Core::Memory::Instance()->TryWriteBacking(reinterpret_cast<void*>(Guest+(16u<<20)),&host,4));
         auto before=BbStats::image_hash_bytes.load();produce(0xffaabbcc);cache.UpdateImage(id);read(0xffaabbcc);
+        const bool ranged=!(std::getenv("BB_RANGE_BACKING_EPOCH") && std::getenv("BB_RANGE_BACKING_EPOCH")[0]=='0');
+        CHECK(BbStats::image_hash_bytes.load()-before==((reuse&&ranged)?0:image.info.guest_size));
+        CHECK(Core::Memory::Instance()->TryWriteBacking(reinterpret_cast<void*>(Guest+8),&host,4));
+        before=BbStats::image_hash_bytes.load();produce(0xffabcdef);cache.UpdateImage(id);read(0xffabcdef);
         CHECK(BbStats::image_hash_bytes.load()-before==image.info.guest_size);
         CHECK(!BbStats::enabled || (image.hash_reuse_last_blockers&(1u<<BbHashReuse::HostWriteChanged)));
         __atomic_add_fetch(&epoch,2,__ATOMIC_RELEASE);

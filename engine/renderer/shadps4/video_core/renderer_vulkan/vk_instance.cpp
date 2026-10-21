@@ -13,6 +13,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "bbport_toggles.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/image_allocation_size_cache.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
@@ -187,6 +188,19 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
 Instance::~Instance() {
     ImGui::Core::Shutdown(GetDevice());
     vmaDestroyAllocator(allocator);
+}
+
+vk::DeviceSize Instance::GetImageAllocationSize(const vk::ImageCreateInfo& ci,
+                                               bool& hit, bool& cacheable) const {
+    const auto query = [&] {
+        return device->getImageMemoryRequirements(vk::DeviceImageMemoryRequirements{.pCreateInfo = &ci})
+            .memoryRequirements.size;
+    };
+    if (!image_allocation_sizes) { hit = cacheable = false; return query(); }
+    const auto result = image_allocation_sizes->Get(static_cast<VkImageCreateInfo>(ci), query);
+    hit = result.hit;
+    cacheable = result.cacheable;
+    return result.size;
 }
 
 std::string Instance::GetDriverVersionName() {
@@ -782,6 +796,13 @@ void Instance::CreateAllocator() {
     if (result != VK_SUCCESS) {
         UNREACHABLE_MSG("Failed to initialize VMA with error {}",
                         vk::to_string(vk::Result{result}));
+    }
+    const char* cache = std::getenv("BB_IMAGE_REQUIREMENTS_CACHE");
+    try {
+        image_allocation_sizes = std::make_unique<ImageAllocationSizeCache>(
+            cache && std::string_view{cache} == "0" ? 0 : 512);
+    } catch (const std::bad_alloc&) {
+        // Size caching is optional, including its initial CPU allocation.
     }
 }
 

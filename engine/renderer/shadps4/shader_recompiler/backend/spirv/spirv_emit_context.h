@@ -11,6 +11,7 @@
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/value.h"
 #include "shader_recompiler/profile.h"
+#include "shader_recompiler/constant_buffer.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -185,6 +186,12 @@ public:
         ASSERT(flatbuf_buffer.binding >= 0 && flatbuf_buffer.buffer_type == BufferType::Flatbuf);
         const auto [flatbuf_buffer_id, flatbuf_pointer_type] =
             flatbuf_buffer.aliases[u32(PointerType::U32)];
+        if (UniformConstants(profile, info)) {
+            const auto vector = OpShiftRightLogical(U32[1], flatbuf_offset, ConstU32(2u));
+            const auto component = OpBitwiseAnd(U32[1], flatbuf_offset, ConstU32(3u));
+            return OpLoad(U32[1], OpAccessChain(flatbuf_pointer_type, flatbuf_buffer_id,
+                                              u32_zero_value, vector, component));
+        }
         const auto ptr{
             OpAccessChain(flatbuf_pointer_type, flatbuf_buffer_id, u32_zero_value, flatbuf_offset)};
         return OpLoad(U32[1], ptr);

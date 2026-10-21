@@ -223,10 +223,10 @@ void MemoryManager::CopySparseMemory(VAddr source, u8* dest, u64 size) {
     BbCopy::ParallelFor((size + Chunk - 1) / Chunk, [&](std::size_t i) {
         const u64 offset = i * Chunk;
         CopySparseSerial(source + offset, dest + offset, std::min(Chunk, size - offset));
-    });
+    }, rasterizer && rasterizer->IsGpuSideThread());
 }
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
-    BbBackingWriteEpoch::Write writing{backing_writes};
+    BbBackingWriteEpoch::Write writing{backing_writes, reinterpret_cast<uintptr_t>(address), size};
     BbWriteLog::Note(reinterpret_cast<uintptr_t>(address), data, size, BbWriteLog::Backing);
     return runtime_memory_write_backing(reinterpret_cast<uintptr_t>(address), data, size) != 0;
 }
@@ -238,7 +238,7 @@ void MemoryManager::ReadBacking(VAddr address, void* data, u64 size) {
 }
 bool MemoryManager::TryWriteBackingUnchanged(VAddr address, const void* data, u64 size,
                                              u64 generation) {
-    BbBackingWriteEpoch::Write writing{backing_writes};
+    BbBackingWriteEpoch::Write writing{backing_writes, address, size};
     if (!runtime_memory_write_backing_if_generation(address, data, size, generation)) return false;
     BbWriteLog::Note(address, data, size, BbWriteLog::Backing);
     return true;

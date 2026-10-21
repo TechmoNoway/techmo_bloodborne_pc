@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / 'out'
@@ -19,11 +20,32 @@ def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
+def source_identity(root):
+    root = Path(root)
+    identity = {}
+    try:
+        identity['app_version'] = ET.parse(root / 'apps/launcher/Techmo.Launcher.csproj').findtext('.//Version')
+    except (OSError, ET.ParseError):
+        pass
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(root), *args], text=True,
+                                       stderr=subprocess.DEVNULL).strip()
+    try:
+        if Path(git('rev-parse', '--show-toplevel')).resolve() != root.resolve():
+            raise ValueError('Parent repository does not identify these sources')
+        identity.update(commit=git('rev-parse', 'HEAD'),
+                        description=git('describe', '--tags', '--always', '--dirty'),
+                        dirty=bool(git('status', '--porcelain', '--untracked-files=normal')))
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        identity['git_available'] = False
+    return identity
+
+
 def main():
     compiler = Path(shutil.which('clang')).resolve()
     toolchain_bin = compiler.parent
     binaries = [OUT / name for name in ('bb-probe.exe', 'bb-gpu-capabilities.exe',
-                                        'bb-engine-assets.exe', 'bb-crash-reporter.exe')]
+                                        'bb-engine-assets.exe', 'bb-crash-reporter.exe', 'bb-shader-lab.exe')]
     queued = list(binaries)
     copied = set()
     # System DLLs always stay supplied by Windows/the GPU driver.
@@ -54,6 +76,7 @@ def main():
         source_digest.update(name.encode() + b'\0' + bytes.fromhex(digest(ROOT / name)))
     manifest = {
         'schema_version': 1, 'built_utc': datetime.now(timezone.utc).isoformat(),
+        'source_identity': source_identity(ROOT),
         'target': 'Windows x64', 'configuration': 'RelWithDebInfo',
         'compiler': command('clang', '--version'),
         'packages': {name: command('pkg-config', '--modversion', name) for name in ('sdl3', 'vulkan', 'libavcodec', 'libxxhash')},

@@ -9,6 +9,7 @@
 
 #include "video_core/cache_storage.h"
 #include "video_core/cache_file.h"
+#include "shader_recompiler/constant_buffer.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 
@@ -67,6 +68,8 @@ void ProcessIO(const std::stop_token& stoken) {
 
 constexpr std::string GetBlobFileExtension(BlobType type) {
     switch (type) {
+    case BlobType::ShaderInputs: return "input";
+    case BlobType::ShaderCompiler: return "compiler";
     case BlobType::ShaderMeta: {
         return "meta";
     }
@@ -90,6 +93,8 @@ void DataBase::Open() {
     }
 
     const auto& game_info = Common::ElfInfo::Instance();
+    const std::string title = std::string{game_info.GameSerial()} +
+                              (Shader::NativeConstantsEnabled() ? "-constants" : "");
 
     using namespace Common::FS;
     if (EmulatorSettings.IsPipelineCacheArchived()) {
@@ -98,7 +103,7 @@ void DataBase::Open() {
         mz_zip_zero_struct(&zip_ar);
 
         cache_path = GetUserPath(PathType::CacheDir) /
-                     std::filesystem::path{game_info.GameSerial()}.replace_extension(".zip");
+                     std::filesystem::path{title}.replace_extension(".zip");
 
         if (!mz_zip_reader_init_file(&zip_ar, cache_path.string().c_str(),
                                      MZ_ZIP_FLAG_READ_ALLOW_WRITING) ||
@@ -120,7 +125,7 @@ void DataBase::Open() {
             }
         }
     } else {
-        cache_path = GetUserPath(PathType::CacheDir) / game_info.GameSerial();
+        cache_path = GetUserPath(PathType::CacheDir) / title;
         if (!std::filesystem::exists(cache_path)) {
             std::filesystem::create_directories(cache_path);
         }
@@ -134,8 +139,22 @@ void DataBase::Open() {
     opened = true;
 }
 
+void DataBase::OpenReadOnly(const std::filesystem::path& directory) {
+    if (opened || EmulatorSettings.IsPipelineCacheArchived() ||
+        !std::filesystem::is_directory(directory)) {
+        throw std::runtime_error("Replay requires an unopened, unarchived cache directory");
+    }
+    cache_path = directory;
+    read_only_directory = true;
+    opened = true;
+}
+
 void DataBase::Close() {
     if (!opened.exchange(false)) {
+        return;
+    }
+    if (read_only_directory) {
+        read_only_directory = false;
         return;
     }
 
@@ -215,6 +234,13 @@ void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
             v.clear();
         }
     } else {
+        if (type == BlobType::ShaderCompiler) {
+            // Compiler stamps were absent in older caches. Their absence is an
+            // expected compatibility result, not a failed filesystem operation.
+            std::error_code error;
+            const auto status = std::filesystem::status(path, error);
+            if (status.type() == std::filesystem::file_type::not_found) return;
+        }
         const auto file = IOFile{path, FileAccessMode::Read};
         if (!file.IsOpen() || file.GetSize() > MaxRecordBytes || file.GetSize() % sizeof(T)) {
             return;
@@ -227,7 +253,7 @@ void LoadVector(BlobType type, std::filesystem::path& path, std::vector<T>& v) {
 }
 
 bool DataBase::Save(BlobType type, const std::string& name, std::vector<u8>&& data) {
-    if (!opened) {
+    if (!opened || read_only_directory) {
         return false;
     }
 
@@ -237,7 +263,7 @@ bool DataBase::Save(BlobType type, const std::string& name, std::vector<u8>&& da
 }
 
 bool DataBase::Save(BlobType type, const std::string& name, std::vector<u32>&& data) {
-    if (!opened) {
+    if (!opened || read_only_directory) {
         return false;
     }
 
@@ -296,7 +322,7 @@ std::vector<std::string> DataBase::ListBlobs(BlobType type) const {
 }
 
 void DataBase::Clear() {
-    if (!opened) {
+    if (!opened || read_only_directory) {
         return;
     }
     // Only called during preload, before any asynchronous writes have been submitted.
@@ -326,7 +352,7 @@ void DataBase::Clear() {
 }
 
 void DataBase::FinishPreload() {
-    if (opened && EmulatorSettings.IsPipelineCacheArchived() && ar_is_read_only) {
+    if (opened && !read_only_directory && EmulatorSettings.IsPipelineCacheArchived() && ar_is_read_only) {
         if (!mz_zip_writer_init_from_reader(&zip_ar, cache_path.string().c_str())) {
             LOG_WARNING(Render, "Cannot reopen pipeline cache archive for writing");
             Close();

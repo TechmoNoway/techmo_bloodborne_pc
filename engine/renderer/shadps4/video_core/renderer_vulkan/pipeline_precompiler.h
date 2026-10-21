@@ -86,7 +86,8 @@ public:
                                               [&](const Job& job) { return job.key == key; });
             if (pending != tasks.end()) {
                 auto before = tasks.begin();
-                while (before != pending && before->deferred) ++before;
+                while (before != pending && before->required) ++before;
+                pending->required = true;
                 std::rotate(before, pending, std::next(pending));
             }
         }
@@ -122,7 +123,8 @@ public:
                 task = TimedTask(std::move(task), timing);
                 it = keys.emplace(key, Entry{task.get_future(), timing}).first;
                 try {
-                    tasks.push_front({key, AsJob(std::move(task))});
+                    const auto before = std::find_if(tasks.begin(), tasks.end(), [](const Job& job) { return !job.required; });
+                    tasks.insert(before, {key, AsJob(std::move(task)), true});
                 } catch (...) {
                     keys.erase(it);
                     throw;
@@ -136,7 +138,8 @@ public:
                                               [&](const Job& job) { return job.key == key; });
             if (pending != tasks.end()) {
                 auto before = tasks.begin();
-                while (before != pending && before->deferred) ++before;
+                while (before != pending && before->required) ++before;
+                pending->required = true;
                 std::rotate(before, pending, std::next(pending));
             }
         }
@@ -192,11 +195,28 @@ public:
             return Consume(*future, timing, PipelineTiming::Clock::now(), trace);
         };
         // Required work precedes speculation, but preserves first-use FIFO.
-        const auto before = std::find_if(tasks.begin(), tasks.end(), [](const Job& job) { return !job.deferred; });
+        const auto before = std::find_if(tasks.begin(), tasks.end(), [](const Job& job) { return !job.required; });
         tasks.insert(before, Job{key, AsJob(std::move(task)), true});
         ++deferred_jobs; ++queued; ++required_queued;
         lock.unlock(); cv.notify_one();
         return completion;
+    }
+
+    // Only a running frontend may yield its native continuation. This creates
+    // no extra compiler/cache and accepts continuations even during Stop's drain.
+    // Put it ahead of other speculation, but behind already required work. If
+    // its frontend has been consumed, its native work is itself now required.
+    template <typename Work>
+    void Continue(const Key& key, Work work) {
+        if (std::this_thread::get_id() != worker.get_id())
+            throw std::logic_error{"pipeline continuation must originate on its compiler"};
+        std::packaged_task<void()> task{std::move(work)};
+        std::scoped_lock lock{mutex};
+        const auto entry = keys.find(key);
+        const bool needed = entry != keys.end() && !entry->second.future.valid();
+        const auto before = needed ? tasks.begin() :
+            std::find_if(tasks.begin(), tasks.end(), [](const Job& job) { return !job.required; });
+        tasks.insert(before, {key, std::move(task), needed});
     }
 
     using Publish = std::function<void(Result)>;
@@ -302,7 +322,7 @@ private:
     struct Job {
         Key key;
         std::packaged_task<void()> task;
-        bool deferred = false;
+        bool required = false;
     };
     void Run() {
         for (;;) {

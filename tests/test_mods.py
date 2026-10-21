@@ -237,7 +237,7 @@ class ModTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['run_windows.py']), \
              patch.object(run_windows, 'run', side_effect=prepare), \
              patch.object(run_windows, 'build') as build, \
-             patch('memory_preflight.subprocess.run', return_value=subprocess.CompletedProcess([],0)), \
+             patch('memory_preflight.configure_memory', return_value=(None,None)), \
              patch.object(run_windows.subprocess, 'call', side_effect=probe):
             self.assertEqual(run_windows.main(), 7)
             build.assert_not_called()
@@ -270,7 +270,7 @@ class ModTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), patch.object(sys, 'argv', ['run_windows.py']), \
              patch.object(run_windows, 'run', side_effect=prepare), \
              patch.object(run_windows.subprocess, 'call', side_effect=probe), \
-             patch('memory_preflight.subprocess.run', return_value=subprocess.CompletedProcess([],0)), \
+             patch('memory_preflight.configure_memory', return_value=(None,None)), \
              patch.object(engine_assets, 'verify_executable', return_value='verified-image'), \
              patch.object(engine_assets, 'prepare_menu_assets', return_value=menus) as prepare_menus:
             self.assertEqual(run_windows.main(), 0)

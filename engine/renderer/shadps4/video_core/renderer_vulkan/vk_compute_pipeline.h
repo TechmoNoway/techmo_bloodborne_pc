@@ -48,7 +48,7 @@ public:
                     const Shader::Profile& profile, vk::PipelineCache pipeline_cache,
                     ComputePipelineKey compute_key, const Shader::Info& info,
                     vk::ShaderModule module, SerializationSupport& sdata, bool preloading,
-                    bool speculative = false);
+                    bool speculative = false, NativeSchedule schedule = {});
     ~ComputePipeline();
     void BindRuntimeStage(const Shader::Info& info) {
         stages[u32(Shader::SwStage::Compute)] = &info;

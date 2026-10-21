@@ -21,6 +21,46 @@ namespace {
 
 thread_local bool in_copy_thread = false;
 
+struct FaultRequest {
+    void* context;
+    void* address;
+    bool (*handler)(void*, void*);
+    FaultRequest* next = nullptr;
+    bool handled = false;
+    std::atomic<bool> complete{false};
+};
+
+// Only the synchronous job's caller drains this mailbox. Workers merely publish
+// stack-resident requests and wait; they never acquire the renderer's cache locks.
+struct FaultMailbox {
+    const std::thread::id owner = std::this_thread::get_id();
+    std::atomic<FaultRequest*> pending{nullptr};
+    void Drain() {
+        if (std::this_thread::get_id() != owner) return;
+        auto* request = pending.exchange(nullptr, std::memory_order_acquire);
+        while (request) {
+            auto* next = request->next;
+            request->handled = request->handler(request->context, request->address);
+            request->complete.store(true, std::memory_order_release);
+            request = next; // The worker can discard the completed stack request now.
+        }
+    }
+};
+thread_local FaultMailbox* fault_mailbox = nullptr;
+
+struct CopyScope {
+    bool previous_copy = in_copy_thread;
+    FaultMailbox* previous_mailbox = fault_mailbox;
+    explicit CopyScope(FaultMailbox* mailbox) {
+        in_copy_thread = true;
+        fault_mailbox = mailbox;
+    }
+    ~CopyScope() {
+        fault_mailbox = previous_mailbox;
+        in_copy_thread = previous_copy;
+    }
+};
+
 class Pool {
 public:
     Pool() {
@@ -96,10 +136,11 @@ public:
         }
     }
 
-    void Run(std::size_t count, const std::function<void(std::size_t)>& task) {
+    void Run(std::size_t count, const std::function<void(std::size_t)>& task, bool relay_faults) {
         auto job = std::make_shared<Job>();
         job->task = &task;
         job->count = count;
+        job->relay_faults = relay_faults;
         {
             std::scoped_lock lk{mutex};
             current = job;
@@ -109,6 +150,7 @@ public:
         Work(*job);
         // Workers only call the task for indices below count, all done before this returns.
         while (job->done.load(std::memory_order_acquire) < count) {
+            if (job->relay_faults) job->faults.Drain();
             std::this_thread::yield();
         }
         std::scoped_lock lk{mutex};
@@ -133,13 +175,15 @@ private:
         std::size_t count{};
         std::atomic<std::size_t> next{0};
         std::atomic<std::size_t> done{0};
+        bool relay_faults = false;
+        FaultMailbox faults;
     };
 
     void RunAsync(Task& task) {
-        const bool was = in_copy_thread;
-        in_copy_thread = true;
-        task.run();
-        in_copy_thread = was;
+        {
+            CopyScope scope{nullptr};
+            task.run();
+        }
         Complete(task.epoch);
     }
 
@@ -175,13 +219,13 @@ private:
     }
 
     static void Work(Job& job) {
-        const bool was = in_copy_thread;
-        in_copy_thread = true;
+        const bool owner = std::this_thread::get_id() == job.faults.owner;
+        CopyScope scope{job.relay_faults && !owner ? &job.faults : nullptr};
         for (std::size_t i; (i = job.next.fetch_add(1, std::memory_order_relaxed)) < job.count;) {
+            if (job.relay_faults && owner) job.faults.Drain();
             (*job.task)(i);
             job.done.fetch_add(1, std::memory_order_release);
         }
-        in_copy_thread = was;
     }
 
     void Loop(unsigned index) {
@@ -243,6 +287,9 @@ bool Enabled() {
 
 void Async(std::function<void()> task) {
     if (!Enabled()) {
+        // The runtime toggle may change while a synchronous worker job is running.
+        // Inline async fallback must not retain that job's fault mailbox either.
+        CopyScope scope{nullptr};
         task();
         return;
     }
@@ -294,14 +341,29 @@ void WaitAsync() {
     GetPool().WaitAll();
 }
 
-void ParallelFor(std::size_t count, const std::function<void(std::size_t)>& task) {
+void ParallelFor(std::size_t count, const std::function<void(std::size_t)>& task,
+                 bool relay_faults_to_caller) {
     if (count <= 1 || in_copy_thread || !Enabled()) {
         for (std::size_t i = 0; i < count; ++i) {
             task(i);
         }
         return;
     }
-    GetPool().Run(count, task);
+    GetPool().Run(count, task, relay_faults_to_caller);
+}
+
+bool RelayFault(void* context, void* address, bool (*handler)(void*, void*), bool& handled) {
+    auto* mailbox = fault_mailbox;
+    if (!mailbox || std::this_thread::get_id() == mailbox->owner) return false;
+    BbStats::copy_fault_relays.fetch_add(1, std::memory_order_relaxed);
+    FaultRequest request{context, address, handler};
+    request.next = mailbox->pending.load(std::memory_order_relaxed);
+    while (!mailbox->pending.compare_exchange_weak(request.next, &request,
+               std::memory_order_release, std::memory_order_relaxed)) {}
+    while (!request.complete.load(std::memory_order_acquire)) std::this_thread::yield();
+    handled = request.handled;
+    if (!handled) BbStats::copy_fault_declines.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 } // namespace BbCopy

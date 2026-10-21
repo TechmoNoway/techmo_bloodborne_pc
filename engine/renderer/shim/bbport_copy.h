@@ -9,7 +9,16 @@ namespace BbCopy {
 /// Runs `task(i)` for every i in [0, count) on the copy threads and the caller; returns when
 /// all are done. Runs inline when count is 1, the pool is disabled, or when called from a copy
 /// thread (no nesting).
-void ParallelFor(std::size_t count, const std::function<void(std::size_t)>& task);
+// GPU-side callers copying watched guest pages opt in to fault relay. A worker's
+// fault is serviced by the blocked caller, serially, with that caller's cache ownership.
+// Async tasks never borrow this context.
+void ParallelFor(std::size_t count, const std::function<void(std::size_t)>& task,
+                 bool relay_faults_to_caller = false);
+
+/// Called before page-cache fault handling. True means `handled` is the caller's
+/// result; false means this thread has no synchronous owner and handles it normally.
+/// The original fault context stays alive on the blocked worker. No allocation/locks.
+bool RelayFault(void* context, void* address, bool (*handler)(void*, void*), bool& handled);
 
 /// True when ParallelFor would split work (more than one thread available).
 bool Enabled();

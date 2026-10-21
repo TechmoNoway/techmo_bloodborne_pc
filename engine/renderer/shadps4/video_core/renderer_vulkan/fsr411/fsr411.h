@@ -62,6 +62,8 @@ public:
 
     /// Records one upscale; false with Error() set when it cannot (assets, device, sizes).
     bool Record(const Frame& frame);
+    // Creates pipelines/resources without recording commands or touching a queue.
+    bool Prepare(uint32_t width, uint32_t height, bool ultra_performance);
     [[nodiscard]] const std::string& Error() const noexcept;
     /// The variant, asset set and sizes in use, for logs ("FP8 t2160_m0 output 3840x2160").
     [[nodiscard]] std::string Describe() const;

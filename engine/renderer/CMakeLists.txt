@@ -116,6 +116,32 @@ endif()
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
 set(SHADER_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/include)
+# Cache identity follows translator sources, not launcher/UI commits.
+file(GLOB_RECURSE TRANSLATOR_INPUTS CONFIGURE_DEPENDS shadps4/shader_recompiler/*.cpp shadps4/shader_recompiler/*.h)
+file(GLOB TRANSLATOR_REGISTERS CONFIGURE_DEPENDS shadps4/video_core/amdgpu/*.h)
+list(APPEND TRANSLATOR_INPUTS ${TRANSLATOR_REGISTERS} ${CMAKE_CURRENT_SOURCE_DIR}/shim/core/emulator_settings.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/common/serdes.h)
+list(SORT TRANSLATOR_INPUTS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${TRANSLATOR_INPUTS})
+set(TRANSLATOR_DIGEST "${CMAKE_CXX_COMPILER_ID}:${CMAKE_CXX_COMPILER_VERSION}")
+foreach(INPUT IN LISTS TRANSLATOR_INPUTS)
+    file(SHA256 ${INPUT} INPUT_HASH)
+    string(APPEND TRANSLATOR_DIGEST "${INPUT_HASH}")
+endforeach()
+string(SHA256 TRANSLATOR_HASH "${TRANSLATOR_DIGEST}")
+set(INPUT_ABI "v3")
+foreach(INPUT IN ITEMS runtime_info.h params.h profile.h frontend/fetch_shader.h frontend/tessellation.h backend/bindings.h)
+    file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/shader_recompiler/${INPUT} INPUT_HASH)
+    string(APPEND INPUT_ABI "${INPUT_HASH}")
+endforeach()
+foreach(INPUT IN LISTS TRANSLATOR_REGISTERS)
+    file(SHA256 ${INPUT} INPUT_HASH)
+    string(APPEND INPUT_ABI "${INPUT_HASH}")
+endforeach()
+string(SHA256 INPUT_ABI_HASH "${INPUT_ABI}")
+file(MAKE_DIRECTORY ${SHADER_INCLUDE})
+file(CONFIGURE OUTPUT ${SHADER_INCLUDE}/shader_cache_version.h CONTENT
+    "#pragma once\n#define TECHMO_SHADER_COMPILER_KEY \"${TRANSLATOR_HASH}\"\n#define TECHMO_SHADER_INPUT_ABI \"${INPUT_ABI_HASH}\"\n" @ONLY)
 set(SHADER_DIR ${SHADER_INCLUDE}/video_core/host_shaders)
 set(SHADER_HEADERS "")
 function(add_host_shader FILENAME SHADER_NAME)
@@ -198,7 +224,7 @@ target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic
 if (WIN32)
     # Windows headers: no min/max macros, no winsock 1 clash; Windows 10+ APIs (SetThreadDescription).
     target_compile_definitions(bbgpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-    target_link_libraries(bbgpu PUBLIC xbyak::xbyak pdh)
+    target_link_libraries(bbgpu PUBLIC xbyak::xbyak pdh onecore)
     # bb-probe.exe links libbbgpu.a with these (out/gpu/bbgpu_link.txt, one argument per line,
     # in link order): the static library's transitive dependencies.
     include(cmake/LinkClosure.cmake)
@@ -206,6 +232,20 @@ if (WIN32)
 endif()
 
 # Explicit test targets never launch the game. record-data-test also has a GPU readback mode.
+add_executable(shader-cache-input-test EXCLUDE_FROM_ALL ../../tests/test_shader_cache_inputs.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+foreach(TEST IN ITEMS native-constants fsr-preparation)
+    string(REPLACE "-" "_" SOURCE_NAME ${TEST})
+    add_executable(${TEST}-test EXCLUDE_FROM_ALL ../../tests/test_${SOURCE_NAME}.cpp ../../tests/test_gpu_runtime_stubs.cpp)
+    target_include_directories(${TEST}-test PRIVATE shim shadps4 third_party/gcn/include)
+    target_compile_options(${TEST}-test PRIVATE -UNDEBUG)
+    target_link_libraries(${TEST}-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+    set_source_files_properties(../../tests/test_${SOURCE_NAME}.cpp PROPERTIES
+        COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+endforeach()
+target_include_directories(shader-cache-input-test PRIVATE shim shadps4 third_party/gcn/include)
+target_compile_options(shader-cache-input-test PRIVATE -UNDEBUG)
+target_link_libraries(shader-cache-input-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+
 add_executable(image-hash-test EXCLUDE_FROM_ALL ../../tests/test_image_hash.cpp ../../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(image-hash-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(image-hash-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
@@ -252,6 +292,10 @@ target_link_libraries(image-layout-cache-test PRIVATE bbgpu winmm ws2_32 psapi o
 target_compile_options(image-layout-cache-test PRIVATE -UNDEBUG)
 set_source_files_properties(../../tests/test_image_layout_cache.cpp PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_executable(lru-cache-test EXCLUDE_FROM_ALL ../../tests/test_lru_cache.cpp)
+add_executable(image-allocation-cache-test EXCLUDE_FROM_ALL ../../tests/test_image_allocation_cache.cpp)
+target_include_directories(image-allocation-cache-test PRIVATE shadps4)
+target_compile_options(image-allocation-cache-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(image-allocation-cache-test PRIVATE Vulkan::Headers)
 target_include_directories(lru-cache-test PRIVATE shadps4)
 target_compile_options(lru-cache-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_executable(frame-pacing-test EXCLUDE_FROM_ALL ../../tests/test_frame_pacing.cpp shim/frame_pacing.cpp)
@@ -319,6 +363,13 @@ target_link_libraries(buffer-budget-test PRIVATE bbgpu winmm ws2_32 psapi onecor
 set_source_files_properties(../../tests/test_buffer_budget.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_executable(index-buffer-range-test EXCLUDE_FROM_ALL ../../tests/test_index_buffer_range.cpp)
+add_executable(copy-fault-relay-test EXCLUDE_FROM_ALL ../../tests/test_copy_fault_relay.cpp shim/bbport_copy.cpp)
+target_compile_options(copy-fault-relay-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_compile_definitions(copy-fault-relay-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_include_directories(copy-fault-relay-test PRIVATE shim shadps4)
+add_executable(prepared-vertex-inputs-test EXCLUDE_FROM_ALL ../../tests/test_prepared_vertex_inputs.cpp)
+target_compile_options(prepared-vertex-inputs-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(prepared-vertex-inputs-test PRIVATE shadps4)
 target_compile_options(index-buffer-range-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(index-buffer-range-test PRIVATE shadps4)
 add_executable(liverpool-tasks-test EXCLUDE_FROM_ALL ../../tests/test_liverpool_tasks.cpp
@@ -363,6 +414,15 @@ target_include_directories(pipeline-precompile-gpu-test PRIVATE shim shadps4
     third_party/gcn/include ${CMAKE_CURRENT_BINARY_DIR}/test_shaders)
 target_compile_options(pipeline-precompile-gpu-test PRIVATE -UNDEBUG)
 target_link_libraries(pipeline-precompile-gpu-test PRIVATE bbgpu winmm ws2_32 psapi onecore)
+add_executable(bb-pipeline-lab EXCLUDE_FROM_ALL ../../tools/pipeline_lab.cpp
+    ../../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(bb-pipeline-lab PRIVATE shim shadps4 third_party/gcn/include)
+target_link_libraries(bb-pipeline-lab PRIVATE bbgpu winmm ws2_32 psapi onecore)
+add_executable(pipeline-replay-metrics-test EXCLUDE_FROM_ALL ../../tests/test_pipeline_replay_metrics.cpp)
+target_include_directories(pipeline-replay-metrics-test PRIVATE shadps4)
+target_compile_options(pipeline-replay-metrics-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+set_source_files_properties(../../tools/pipeline_lab.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 set_source_files_properties(../../tests/test_pipeline_precompile_gpu.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_shaders/buffer_access_vert.h

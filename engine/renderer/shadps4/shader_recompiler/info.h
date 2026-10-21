@@ -9,6 +9,7 @@
 #include "common/assert.h"
 #include "common/types.h"
 #include "shader_recompiler/backend/bindings.h"
+#include "shader_recompiler/compile_memory.h"
 #include "shader_recompiler/frontend/copy_shader.h"
 #include "shader_recompiler/frontend/tessellation.h"
 #include "shader_recompiler/ir/attribute.h"
@@ -120,6 +121,7 @@ struct Info : InfoPersistent {
     std::span<const u32> user_data;
     std::vector<u32> flattened_ud_buf;
     PersistentSrtInfo srt_info;
+    CompileMemory* compile_memory{}; // Scoped capture/replay; never serialized in Info.
 
     AttributeFlags loads{};
     AttributeFlags stores{};
@@ -219,8 +221,10 @@ struct Info : InfoPersistent {
     }
 
     template <typename T>
-    T ReadUdReg(u32 ptr_index, u32 dword_offset) const noexcept {
+    T ReadUdReg(u32 ptr_index, u32 dword_offset) const {
         T data{};
+        if (compile_memory && compile_memory->ReadRegister(ptr_index, dword_offset, &data, sizeof(T)))
+            return data;
         const auto ud = UserData();
         const u32* base = ud.data();
         if (ptr_index != IR::NumScalarRegs) {
@@ -231,6 +235,7 @@ struct Info : InfoPersistent {
             return data;
         }
         std::memcpy(&data, base + dword_offset, sizeof(T));
+        if (compile_memory) compile_memory->CaptureRegister(ptr_index, dword_offset, &data, sizeof(T));
         return data;
     }
 
@@ -252,26 +257,53 @@ struct Info : InfoPersistent {
     }
 
     void RefreshFlatBuf() {
+        if (compile_memory && compile_memory->replay) {
+            const auto& saved = *compile_memory;
+            if (srt_info.flattened_bufsize_dw != saved.flat.size() ||
+                srt_info.walker_func_size != saved.walker.size() ||
+                (saved.walker.size() && std::memcmp(reinterpret_cast<const void*>(srt_info.walker_func), saved.walker.data(), saved.walker.size())))
+                throw std::runtime_error("shader replay resource layout changed");
+            flattened_ud_buf = saved.flat;
+            return;
+        }
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
         if (srt_info.walker_func) {
             srt_info.walker_func(user_data.data(), flattened_ud_buf.data());
         }
+        if (compile_memory) {
+            if (flattened_ud_buf.size() > 262144 || srt_info.walker_func_size > 1048576) {
+                compile_memory->valid = false;
+                return;
+            }
+            compile_memory->flat = flattened_ud_buf;
+            if (srt_info.walker_func_size) {
+                const auto* code = reinterpret_cast<const u8*>(srt_info.walker_func);
+                compile_memory->walker.assign(code, code + srt_info.walker_func_size);
+            }
+        }
     }
 
     void ReadTessConstantBuffer(TessellationDataConstantBuffer& tess_constants) const {
+        if (compile_memory && compile_memory->replay) {
+            if (!compile_memory->tess) throw std::runtime_error("shader replay needs tessellation constants");
+            tess_constants = *compile_memory->tess;
+            return;
+        }
         ASSERT(tess_consts_dword_offset >= 0); // We've already tracked the V# UD
         auto buf = ReadUdReg<AmdGpu::Buffer>(static_cast<u32>(tess_consts_ptr_base),
                                              static_cast<u32>(tess_consts_dword_offset));
         VAddr tess_constants_addr = buf.base_address;
         if (tess_constants_addr < 0x10000) {
             tess_constants = {};
+            if (compile_memory) compile_memory->tess = tess_constants;
             return;
         }
         memcpy(&tess_constants,
                reinterpret_cast<TessellationDataConstantBuffer*>(tess_constants_addr),
                sizeof(tess_constants));
+        if (compile_memory) compile_memory->tess = tess_constants;
     }
 
     void Serialize(Serialization::Archive& ar) const;

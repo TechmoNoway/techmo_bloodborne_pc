@@ -32,7 +32,7 @@ class NativePackageTests(unittest.TestCase):
         (self.out / 'native-build.json').write_text(json.dumps(self.manifest), encoding='utf-8')
 
     def test_complete_package(self):
-        self.assertEqual(package.verify(self.out), (4, 3))
+        self.assertEqual(package.verify(self.out), (len(package.REQUIRED_BINARIES), 3))
 
     def test_missing_sdl(self):
         (self.out / 'SDL3.dll').unlink()
@@ -57,6 +57,12 @@ class NativePackageTests(unittest.TestCase):
 
     def test_missing_crash_reporter_record(self):
         del self.manifest['binaries']['bb-crash-reporter.exe']
+        self.write_manifest()
+        with self.assertRaisesRegex(ValueError, 'missing binaries'):
+            package.verify(self.out)
+
+    def test_missing_shader_helper_record(self):
+        del self.manifest['binaries']['bb-shader-lab.exe']
         self.write_manifest()
         with self.assertRaisesRegex(ValueError, 'missing binaries'):
             package.verify(self.out)

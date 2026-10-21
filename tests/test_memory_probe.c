@@ -3,9 +3,18 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "win32_memory.h"
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL memory probe line %d: %s\n",__LINE__,#x); exit(1); } } while (0)
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc==2 && !strcmp(argv[1],"--hold")) return win_mem_hold_section(1024*1024);
+    if (argc==2 && !strcmp(argv[1],"--adopt")) {
+        void *view=NULL;
+        CHECK(win_mem_section(1024*1024,&view)==0 && view);
+        ((unsigned char*)view)[0]=0x55;
+        puts("PASS: held pool duplicated and mapped");
+        return 0;
+    }
     DWORD before,after;
     CHECK(GetProcessHandleCount(GetCurrentProcess(),&before));
     for (unsigned i=0;i<128;++i) CHECK(win_mem_probe_section(1024*1024)==0);

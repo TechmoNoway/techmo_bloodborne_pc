@@ -8,6 +8,7 @@ from pathlib import Path
 REQUIRED_BINARIES = {
     'bb-probe.exe', 'bb-gpu-capabilities.exe',
     'bb-engine-assets.exe', 'bb-crash-reporter.exe',
+    'bb-shader-lab.exe',
 }
 
 

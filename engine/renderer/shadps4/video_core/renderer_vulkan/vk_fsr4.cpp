@@ -15,6 +15,8 @@
 #include "ffx_vk_fsr4_v07_assets.h"
 #include "bbport_settings.h"
 #include "video_core/renderer_vulkan/fsr411/fsr411.h"
+#include <future>
+#include <chrono>
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -66,6 +68,8 @@ struct Fsr4Upscaler::Impl {
     u32 out_width = 0, out_height = 0;
     std::string problem;
     bool fatal = false;
+    std::future<bool> preparation;
+    bool prepared_411 = false;
     u64 next_frame_id = 1;
     std::deque<std::pair<u64, u64>> in_flight; ///< provider frame id, scheduler tick
     // bbport: FSR 4.1.1 (upscaler=fsr411): the replay of AMD's 4.1.1 DLL (fsr411/).
@@ -77,6 +81,8 @@ struct Fsr4Upscaler::Impl {
         : instance{instance_}, scheduler{scheduler_} {}
 
     ~Impl() {
+        if (preparation.valid()) preparation.wait();
+        if (fsr411) scheduler.Finish();
         Destroy();
     }
 
@@ -280,7 +286,62 @@ struct Fsr4Upscaler::Impl {
         return true;
     }
 
+    bool Prepare(const Frame& f) {
+        if (preparation.valid()) {
+            if (preparation.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+            if (!preparation.get()) return false;
+        }
+        if (fatal) return false;
+        const bool want411 = BbSettings::Get().upscaler == BbSettings::UpscalerFsr411;
+        const int preset = std::clamp(f.preset, 0, 4);
+        if (want411 == prepared_411 && model == preset && out_width == f.output.width &&
+            out_height == f.output.height && (want411 ? bool(fsr411) : context_ok)) return true;
+        if (want411 ? !instance.IsFsr411Supported() : !instance.IsFsr4Int8Supported()) {
+            Fail("the GPU lacks the required FSR 4 features", true); return false;
+        }
+        // Retire old submissions on their owning thread. The worker only creates Vulkan
+        // objects; it never submits, waits on the scheduler, or reads mutable settings.
+        if (fsr411) { scheduler.WaitSubmittedWork(); fsr411.reset(); fsr411_ticks.clear(); }
+        Destroy(true);
+        const auto width = f.output.width, height = f.output.height;
+        const char* env = std::getenv("BB_FSR411_DIR");
+        const std::string directory = env && env[0] ? env : "fsr4_411";
+        const Fsr411::Features features{.fp8_matrices = instance.IsFsr411Fp8Supported(),
+                                       .fp16_matrices = instance.IsFsr411MatrixSupported()};
+        auto build = [this, want411, preset, width, height, directory, features] {
+            const auto start = std::chrono::steady_clock::now();
+            try {
+                bool ok;
+                if (want411) {
+                    fsr411 = std::make_unique<Fsr411::Upscaler>(instance.GetPhysicalDevice(), instance.GetDevice(), directory, features);
+                    ok = fsr411->Prepare(width, height, preset >= 4);
+                    if (!ok) Fail("FSR 4.1.1: " + fsr411->Error(), true);
+                    else { model = preset; out_width = width; out_height = height; }
+                } else ok = CreateBackend(preset, width, height);
+                prepared_411 = want411;
+                if (ok) problem.clear();
+                std::printf("Upscaler preparation: FSR %s %.2f ms, %s\n", want411 ? "4.1.1" : "4 v07",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-start).count(), ok ? "ready" : "failed");
+                return ok;
+            } catch (const std::exception& e) { Fail(e.what(), true); return false; }
+        };
+        const char* async = std::getenv("BB_FSR4_ASYNC");
+        if (async && async[0] == '0') return build();
+        const auto memory = instance.GetDeviceMemorySnapshot();
+        const u64 transition_bytes = u64(width) * height * 32 + (256ull << 20);
+        if (!memory.budget || memory.usage >= memory.budget ||
+            memory.budget - memory.usage < transition_bytes) {
+            std::puts("Upscaler preparation: synchronous path (insufficient budget for temporary FSR 3.1 context)");
+            return build();
+        }
+        problem = "Preparing FSR 4; using FSR 3.1 temporarily";
+        try { preparation = std::async(std::launch::async, build); }
+        catch (const std::system_error&) { return build(); }
+        return false;
+    }
+
     bool Record(const Frame& f) {
+        if (!Prepare(f)) return false;
         if (BbSettings::Get().upscaler == BbSettings::UpscalerFsr411) {
             return Record411(f);
         }
@@ -392,13 +453,18 @@ Fsr4Upscaler::~Fsr4Upscaler() = default;
 bool Fsr4Upscaler::Record(const Frame& frame) {
     return impl->Record(frame);
 }
+bool Fsr4Upscaler::Prepare(const Frame& frame) { return impl->Prepare(frame); }
 
 const char* Fsr4Upscaler::Problem() const noexcept {
+    if (impl->preparation.valid()) return "Preparing FSR 4; using FSR 3.1 temporarily";
     return impl->problem.empty() ? nullptr : impl->problem.c_str();
 }
 
 bool Fsr4Upscaler::Fatal() const noexcept {
-    return impl->fatal;
+    return !impl->preparation.valid() && impl->fatal;
+}
+bool Fsr4Upscaler::Preparing() const noexcept {
+    return impl->preparation.valid() && impl->preparation.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
 }
 
 } // namespace Vulkan

@@ -4,6 +4,34 @@ from memory_preflight import configure_memory,choose_pool,capped_render,BASE_MB,
 
 
 class MemoryPlanTests(unittest.TestCase):
+    def test_successful_pool_is_held_and_passed_to_runtime(self):
+        class Lease:
+            environment = {'BB_POOL_PID':'42','BB_POOL_HANDLE':'88','BB_POOL_BYTES':'6375342080'}
+        leases=[];env={'BB_POOL_PID':'stale'};calls=[]
+        def factory(path,mb,environment):
+            calls.append(mb)
+            self.assertNotIn('BB_POOL_PID',environment)
+            return Lease()
+        configure_memory('fixture',env,leases=leases,lease_factory=factory)
+        self.assertEqual(calls,[BASE_MB])
+        self.assertEqual(len(leases),1)
+        self.assertEqual(env['BB_POOL_PID'],'42')
+        self.assertEqual(env['BB_POOL_HANDLE'],'88')
+
+    def test_retained_pool_failure_uses_coordinated_safe_fallback(self):
+        class Lease:
+            environment = {'BB_POOL_PID':'42','BB_POOL_HANDLE':'88','BB_POOL_BYTES':'6375342080'}
+        calls=[];leases=[];env={}
+        def factory(path,mb,environment):
+            calls.append(mb)
+            if mb==LARGE_MB: raise ValueError('host commit exhausted')
+            return Lease()
+        render,_=configure_memory('fixture',env,'3840x2160',leases=leases,lease_factory=factory)
+        self.assertEqual(calls,[LARGE_MB,BASE_MB])
+        self.assertEqual(render,'1920x1080')
+        self.assertEqual(len(leases),1)
+        self.assertEqual(env['BB_MEMORY_SAFE'],'1')
+
     def test_native_and_reduced_scenes_keep_standard_pool(self):
         for render in (None,'1280x720','1920x1080'):
             calls=[];env={}

@@ -87,6 +87,9 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
     return feature_flags;
 }
 
+UniqueImage::UniqueImage(const Vulkan::Instance& owner)
+    : device{owner.GetDevice()}, instance{&owner}, allocator{owner.GetAllocator()} {}
+
 UniqueImage::~UniqueImage() {
     if (image) {
         BbStats::vk_image_bytes.fetch_sub(size_bytes, std::memory_order_relaxed);
@@ -115,12 +118,24 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         return vk::DeviceSize(env ? std::strtoull(env, nullptr, 10) : 4) << 20;
     }();
     VmaAllocationCreateFlags dedicated = 0;
+    bool query_hit = false, query_cacheable = false;
     if (device && dedicated_from != 0) {
-        const vk::DeviceImageMemoryRequirements query{.pCreateInfo = &image_ci};
-        if (device.getImageMemoryRequirements(query).memoryRequirements.size >= dedicated_from) {
+        BbStats::Timer query_timer{BbStats::t_image_query};
+        const vk::DeviceSize requested_size = instance
+            ? instance->GetImageAllocationSize(image_ci, query_hit, query_cacheable)
+            : device.getImageMemoryRequirements(vk::DeviceImageMemoryRequirements{.pCreateInfo = &image_ci})
+                  .memoryRequirements.size;
+        if (BbStats::enabled) {
+            auto& counter = query_hit ? BbStats::image_query_hits
+                : query_cacheable ? BbStats::image_query_misses : BbStats::image_query_bypasses;
+            counter.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (requested_size >= dedicated_from) {
             dedicated = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         }
     }
+    const auto query_end = BbStats::enabled ? std::chrono::steady_clock::now()
+                                            : std::chrono::steady_clock::time_point{};
     const VmaAllocationCreateInfo alloc_ci = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | dedicated,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -133,13 +148,31 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     const VkImageCreateInfo image_ci_unsafe = static_cast<VkImageCreateInfo>(image_ci);
     VkImage unsafe_image{};
     VmaAllocationInfo alloc_info{};
-    VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
-                                     &allocation, &alloc_info);
+    VkResult result;
+    {
+        BbStats::Timer vma_timer{BbStats::t_image_vma};
+        result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
+                                &allocation, &alloc_info);
+    }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
     BbStats::vk_image_bytes.fetch_add(size_bytes, std::memory_order_relaxed);
+    if (BbStats::enabled) {
+        const auto end = std::chrono::steady_clock::now();
+        const auto ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+        static std::atomic<u32> logged{0};
+        if (ms(end - alloc_timer.start) >= 8 && logged.load() < 128 && logged.fetch_add(1) < 128) {
+            std::printf("Image allocation: width=%u height=%u depth=%u format=%u mips=%u layers=%u bytes=%llu dedicated=%u query_ms=%.3f vma_ms=%.3f query_cache=%s\n",
+                image_ci.extent.width, image_ci.extent.height, image_ci.extent.depth,
+                u32(image_ci.format), image_ci.mipLevels, image_ci.arrayLayers,
+                static_cast<unsigned long long>(size_bytes), unsigned(dedicated != 0),
+                ms(query_end - alloc_timer.start), ms(end - query_end),
+                !device || dedicated_from == 0 ? "skipped" :
+                    query_hit ? "hit" : query_cacheable ? "miss" : "bypass");
+        }
+    }
 }
 
 Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
@@ -216,7 +249,7 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
 
     backing = &backing_images.emplace_back();
     backing->num_samples = info.num_samples;
-    backing->image = UniqueImage{instance.GetDevice(), instance.GetAllocator()};
+    backing->image = UniqueImage{instance};
     if (!recycler || !recycler->Acquire(image_ci, backing->image)) backing->image.Create(image_ci);
 
     if (BbStats::enabled) {

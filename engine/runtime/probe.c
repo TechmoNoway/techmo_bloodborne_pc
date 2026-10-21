@@ -671,10 +671,11 @@ static char **main_argv;
 static unsigned __stdcall loader_thread(void *unused) { (void)unused; return (unsigned)loader_main(main_argc, main_argv); }
 #include "win32_memory.h"
 int main(int argc, char **argv) {
-    if (argc == 3 && !strcmp(argv[1],"--check-memory-pool")) {
+    if (argc == 3 && (!strcmp(argv[1],"--check-memory-pool") || !strcmp(argv[1],"--hold-memory-pool"))) {
         char *end=NULL;
         const uint64_t mb=strtoull(argv[2],&end,10);
         if (!argv[2][0] || !end || *end || mb<5056 || mb>16384) return 2;
+        if (!strcmp(argv[1],"--hold-memory-pool")) return win_mem_hold_section((mb+1024)*UINT64_C(1024)*1024);
         const int result=win_mem_probe_section((mb+1024)*UINT64_C(1024)*1024);
         fprintf(result ? stderr : stdout,"Memory preflight: direct %llu MiB + flexible 1024 MiB: %s (Windows error %lu)\n",
                 (unsigned long long)mb,result ? "unavailable" : "available",result ? GetLastError() : 0);

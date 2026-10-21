@@ -128,6 +128,8 @@ inline std::atomic<std::uint64_t> bound_in_place_written_bytes{0};
 /// Command processor writes put into the GPU's VRAM data (no readback); blocks whose GPU data went
 /// back to the game's memory before moving in place; downloads of GPU data (readbacks).
 inline std::atomic<std::uint64_t> gpu_data_updates{0}, copied_back_blocks{0}, readbacks{0};
+/// Synchronous copy faults serviced by their waiting GPU/draw caller, never by a worker.
+inline std::atomic<std::uint64_t> copy_fault_relays{0}, copy_fault_declines{0};
 inline std::atomic<std::uint64_t> late_vram_writes{0}; ///< labels and the like put into VRAM copies
 /// BB_GUEST_IN_PLACE: copies of in-place data the CPU writes into VRAM for reading (ShadowCopy).
 inline std::atomic<std::uint64_t> shadow_copies{0}, shadow_bytes{0};
@@ -152,6 +154,8 @@ inline std::atomic<std::uint64_t> image_hash_bytes{0}, image_hash_reused_bytes{0
 inline std::atomic<std::uint64_t> t_image_hash{0}, t_hash_snapshot{0}, t_detile{0}, t_image_upload{0};
 inline std::atomic<std::uint64_t> t_image_alloc{0}, t_image_view{0}, t_image_format{0},
     image_recycle_hits{0}, image_recycle_bytes{0};
+inline std::atomic<std::uint64_t> t_image_query{0}, t_image_vma{0}, image_query_hits{0},
+    image_query_misses{0}, image_query_bypasses{0};
 inline std::atomic<std::uint64_t> buffer_upload_bytes{0};
 inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command thread
 inline std::atomic<std::uint64_t> draws{0}, dispatches{0}, submissions{0};

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "common/hash.h"
+#include "common/serdes.h"
+#include "video_core/cache_storage.h"
 #include "pipeline_prep_comp.h"
 #include "pipeline_prep_frag.h"
 #include "pipeline_prep_quad.h"
@@ -11,6 +13,7 @@
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/image.h"
 #include <array>
@@ -20,6 +23,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <stdexcept>
+#include <string_view>
 #include <windows.h>
 
 namespace AmdGpu {
@@ -30,6 +36,213 @@ struct LiverpoolTaskTest {
 
 namespace Vulkan {
 struct PipelinePrecompileTest {
+    static void OfflineReplayGuards() {
+        const auto root = std::filesystem::path{"out/test-fixtures/pipeline-replay-native"};
+        std::filesystem::create_directories(root);
+        const auto file = root / "profile.bin";
+        { std::ofstream stream(file, std::ios::binary); stream << "unchanged"; }
+        auto& db = Storage::DataBase::Instance();
+        db.OpenReadOnly(root);
+        // Offline loading must not accumulate executable SRT walkers per repeat.
+        std::array<u8, 4> code{0x90, 0x90, 0x90, 0xc3};
+        Shader::PersistentSrtInfo original{};
+        original.walker_func = reinterpret_cast<Shader::PFN_SrtWalker>(code.data());
+        original.walker_func_size = code.size();
+        Serialization::Archive writer;
+        original.Serialize(writer);
+        Serialization::Archive reader{writer.TakeOff()};
+        Shader::PersistentSrtInfo restored{};
+        assert(restored.Deserialize(reader));
+        assert(reader.IsEoS() && !restored.walker_func && restored.walker_func_size == 0);
+        assert(!db.Save(Storage::BlobType::ShaderProfile, "profile", std::vector<u8>{1, 2}));
+        assert(!db.Save(Storage::BlobType::ShaderBinary, "unused", std::vector<u32>{1, 2}));
+        db.Clear();
+        db.FinishPreload();
+        std::vector<u8> bytes;
+        db.Load(Storage::BlobType::ShaderProfile, "profile", bytes);
+        assert(std::string(bytes.begin(), bytes.end()) == "unchanged");
+        db.Close();
+        assert(!std::filesystem::exists(root / "unused.spv"));
+        puts("PASS: replay database refuses writes/clear; offline metadata skips executable walkers");
+    }
+    static void ClipPermutationReuse(PipelineCache& cache, AmdGpu::Liverpool& gpu) {
+        const auto saved = std::make_unique<AmdGpu::Regs>(gpu.regs);
+        const bool clip_profile = cache.profile.needs_clip_distance_emulation;
+        cache.profile.needs_clip_distance_emulation = true;
+        gpu.regs = {};
+        gpu.regs.primitive_type = AmdGpu::PrimitiveType::TriangleList;
+        gpu.regs.clipper_control.user_clip_plane_enable = 1;
+        gpu.regs.num_interp = 6;
+        for (u32 i = 0; i < gpu.regs.ps_inputs.size(); ++i) gpu.regs.ps_inputs[i].input_offset = i;
+        const std::array<u32, 3> code{0xBEEB03FF, 0, 0xBF810000};
+        const std::array<u32, 16> user_data{};
+        constexpr u64 hash = 0x880010;
+        const Shader::ShaderParams params{user_data, code, hash};
+        PipelineSelection selection{};
+        selection.regs = &gpu.regs;
+        const auto select = [&] {
+            Shader::Backend::Bindings bindings{};
+            selection.cold_shader = selection.new_permutation = false;
+            return cache.GetProgram(selection, Shader::HwStage::Fragment,
+                                    Shader::SwStage::Fragment, params, bindings);
+        };
+        const auto first = select();
+        auto& program = *cache.program_cache.at(hash);
+        for (unsigned i = 0; i < 40; ++i) {
+            const auto next = select();
+            assert(std::get<1>(next) == std::get<1>(first));
+            assert(std::get<3>(next) == std::get<3>(first));
+            assert(!selection.new_permutation && program.modules.size() == 1);
+        }
+        // A real change in fragment input layout must still get its own shader.
+        gpu.regs.num_interp = 7;
+        const auto changed = select();
+        assert(selection.new_permutation && program.modules.size() == 2);
+        assert(std::get<3>(changed) != std::get<3>(first));
+        for (unsigned i = 0; i < 20; ++i) {
+            assert(std::get<1>(select()) == std::get<1>(changed));
+            assert(!selection.new_permutation && program.modules.size() == 2);
+        }
+        gpu.regs.num_interp = 6;
+        assert(std::get<1>(select()) == std::get<1>(first));
+        assert(!selection.new_permutation && program.modules.size() == 2);
+        cache.profile.needs_clip_distance_emulation = clip_profile;
+        gpu.regs = *saved;
+        puts("PASS: production fragment lookup reuses clip-distance shaders across repeated draws; changed input layouts remain distinct");
+    }
+
+    static void WarmupRollback(PipelineCache& cache, vk::ShaderModule stable) {
+        constexpr u64 good_hash=0xabcd0001, bad_hash=0xabcd0002;
+        auto good=std::make_unique<Program>(); good->info.pgm_hash=good_hash;
+        good->AddPermut(stable,{});
+        cache.program_cache.emplace(good_hash,std::move(good));
+        const auto temporary=CompileSPV(PIPELINE_PREP_COMP,cache.instance.GetDevice());
+        auto bad=std::make_unique<Program>(); bad->info.pgm_hash=bad_hash;
+        bad->AddPermut(temporary,{});
+        cache.program_cache.emplace(bad_hash,std::move(bad));
+        cache.warmup_modules.push_back({bad_hash,0,temporary});
+        cache.RollbackWarmupModules();
+        assert(!cache.program_cache.contains(bad_hash));
+        assert(cache.program_cache.at(good_hash)->modules[0].module==stable);
+        cache.program_cache.erase(good_hash);
+        puts("PASS: rejected warm-up rolls back its new modules while retaining compatible shaders");
+    }
+    static void RolledBackPermutation(PipelineCache& cache, AmdGpu::Liverpool& gpu) {
+        auto& regs = gpu.GetCsRegs();
+        const auto saved = regs;
+        regs = {};
+        regs.num_thread_x.full = regs.num_thread_y.full = regs.num_thread_z.full = 1;
+        const std::array<u32, 3> code{0xBEEB03FF, 0, 0xBF810000};
+        const std::array<u32, 16> user_data{};
+        constexpr u64 hash = 0x880011;
+        const Shader::ShaderParams params{user_data, code, hash};
+        PipelineSelection selection{};
+        selection.regs = &gpu.regs;
+        selection.compute_regs = &regs;
+        const auto select = [&](PrepWorker* worker = nullptr) {
+            selection.worker = worker;
+            selection.cold_shader = selection.new_permutation = false;
+            Shader::Backend::Bindings bindings{};
+            return cache.GetProgram(selection, Shader::HwStage::Compute,
+                                    Shader::SwStage::Compute, params, bindings);
+        };
+        const auto lower = select();
+        regs.num_thread_x.full = 2;
+        const auto higher = select();
+        auto& program = *cache.program_cache.at(hash);
+        assert(program.modules.size() == 2 && std::get<1>(lower) && std::get<1>(higher));
+        const auto old_spec = program.modules[0].spec;
+        cache.warmup_modules.push_back({hash, 0, std::get<1>(lower)});
+        cache.RollbackWarmupModules();
+        assert(program.modules.size() == 2 && !program.modules[0].module);
+        assert(program.modules[1].module == std::get<1>(higher));
+
+        regs.num_thread_x.full = 1;
+        PrepWorker missing;
+        const auto absent = select(&missing);
+        assert(!std::get<1>(absent) && missing.failed && missing.missing_shader);
+        assert(!program.modules[0].spec.Valid());
+
+        // Also reject an otherwise matching specialization with no module. This
+        // covers both lookup paths independently of rollback invalidation.
+        program.modules[0].spec = old_spec;
+        PrepWorker stale;
+        assert(!std::get<1>(select(&stale)) && stale.failed && stale.missing_shader);
+        program.last_used = 0;
+        const auto rebuilt = select();
+        assert(selection.new_permutation && std::get<1>(rebuilt));
+        assert(program.modules.size() == 3 && std::get<3>(rebuilt) == HashCombine(hash, 2));
+        // The stale last-used slot and the full search must both skip the hole.
+        assert(std::get<1>(select()) == std::get<1>(rebuilt) && !selection.new_permutation);
+        PrepWorker ready;
+        assert(std::get<1>(select(&ready)) == std::get<1>(rebuilt) && !ready.failed);
+        regs.num_thread_x.full = 2;
+        const auto retained = select();
+        assert(std::get<1>(retained) == std::get<1>(higher));
+        assert(std::get<3>(retained) == HashCombine(hash, 1) && program.modules.size() == 3);
+        program.modules[0].spec = {};
+
+        ComputePipeline::SerializationSupport data;
+        ComputePipeline pipeline{cache.instance, cache.scheduler, cache.desc_heap, cache.profile,
+            *cache.pipeline_cache, {std::get<3>(rebuilt)}, *std::get<0>(rebuilt),
+            std::get<1>(rebuilt), data, false};
+        assert(pipeline.Handle());
+        regs = saved;
+        puts("PASS: partial rollback preserves higher indices, both lookups reject dead modules, "
+             "required lookup recompiles and creates a native pipeline");
+    }
+    static void MissingModules(PipelineCache& cache, PipelineSelection& selection) {
+        for (const bool preloading : {false, true}) {
+            for (const auto stage : {Shader::SwStage::Vertex, Shader::SwStage::Fragment}) {
+                auto modules = selection.modules;
+                modules[u32(stage)] = nullptr;
+                bool rejected = false, scheduled = false;
+                GraphicsPipeline::SerializationSupport data;
+                try {
+                    GraphicsPipeline pipeline{cache.instance, cache.scheduler, cache.desc_heap,
+                        cache.profile, selection.graphics_key, *cache.pipeline_cache,
+                        selection.infos, selection.runtime_infos, selection.fetch_shader,
+                        modules, data, preloading, !preloading,
+                        [&](Pipeline::NativeWork work) {
+                            scheduled = true;
+                            return work;
+                        }};
+                } catch (const std::invalid_argument& error) {
+                    rejected = std::string_view{error.what()}.find("missing shader module") !=
+                               std::string_view::npos;
+                }
+                assert(rejected && !scheduled);
+            }
+        }
+        bool rejected = false;
+        GraphicsPipeline::SerializationSupport graphics_data;
+        try {
+            GraphicsPipeline pipeline{cache.instance, cache.scheduler, cache.desc_heap,
+                cache.profile, selection.graphics_key, *cache.pipeline_cache,
+                selection.infos, selection.runtime_infos, selection.fetch_shader,
+                std::span<const vk::ShaderModule>{}, graphics_data, false};
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        assert(rejected);
+        for (const bool preloading : {false, true}) {
+            rejected = false;
+            ComputePipeline::SerializationSupport data;
+            Shader::Info info;
+            try {
+                ComputePipeline pipeline{cache.instance, cache.scheduler, cache.desc_heap,
+                    cache.profile, *cache.pipeline_cache, {0xdeadbeef}, info, {}, data,
+                    preloading, !preloading};
+            } catch (const std::invalid_argument& error) {
+                const std::string_view message{error.what()};
+                rejected = message.find("missing shader module") != message.npos &&
+                           message.find("0xdeadbeef") != message.npos;
+            }
+            assert(rejected);
+        }
+        puts("PASS: missing graphics/compute modules and truncated stage arrays are rejected "
+             "before native creation or scheduling");
+    }
     static void RequiredEntry(PipelineCache& cache, AmdGpu::Liverpool& gpu, vk::ShaderModule module, bool lookahead = false) {
         auto saved=std::make_unique<AmdGpu::Regs>(gpu.regs);
         gpu.regs={};gpu.regs.primitive_type=AmdGpu::PrimitiveType::TriangleList;
@@ -234,10 +447,69 @@ struct PipelinePrecompileTest {
         return info;
     }
     static void CheckComputeAdoption(PipelineCache &cache, bool prepared) {
-        assert(cache.prepared_compute_hits == (prepared ? 1u : 2u));
+        const bool deferred = !(std::getenv("BB_FIRST_USE_COMPUTE") && std::getenv("BB_FIRST_USE_COMPUTE")[0] == '0');
+        assert(cache.prepared_compute_hits == (prepared || deferred ? 1u : 2u));
         assert(cache.compute_precompiler->RequiredQueued() == (prepared ? 0u : 1u));
     }
+    static std::function<void()> GateCompute(PipelineCache& cache) {
+        static u64 next{};
+        const ComputePipelineKey key{0xf00d0000 + next++};
+        auto release = std::make_shared<std::promise<void>>();
+        auto gate = release->get_future().share();
+        auto entered = std::make_shared<std::promise<void>>();
+        auto started = entered->get_future();
+        assert(cache.compute_precompiler->Queue(key, [gate, entered] {
+            return [gate, entered] { entered->set_value(); gate.wait(); return PipelineCache::PreparedCompute{}; };
+        }));
+        assert(started.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        return [release, &cache, key] {
+            release->set_value();
+            assert(cache.compute_precompiler->TakeOrReserve(key));
+        };
+    }
+    static void ComputeDrain(PipelineCache& cache) {
+        auto release = GateCompute(cache);
+        const ComputePipelineKey key{0xfeed0002};
+        ComputePipeline::SerializationSupport data;
+        auto pipeline = std::make_unique<ComputePipeline>(cache.instance, cache.scheduler,
+            cache.desc_heap, cache.profile, *cache.compute_preparation_cache, key,
+            *cache.sel.infos[0], cache.sel.modules[0], data, false, false,
+            cache.FirstUseComputeSchedule(key));
+        assert(pipeline->NativePending() && pipeline->GetLayout());
+        cache.compute_pipelines.emplace(key, std::move(pipeline));
+        auto drain = std::async(std::launch::async, [&] { cache.Sync(); });
+        assert(drain.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
+        release();
+        drain.get();
+        assert(!cache.compute_pipelines.at(key)->NativePending());
+        puts("PASS: shutdown drains an unused pending compute pipeline before merging/stopping its cache");
+    }
     static void CheckPriority(PipelineCache& cache) {
+        std::promise<int> native_priority;
+        auto observed = native_priority.get_future();
+        GraphicsPipelineKey first_use{};
+        first_use.stage_hashes[0] = 0x770011;
+        auto completion = cache.FirstUseSchedule(first_use)([&] {
+            native_priority.set_value(GetThreadPriority(GetCurrentThread()));
+            return vk::UniquePipeline{};
+        });
+        assert(observed.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        const bool boosted = !(std::getenv("BB_REQUIRED_PIPELINE_PRIORITY") &&
+                               std::getenv("BB_REQUIRED_PIPELINE_PRIORITY")[0] == '0');
+        assert(observed.get() == (boosted ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_IDLE));
+        completion(); // Deliberately consume only after observing the worker's priority.
+        std::promise<int> idle_priority;
+        auto idle = idle_priority.get_future();
+        GraphicsPipelineKey speculative{};
+        speculative.stage_hashes[0] = 0x770012;
+        assert(cache.precompiler->Queue(speculative, [&] { return [&] {
+            idle_priority.set_value(GetThreadPriority(GetCurrentThread()));
+            return PipelineCache::PreparedPipeline{};
+        }; }));
+        assert(idle.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        assert(idle.get() == THREAD_PRIORITY_IDLE);
+        assert(cache.precompiler->TakeOrReserve(speculative));
+        puts("PASS: required native work gets priority before any bind wait; speculative work restores idle priority");
         GraphicsPipelineKey key{};
         key.prim_type = AmdGpu::PrimitiveType::TriangleFan;
         auto result = cache.precompiler->TakeOrQueue(key, [] {
@@ -323,6 +595,7 @@ int main() {
     _putenv_s("BB_PIPELINE_PREP", "1");
     _putenv_s("BB_NULL_GPU", "1");
     CheckRegisterReplay();
+    Vulkan::PipelinePrecompileTest::OfflineReplayGuards();
     using namespace Vulkan;
     Instance instance{-1, false};
     if (!instance.IsVertexInputDynamicState()) {
@@ -378,6 +651,9 @@ int main() {
                            nullptr, dispatch)
                        .value;
     PipelineCache cache{instance, scheduler, &gpu, 16};
+    PipelinePrecompileTest::ClipPermutationReuse(cache, gpu);
+    PipelinePrecompileTest::WarmupRollback(cache,*compute);
+    PipelinePrecompileTest::RolledBackPermutation(cache, gpu);
     PipelinePrecompileTest::CheckPriority(cache);
     PipelinePrecompileTest::ScanGraphics(cache,*vertex);
     PipelinePrecompileTest::ScanGraphics(cache,*vertex,false);
@@ -412,6 +688,7 @@ int main() {
     key.color_buffers[0].num_format = AmdGpu::NumberFormat::Unorm;
     key.write_masks[0] = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    PipelinePrecompileTest::MissingModules(cache, selection);
     for (const auto primitive :
          {AmdGpu::PrimitiveType::TriangleList, AmdGpu::PrimitiveType::TriangleStrip,
           AmdGpu::PrimitiveType::RectList, AmdGpu::PrimitiveType::QuadList}) {
@@ -552,7 +829,24 @@ int main() {
             PipelinePrecompileTest::ScanCompute(cache);
             regs.user_data[0] = 999; // Owned queued snapshot must survive changed register data.
         }
-        const auto *pipeline = cache.GetComputePipeline();
+        const bool deferred = !prepared && !(std::getenv("BB_FIRST_USE_COMPUTE") &&
+                                             std::getenv("BB_FIRST_USE_COMPUTE")[0] == '0');
+        std::function<void()> release;
+        if (deferred) release = PipelinePrecompileTest::GateCompute(cache);
+        auto selected = std::async(std::launch::async, [&] { return cache.GetComputePipeline(); });
+        const bool frontend_ready = selected.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+        if (!frontend_ready && release) { release(); release = {}; }
+        assert(frontend_ready);
+        const auto *pipeline = selected.get();
+        if (deferred) {
+            assert(pipeline->NativePending() && pipeline->GetLayout());
+            assert(cache.GetComputePipeline() == pipeline);
+            auto native = std::async(std::launch::async, [pipeline] { return pipeline->Handle(); });
+            assert(native.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
+            release();
+            assert(native.get() && !pipeline->NativePending());
+            puts("PASS: production compute frontend returns while compiler is gated; layout is usable, bind waits and owned state survives constructor thread exit");
+        }
         if (!prepared) assert(cache.ProgramGeneration() == generation + 1);
         assert(&pipeline->GetStage(Shader::SwStage::Compute) == info);
         PipelinePrecompileTest::CheckComputeAdoption(cache, prepared);
@@ -583,7 +877,7 @@ int main() {
             assert(actual == (i ^ 0xA5A5u));
         }
     }
-    cache.Sync();
+    PipelinePrecompileTest::ComputeDrain(cache);
     puts("PASS: prepared and required production compute pipelines validate "
          "keys, rebind runtime stages and produce exact GPU readback; caches "
          "merged after drain");
