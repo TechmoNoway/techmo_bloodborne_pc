@@ -16,6 +16,7 @@
 #include "core/emulator_settings.h"
 #include "hdr_output.h"
 #include "performance_monitor.h"
+#include "vram_monitor.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -71,6 +72,7 @@ std::string prompt_title, prompt_text;
 std::chrono::steady_clock::time_point last_present{};
 float frame_ms_avg = 0.0f;
 std::unique_ptr<PerformanceMonitor::Monitor> performance_monitor;
+std::unique_ptr<VideoMemory::Monitor> vram_monitor;
 
 float PixelDensity(SDL_WindowID id);
 
@@ -509,6 +511,7 @@ void Menu() {
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
     Checkbox("CPU usage in corner (system)", s.show_cpu);
     Checkbox("GPU usage in corner (active adapter)", s.show_gpu);
+    Checkbox("VRAM in corner (game used / physical capacity)", s.show_vram);
 
     ImGui::Spacing();
     if (ImGui::Button(BbSettings::MenuText("Close", "Закрыть"))) {
@@ -535,9 +538,10 @@ void PerformanceCounter() {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
     const auto& s = BbSettings::Get();
-    const auto text=PerformanceMonitor::OverlayText(s.show_fps,s.show_cpu,s.show_gpu,
+    auto text=PerformanceMonitor::OverlayText(s.show_fps,s.show_cpu,s.show_gpu,
         frame_ms_avg>0.0f?1000.0f/frame_ms_avg:0.0f,frame_ms_avg,
         BbSettings::UpscalerName(s.upscaler),performance_monitor?performance_monitor->Read():PerformanceMonitor::Snapshot{});
+    if (s.show_vram) { if (!text.empty()) text += "  |  "; text += VideoMemory::Text(vram_monitor ? vram_monitor->Read() : VideoMemory::Sample{}); }
     ImGui::TextUnformatted(text.c_str());
     ImGui::End();
 }
@@ -643,6 +647,7 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     std::memcpy(&adapter.low,identity.deviceLUID.data(),sizeof(adapter.low));
     std::memcpy(&adapter.high,identity.deviceLUID.data()+sizeof(adapter.low),sizeof(adapter.high));
     performance_monitor=std::make_unique<PerformanceMonitor::Monitor>(adapter);
+    vram_monitor=std::make_unique<VideoMemory::Monitor>(VideoMemory::Adapter{adapter.low,adapter.high,adapter.node_mask,adapter.valid && properties.get<vk::PhysicalDeviceProperties2>().properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu});
     std::printf("Overlay: menu ready (Insert or L3+R3)\n");
 }
 
@@ -753,7 +758,8 @@ bool HandleEvent(const SDL_Event& event) {
 
 bool Visible() {
     const auto& s=BbSettings::Get();
-    return initialized && (menu_open || prompt_active || s.show_fps || s.show_cpu || s.show_gpu);
+    if (vram_monitor) vram_monitor->Request(s.show_vram);
+    return initialized && (menu_open || prompt_active || s.show_fps || s.show_cpu || s.show_gpu || s.show_vram);
 }
 
 bool MenuOpen() {
@@ -796,7 +802,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     const auto& settings=BbSettings::Get();
     if(performance_monitor)performance_monitor->Request(settings.show_cpu,settings.show_gpu);
-    if ((settings.show_fps || settings.show_cpu || settings.show_gpu) && !menu_open) {
+    if ((settings.show_fps || settings.show_cpu || settings.show_gpu || settings.show_vram) && !menu_open) {
         PerformanceCounter();
     }
     if (prompt_active && !menu_open) {

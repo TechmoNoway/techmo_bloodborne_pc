@@ -68,6 +68,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.show_fps = i != 0;
     } else if (key == "show_cpu") {
         v.show_cpu = i != 0;
+    } else if (key == "show_vram") {
+        v.show_vram = i != 0;
     } else if (key == "show_gpu") {
         v.show_gpu = i != 0;
     } else if (key == "menu_pos") {
@@ -283,6 +285,7 @@ void Save() {
     put("show_fps", flag(v.show_fps));
     put("show_cpu", flag(v.show_cpu));
     put("show_gpu", flag(v.show_gpu));
+    put("show_vram", flag(v.show_vram));
     put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
     put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
     // Read by patches.py at start.

@@ -77,6 +77,12 @@ jobs:
             exit "$rc"
           fi
 
+      - name: Test VRAM sampler
+        shell: msys2 {0}
+        run: |
+          ninja -C out/gpu -j2 vram-monitor-test
+          out/gpu/vram-monitor-test.exe
+
       - name: Build and run precache regression tests
         shell: msys2 {0}
         run: |

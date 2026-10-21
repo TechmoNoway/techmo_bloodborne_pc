@@ -270,6 +270,7 @@
                                     <CheckBox x:Name="ShowFpsCheck" Content="{local:Loc Key=Ui.Show_FPS_counter}" />
                                     <CheckBox x:Name="ShowCpuCheck" Content="{local:Loc Key=Overlay.Cpu}" />
                                     <CheckBox x:Name="ShowGpuCheck" Content="{local:Loc Key=Overlay.Gpu}" />
+                                    <CheckBox x:Name="ShowVramCheck" Content="{local:Loc Key=Overlay.Vram}" ToolTip="{local:Loc Key=Overlay.VramDescription}" />
                                     <TextBlock Text="{local:Loc Key=Overlay.Description}" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,12,0,0" />
                                 </StackPanel>
                             </Border>

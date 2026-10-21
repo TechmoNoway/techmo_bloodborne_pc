@@ -21,6 +21,7 @@ public partial class MainWindow : Window
         public bool ShowFps { get; set; }
         public bool ShowCpu { get; set; }
         public bool ShowGpu { get; set; }
+        public bool ShowVram { get; set; }
         public string PresentMode { get; set; } = "";
         // Physical-display calibration is shared by all gameplay profiles.
         public bool HdrOutput { get; set; }
@@ -146,6 +147,7 @@ public partial class MainWindow : Window
         if (ReadIniValue("show_fps") is string showFps) state.ShowFps = showFps == "1";
         if (ReadIniValue("show_cpu") is string showCpu) state.ShowCpu = showCpu == "1";
         if (ReadIniValue("show_gpu") is string showGpu) state.ShowGpu = showGpu == "1";
+        if ((ReadIniValue("show_vram") ?? ReadIniValue("show_fps_vram")) is string showVram) state.ShowVram = showVram == "1";
         if (ReadIniValue("sharpen") is string sharpen) state.Sharpen = sharpen == "1";
         state.Sharpness = double.TryParse(ReadIniValue("sharpness"), NumberStyles.Float, CultureInfo.InvariantCulture, out double sharpness)
             ? NormalizeSharpness(sharpness) : NormalizeSharpness(state.Sharpness);
@@ -232,6 +234,7 @@ public partial class MainWindow : Window
         ShowFpsCheck.IsChecked = state.ShowFps;
         ShowCpuCheck.IsChecked = state.ShowCpu;
         ShowGpuCheck.IsChecked = state.ShowGpu;
+        ShowVramCheck.IsChecked = state.ShowVram;
         HdrOutputCheck.IsChecked = state.HdrOutput;
         SetComboTag(HdrWhiteCombo, state.HdrWhite);
         SetComboTag(HdrPeakCombo, state.HdrPeak);
@@ -290,6 +293,7 @@ public partial class MainWindow : Window
         state.ShowFps = ShowFpsCheck.IsChecked == true;
         state.ShowCpu = ShowCpuCheck.IsChecked == true;
         state.ShowGpu = ShowGpuCheck.IsChecked == true;
+        state.ShowVram = ShowVramCheck.IsChecked == true;
         state.PresentMode = ComboTag(PresentCombo);
         state.HdrOutput = HdrOutputCheck.IsChecked == true;
         state.HdrWhite = ComboTag(HdrWhiteCombo, "203");
@@ -353,6 +357,8 @@ public partial class MainWindow : Window
             ["show_fps"] = state.ShowFps ? "1" : "0",
             ["show_cpu"] = state.ShowCpu ? "1" : "0",
             ["show_gpu"] = state.ShowGpu ? "1" : "0",
+            ["show_vram"] = state.ShowVram ? "1" : "0",
+            ["show_fps_vram"] = state.ShowVram ? "1" : "0",
             ["output_res"] = state.Resolution,
             ["fullscreen"] = state.Fullscreen ? "1" : "0",
             ["live_resolution"] = state.LiveResolution,

@@ -513,5 +513,7 @@
   "Hub.Undone": "Đã hoàn tác các thay đổi chưa áp dụng",
   "Overlay.Cpu": "Hiện mức sử dụng CPU (%)",
   "Overlay.Gpu": "Hiện mức sử dụng GPU (%)",
+  "Overlay.Vram": "Hiện VRAM (đang dùng / tổng GiB)",
+  "Overlay.VramDescription": "Bộ nhớ GPU cục bộ của game / dung lượng VRAM riêng của card đang render. Không tính RAM hệ thống dùng chung.",
   "Overlay.Description": "Chọn thông số hiển thị chung ở góc màn hình. CPU là mức sử dụng toàn hệ thống; GPU là mức sử dụng card đang chạy game. Cập nhật khoảng hai lần mỗi giây. N/A nghĩa là chưa có số liệu."
 }
