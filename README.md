@@ -10,6 +10,7 @@ keyboard/mouse controls and gameplay performance recording.
 - Display, upscaling, effects, camera and engine settings.
 - Hardware-based graphics recommendations with preview and Apply/Undo.
 - Trophy tracking, save backups, mods and online settings.
+- Title-menu Exit Game row with the game's YES/NO confirmation.
 - Session reports and PresentMon benchmark captures.
 
 ## Download

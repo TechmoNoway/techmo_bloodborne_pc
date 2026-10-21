@@ -85,13 +85,14 @@ def main():
                 continue
             relative = path.relative_to(ROOT).as_posix()
             source_digest.update(relative.encode() + b'\0' + bytes.fromhex(digest(path)))
-    for name in ('engine/bbhost-changes.patch', 'engine/techmo-compat.patch', 'engine/win_compat.h', 'engine.lock.json', 'build.sh', 'run.bat'):
+    for name in ('engine/bbhost-changes.patch', 'engine/techmo-compat.patch', 'engine/techmo-menu.patch', 'engine/win_compat.h', 'engine.lock.json', 'build.sh', 'run.bat'):
         source_digest.update(name.encode() + b'\0' + bytes.fromhex(digest(ROOT / name)))
     manifest = {
         'schema_version': 1, 'built_utc': datetime.now(timezone.utc).isoformat(),
         'source_identity': source_identity(ROOT),
         'engine_source': dict(lock, patch_sha256=digest(ROOT / lock['patch']),
                               techmo_input_compatibility_sha256=digest(ROOT / 'engine/techmo-compat.patch'),
+                              techmo_menu_sha256=digest(ROOT / 'engine/techmo-menu.patch'),
                               native_base=command('git', '-C', str(native), 'rev-parse', 'HEAD')),
         'target': 'Windows x64', 'configuration': 'RelWithDebInfo',
         'compiler': command('clang', '--version'),

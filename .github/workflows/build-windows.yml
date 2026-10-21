@@ -89,6 +89,9 @@ jobs:
           BB_JOBS: '2'
           BB_MARCH: x86-64-v3
         run: bash build.sh
+      - name: Test title-menu asset generation
+        shell: msys2 {0}
+        run: python -B -m unittest discover -s tests -p test_title_menu.py -v
       - uses: actions/download-artifact@v4
         with:
           name: Techmo-launcher-win-x64

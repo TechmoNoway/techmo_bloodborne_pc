@@ -12,6 +12,12 @@ $head = (git -C $native rev-parse HEAD).Trim()
 if ($head -ne $lock.base_commit) { throw "Wrong native base: $head" }
 $patch = Join-Path $root $lock.patch
 $compatibility = Join-Path $root 'engine\techmo-compat.patch'
+$menu = Join-Path $root 'engine\techmo-menu.patch'
+git -C $native apply --reverse --check $menu 2>$null
+if ($LASTEXITCODE -eq 0) {
+    git -C $native apply --reverse $menu
+    if ($LASTEXITCODE) { throw 'Could not validate the Techmo title menu patch.' }
+}
 git -C $native apply --reverse --check $compatibility 2>$null
 if ($LASTEXITCODE -eq 0) {
     git -C $native apply --reverse $compatibility
@@ -30,6 +36,10 @@ if ($LASTEXITCODE) {
     if ($LASTEXITCODE) { throw 'Native source differs from the expected Techmo compatibility patch.' }
     git -C $native apply $compatibility
     if ($LASTEXITCODE) { throw 'Techmo input compatibility patch failed.' }
+    git -C $native apply --check $menu
+    if ($LASTEXITCODE) { throw 'Native source differs from the expected Techmo title menu patch.' }
+    git -C $native apply $menu
+    if ($LASTEXITCODE) { throw 'Techmo title menu patch failed.' }
 }
 Copy-Item -LiteralPath (Join-Path $root 'engine\win_compat.h') -Destination (Join-Path $native 'gpu\win_compat.h')
 git -C $native submodule update --init --recursive

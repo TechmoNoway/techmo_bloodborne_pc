@@ -65,6 +65,11 @@ Python; set `BB_MSYS2` if it is outside `C:\msys64`.
 `tests/test_pc_input.cpp` checks native modifier and mouse handling against a
 bootstrapped engine. CI does not run the game or claim gameplay performance.
 
+The native CI job also runs `tests/test_title_menu.py` against the compiled asset
+tool. Synthetic base/DLC/EU title movies must gain exactly one final Exit Game
+slot while preserving the five original rows and source files. The menu patch
+is applied separately by bootstrap and recorded in the native build manifest.
+
 ## Benchmark
 
 Use Diagnostics > Start benchmark, or `builds/launcher/Benchmark.cmd`.
