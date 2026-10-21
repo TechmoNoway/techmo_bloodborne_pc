@@ -429,33 +429,33 @@ static class Program
     }
 
     static void VerifyOverlaySettings(string output,string root) {
-        var fields=new[]{"ShowFpsCheck","ShowCpuCheck","ShowGpuCheck"};
-        var keys=new[]{"show_fps","show_cpu","show_gpu"};
+        var fields=new[]{"ShowFpsCheck","ShowCpuCheck","ShowGpuCheck","ShowVramCheck"};
+        var keys=new[]{"show_fps","show_cpu","show_gpu","show_vram"};
         string ini=Path.Combine(root,"bbport.ini"),library=Path.Combine(root,"user","launcher","profiles.json");
-        for(int mask=0;mask<8;++mask) {
+        for(int mask=0;mask<16;++mask) {
             for(int i=0;i<fields.Length;++i)Get<CheckBox>(fields[i]).IsChecked=(mask&(1<<i))!=0;
             Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
-            Check(Enumerable.Range(0,3).All(i=>Get<CheckBox>(fields[i]).IsChecked==((mask&(1<<i))!=0) && File.ReadAllLines(ini).Contains(keys[i]+"="+((mask&(1<<i))!=0?"1":"0"))),"FPS/CPU/GPU checkboxes persist independently: "+mask);
+            Check(Enumerable.Range(0,4).All(i=>Get<CheckBox>(fields[i]).IsChecked==((mask&(1<<i))!=0) && File.ReadAllLines(ini).Contains(keys[i]+"="+((mask&(1<<i))!=0?"1":"0"))),"FPS/CPU/GPU/VRAM checkboxes persist independently: "+mask);
         }
         var picker=Get<ComboBox>("ProfileCombo");picker.SelectedIndex=0;
-        Get<CheckBox>("ShowCpuCheck").IsChecked=true;Get<CheckBox>("ShowGpuCheck").IsChecked=false;Call("SaveSettings");
-        picker.SelectedIndex=1;Get<CheckBox>("ShowCpuCheck").IsChecked=false;Get<CheckBox>("ShowGpuCheck").IsChecked=true;Call("SaveSettings");
+        Get<CheckBox>("ShowCpuCheck").IsChecked=true;Get<CheckBox>("ShowGpuCheck").IsChecked=false;Get<CheckBox>("ShowVramCheck").IsChecked=true;Call("SaveSettings");
+        picker.SelectedIndex=1;Get<CheckBox>("ShowCpuCheck").IsChecked=false;Get<CheckBox>("ShowGpuCheck").IsChecked=true;Get<CheckBox>("ShowVramCheck").IsChecked=false;Call("SaveSettings");
         picker.SelectedIndex=0;
-        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==false,"Profiles restore their own monitoring choices");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==false && Get<CheckBox>("ShowVramCheck").IsChecked==true,"Profiles restore their own monitoring choices");
         Call("SaveSettings");picker.SelectedIndex=1;Call("SaveSettings");
         var legacy=JsonNode.Parse(File.ReadAllText(library))!;
-        foreach(var profile in legacy["Profiles"]!.AsArray()) { profile!["Settings"]!.AsObject().Remove("ShowCpu");profile["Settings"]!.AsObject().Remove("ShowGpu"); }
+        foreach(var profile in legacy["Profiles"]!.AsArray()) { profile!["Settings"]!.AsObject().Remove("ShowCpu");profile["Settings"]!.AsObject().Remove("ShowGpu");profile["Settings"]!.AsObject().Remove("ShowVram"); }
         File.WriteAllText(library,legacy.ToJsonString());Call("InitializeProfiles");
         Call("ApplyProfile",Get<ComboBox>("ProfileCombo").SelectedItem);Call("SaveSettings");
-        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false && JsonNode.Parse(File.ReadAllText(library))!["Version"]!.GetValue<int>()==1,"Existing v1 profiles migrate missing metrics to Off without losing the profile");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false && Get<CheckBox>("ShowVramCheck").IsChecked==false && JsonNode.Parse(File.ReadAllText(library))!["Version"]!.GetValue<int>()==1,"Existing v1 profiles migrate missing metrics to Off without losing the profile");
         string saved=File.ReadAllText(ini);
-        File.WriteAllText(ini,saved.Replace("show_fps_cpu=0","show_fps_cpu=1").Replace("show_fps_gpu=0","show_fps_gpu=1"));
+        File.WriteAllText(ini,saved.Replace("show_fps_cpu=0","show_fps_cpu=1").Replace("show_fps_gpu=0","show_fps_gpu=1").Replace("show_fps_vram=0","show_fps_vram=1"));
         Call("LoadState");Call("ApplyStateToUi");
-        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==true,"In-game monitoring changes are read back from the runtime INI");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==true && Get<CheckBox>("ShowVramCheck").IsChecked==true,"In-game monitoring changes are read back from the runtime INI");
         ClickNav("Display");Get<CheckBox>("ShowFpsCheck").IsChecked=true;
         Render(Path.Combine(output,"overlay-options-en.png"),1320,960);Get<ScrollViewer>("DisplayPage").ScrollToVerticalOffset(600);Pump();Render(Path.Combine(output,"overlay-options-en.png"),1320,960);
         Select("UiLanguageCombo","vi");Render(Path.Combine(output,"overlay-options-vi.png"),1320,960);
-        Check(Get<CheckBox>("ShowCpuCheck").Content?.ToString()=="Hiện mức sử dụng CPU (%)" && Get<CheckBox>("ShowGpuCheck").Content?.ToString()=="Hiện mức sử dụng GPU (%)","Monitoring controls translate to Vietnamese");
+        Check(Get<CheckBox>("ShowCpuCheck").Content?.ToString()=="Hiện mức sử dụng CPU (%)" && Get<CheckBox>("ShowGpuCheck").Content?.ToString()=="Hiện mức sử dụng GPU (%)" && Get<CheckBox>("ShowVramCheck").Content?.ToString()=="Hiện VRAM (đang dùng / tổng GiB)","Monitoring controls translate to Vietnamese");
         Select("UiLanguageCombo","en");Call("SaveSettings");
     }
 

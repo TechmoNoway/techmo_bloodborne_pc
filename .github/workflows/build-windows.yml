@@ -92,6 +92,11 @@ jobs:
       - name: Test title-menu asset generation
         shell: msys2 {0}
         run: python -B -m unittest discover -s tests -p test_title_menu.py -v
+      - name: Test VRAM sampler
+        shell: msys2 {0}
+        run: |
+          clang++ -std=c++20 -Wall -Wextra -Werror -Wno-missing-field-initializers -D_WIN32_WINNT=0x0A00 tests/test_vram_monitor.cpp -o out/vram-monitor-test.exe -lvulkan-1
+          ./out/vram-monitor-test.exe
       - uses: actions/download-artifact@v4
         with:
           name: Techmo-launcher-win-x64

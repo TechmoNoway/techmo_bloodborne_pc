@@ -12,7 +12,7 @@ public partial class MainWindow
     // Profiles deliberately omit installation paths, UI preferences, diagnostics and accounts.
     static readonly HashSet<string> ProfileSettingNames = new(StringComparer.Ordinal)
     {
-        "Resolution", "Fullscreen", "ShowFps", "ShowCpu", "ShowGpu", "PresentMode", "Upscaler", "Preset", "Fps",
+        "Resolution", "Fullscreen", "ShowFps", "ShowCpu", "ShowGpu", "ShowVram", "PresentMode", "Upscaler", "Preset", "Fps",
         "LiveResolution", "ModelLod", "Sharpen", "Sharpness", "Chromatic", "Dof", "MotionBlur", "Ssao",
         "GameAa", "Shadows", "Ssr", "PcControls", "Widescreen", "MouseCamera", "MouseMenu",
         "MouseInvertX", "MouseInvertY", "MouseAutoRotation", "MouseSensitivity", "CustomInputBindings",
@@ -78,6 +78,7 @@ public partial class MainWindow
         // expanded snapshot; no existing graphics/input choices need to be discarded.
         profile.Settings.TryAdd("ShowCpu", JsonSerializer.SerializeToElement(false));
         profile.Settings.TryAdd("ShowGpu", JsonSerializer.SerializeToElement(false));
+        profile.Settings.TryAdd("ShowVram", JsonSerializer.SerializeToElement(false));
         profile.Settings.TryAdd("Sharpness", JsonSerializer.SerializeToElement(0.3));
         if (!profile.Settings.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(ProfileSettingNames) ||
             profile.Bindings.Count != PcDefaults.Length || PcDefaults.Any(d => !profile.Bindings.ContainsKey(d.key)))

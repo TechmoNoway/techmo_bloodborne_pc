@@ -222,6 +222,24 @@ static class Program
         foreach (var (file, expectedHash) in inputHashes)
             Check(SourceHash(Path.Combine(source, "apps", "launcher", file))
                 .Equals(expectedHash, StringComparison.OrdinalIgnoreCase), "Techmo input source preserved: " + file);
+        var overlayFields = new[] { "ShowFpsCheck", "ShowCpuCheck", "ShowGpuCheck", "ShowVramCheck" };
+        var overlayKeys = new[] { "show_fps", "show_cpu", "show_gpu", "show_fps_vram" };
+        for (int mask = 0; mask < 16; ++mask)
+        {
+            for (int bit = 0; bit < overlayFields.Length; ++bit)
+                Get<CheckBox>(overlayFields[bit]).IsChecked = (mask & (1 << bit)) != 0;
+            Check((bool)Call("SaveSettings")!, "Overlay Apply accepts combination " + mask);
+            Call("LoadState"); Call("ApplyStateToUi");
+            var lines = File.ReadAllLines(Path.Combine(fixture, "bbport.ini"));
+            Check(Enumerable.Range(0, 4).All(bit =>
+                Get<CheckBox>(overlayFields[bit]).IsChecked == ((mask & (1 << bit)) != 0) &&
+                lines.Contains(overlayKeys[bit] + "=" + ((mask & (1 << bit)) != 0 ? "1" : "0"))),
+                "FPS/CPU/GPU/VRAM persist independently: " + mask);
+        }
+        var overlayIni = Path.Combine(fixture, "bbport.ini");
+        File.WriteAllText(overlayIni, File.ReadAllText(overlayIni).Replace("show_fps_vram=1", "show_fps_vram=0"));
+        Call("LoadState"); Call("ApplyStateToUi");
+        Check(Get<CheckBox>("ShowVramCheck").IsChecked == false, "In-game VRAM key takes precedence over the compatibility alias");
         typeof(MainWindow).GetField("hasUnsavedChanges", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
         window.Close(); app.Shutdown();
         Console.WriteLine($"PASS: {checks} checks; Techmo shell, input, native options, recommendations, Apply/Undo, launch environment and page previews.");
