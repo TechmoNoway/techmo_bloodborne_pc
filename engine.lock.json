@@ -1,0 +1,9 @@
+{
+  "upstream_repository": "https://github.com/Awakenchan/LanternEngine.git",
+  "upstream_commit": "5321f86245567b4ae3c37d5ab4c6f362ef46a63b",
+  "upstream_version": "0.9.34",
+  "base_repository": "https://github.com/DarkIzuku/bloodborne_pc.git",
+  "base_tag": "v0.4.0-darkizuku-preview.1",
+  "base_commit": "8ecba9a4abdd54747e31d7fee54982e422b5f8e2",
+  "patch": "engine/bbhost-changes.patch"
+}

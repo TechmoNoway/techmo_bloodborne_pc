@@ -1,0 +1,268 @@
+--- a/gpu/shim/input/bindings.cpp
++++ b/gpu/shim/input/bindings.cpp
+@@ -10,6 +10,7 @@
+ #include <cmath>
+ #include <cstring>
+ #include <string>
++#include <bit>
+ 
+ #if defined(BBHOST_HAVE_SDL3)
+ #include <SDL3/SDL.h>
+@@ -91,6 +92,24 @@
+ 
+ std::atomic<int> g_key[kBindCount];
+ std::atomic<int> g_mouse[kBindCount];
++// Primary input and six side-specific modifiers share one atomic snapshot.
++constexpr int kPrimaryMask = 1023, kModifierShift = 10;
++int primary(int binding) { return binding & kPrimaryMask; }
++unsigned modifiers(int binding) { return static_cast<unsigned>(binding >> kModifierShift); }
++constexpr int kModifierScancodes[] = {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_RSHIFT,
++    SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT};
++constexpr const char* kModifierNames[] = {"Left Shift", "Right Shift", "Left Ctrl", "Right Ctrl", "Left Alt", "Right Alt"};
++
++unsigned modifier_state(const bool* keys, int nkeys) {
++    unsigned mask=0;
++    for(int i=0;i<6;i++) if(keys && kModifierScancodes[i]<nkeys && keys[kModifierScancodes[i]])mask|=1u<<i;
++    return mask;
++}
++std::string chord_prefix(int binding) {
++    std::string prefix;
++    for(int i=0;i<6;i++) if(modifiers(binding)&(1u<<i))prefix+=std::string(kModifierNames[i])+" + ";
++    return prefix;
++}
+ 
+ std::atomic<int> g_capture{-1};
+ // The Debug Menu key: held per device (keyboard, mouse), since each device's
+@@ -165,35 +184,49 @@
+ // binding (host_bindings_serial).
+ std::atomic<std::uint64_t> g_serial{1};
+ 
+-// "E", "Mouse2", "X, Mouse2", "none": the whole binding.
+-void set_from_text(int a, const std::string& text, const char* where) {
++// Commas are alternatives; a spaced plus joins required components.
++bool set_from_text(int a, const std::string& text, const char* where) {
+     int key = 0, mouse = 0;
+     std::size_t pos = 0;
+     while (pos <= text.size()) {
+         std::size_t end = text.find(',', pos);
+         if (end == std::string::npos) end = text.size();
+-        const std::string tok = trim(text.substr(pos, end - pos));
++        std::string tok = trim(text.substr(pos, end - pos));
+         pos = end + 1;
+         if (tok.empty() || tok == "none") continue;
++        unsigned mask=0;
++        for(std::size_t plus=tok.find(" + ");plus!=std::string::npos;plus=tok.find(" + ")) {
++            const int sc=scancode_from_name(trim(tok.substr(0,plus)));
++            int index=0;while(index<6 && kModifierScancodes[index]!=sc)++index;
++            if(index==6 || (mask&(1u<<index))) {
++                host_log("keys: %s: invalid chord for %s: %s",where,kInfo[a].key,text.c_str());
++                return false;
++            }
++            mask|=1u<<index;
++            tok=trim(tok.substr(plus+3));
++        }
++        const int prefix=static_cast<int>(mask)<<kModifierShift;
+         if (tok.size() == 6 && tok.rfind("Mouse", 0) == 0 && tok[5] >= '1' && tok[5] <= '5') {
+-            mouse = tok[5] - '0';
++            mouse = prefix | (tok[5] - '0');
+             continue;
+         }
+         if (tok == "WheelUp" || tok == "WheelDown") {
+-            mouse = tok == "WheelUp" ? 6 : 7;
++            mouse = prefix | (tok == "WheelUp" ? 6 : 7);
+             continue;
+         }
+         const int sc = scancode_from_name(tok);
+         if (!sc) {
+             host_log("keys: %s: %s = \"%s\" - \"%s\" is not an SDL key name", where, kInfo[a].key, text.c_str(),
+                      tok.c_str());
+-            continue;
+-        }
+-        key = sc;
++            return false;
++        }
++        for(int i=0;i<6;i++)if(kModifierScancodes[i]==sc && (mask&(1u<<i)))return false;
++        key = prefix | sc;
+     }
+     g_key[a].store(key, std::memory_order_relaxed);
+     g_mouse[a].store(mouse, std::memory_order_relaxed);
+     g_serial.fetch_add(1, std::memory_order_relaxed);
++    return true;
+ }
+ 
+ }  // namespace
+@@ -213,32 +246,25 @@
+ bool host_bindings_parse(const char* name, const char* value) {
+     const int a = action_named(name);
+     if (a < 0) return false;
+-    set_from_text(a, value, "options");
+-    return true;
++    return set_from_text(a, value, "options");
+ }
+ 
+ void host_bindings_save(std::FILE* f) {
+ 
+     for (int a = 0; a < kBindCount; ++a) {
+-        std::string v;
+-        if (const char* n = scancode_name(g_key[a].load(std::memory_order_relaxed))) v = n;
+-        if (const int m = g_mouse[a].load(std::memory_order_relaxed)) {
+-            v += v.empty() ? "" : ", ";
+-            v += mouse_token(m);
+-        }
+-        std::fprintf(f, "bind.%s=%s\n", kInfo[a].key, v.empty() ? "none" : v.c_str());
++        std::fprintf(f, "bind.%s=%s\n", kInfo[a].key, host_binding_ini_value(a).c_str());
+     }
+ }
+ 
+ std::string host_binding_ini_value(int a) {
+-    const char* key=scancode_name(g_key[a].load());
+-    std::string value=key?key:"";
+-    const int m=g_mouse[a].load();
+-    if(m) {if(!value.empty())value+=", ";value+=m==6?"WheelUp":m==7?"WheelDown":"Mouse"+std::to_string(m);}
++    const int keyboard=g_key[a].load(), mouse=g_mouse[a].load();
++    const char* key=scancode_name(primary(keyboard));
++    std::string value=key?chord_prefix(keyboard)+key:"";
++    if(primary(mouse)) {if(!value.empty())value+=", ";value+=chord_prefix(mouse)+mouse_token(primary(mouse));}
+     return value.empty()?"none":value;
+ }
+-int host_binding_key(int action) { return action >= 0 && action < kBindCount ? g_key[action].load() : 0; }
+-int host_binding_mouse(int action) { return action >= 0 && action < kBindCount ? g_mouse[action].load() : 0; }
++int host_binding_key(int action) { return action >= 0 && action < kBindCount ? primary(g_key[action].load()) : 0; }
++int host_binding_mouse(int action) { return action >= 0 && action < kBindCount ? primary(g_mouse[action].load()) : 0; }
+ 
+ void host_binding_describe(int action, char* out, std::size_t n) {
+     if (!n) return;
+@@ -247,10 +273,12 @@
+     if (k && std::strcmp(k, "`") == 0) k = "` (backtick)";
+     const int m = host_binding_mouse(action);
+     const char* ms = m >= 1 && m <= kMouseInputs ? kMouseNames[m] : nullptr;
++    const std::string key_text=k?chord_prefix(g_key[action].load())+k:"";
++    const std::string mouse_text=ms?chord_prefix(g_mouse[action].load())+ms:"";
+     if (k && ms) {
+-        std::snprintf(out, n, "%s  /  %s", k, ms);
++        std::snprintf(out, n, "%s  /  %s", key_text.c_str(), mouse_text.c_str());
+     } else {
+-        std::snprintf(out, n, "%s", k ? k : ms ? ms : "Unbound");
++        std::snprintf(out, n, "%s", k ? key_text.c_str() : ms ? mouse_text.c_str() : "Unbound");
+     }
+ }
+ 
+@@ -262,7 +290,7 @@
+     // The key first: a player who bound both reads the key in a sentence more
+     // easily than "Left Button", and the prompt has room for one.
+     const char* what = k ? k : m >= 1 && m <= kMouseInputs ? kMouseShort[m] : nullptr;
+-    if (what) std::snprintf(out, n, "%s", what);
++    if (what) std::snprintf(out, n, "%s", (chord_prefix((k?g_key[action]:g_mouse[action]).load())+what).c_str());
+ }
+ 
+ namespace {
+@@ -288,25 +316,63 @@
+ 
+ }  // namespace
+ 
+-void host_bindings_keys_held(const bool* keys, int nkeys, bool held[kBindCount]) {
+-    for (int a = 0; a < kBindCount; ++a) {
+-        const int sc = g_key[a].load(std::memory_order_relaxed);
+-        held[a] = sc > 0 && sc < nkeys && keys[sc];
+-    }
++namespace {
++void device_held(const std::atomic<int> (&bindings)[kBindCount], const bool* keys, int nkeys,
++                 std::uint32_t buttons, bool mouse, bool held[kBindCount]) {
++    const unsigned down=modifier_state(keys,nkeys);
++    int snapshot[kBindCount];
++    bool matches[kBindCount];
++    for(int a=0;a<kBindCount;a++) {
++        snapshot[a]=bindings[a].load(std::memory_order_relaxed);
++        const int input=primary(snapshot[a]);
++        const unsigned required=modifiers(snapshot[a]);
++        matches[a]=(down&required)==required && (mouse?
++            input>=1 && input<=kMouseInputs && (buttons&(1u<<(input-1))):
++            keys && input>0 && input<nkeys && keys[input]);
++    }
++    for(int a=0;a<kBindCount;a++) {
++        held[a]=matches[a];
++        if(!held[a])continue;
++        for(int b=0;b<kBindCount;b++) if(matches[b] && primary(snapshot[b])==primary(snapshot[a]) &&
++            std::popcount(modifiers(snapshot[b]))>std::popcount(modifiers(snapshot[a]))) {held[a]=false;break;}
++    }
++}
++void cancel_opposites(bool held[kBindCount]) {
+     for (const auto& pair : kOpposites) {
+         if (held[pair[0]] && held[pair[1]]) held[pair[0]] = held[pair[1]] = false;
+     }
++}
++}
++
++void host_bindings_keys_held(const bool* keys, int nkeys, bool held[kBindCount]) {
++    device_held(g_key,keys,nkeys,0,false,held);
++    cancel_opposites(held);
+     held[kBindWalk] = held[kBindWalk] || g_walk_on_mouse.load(std::memory_order_relaxed);
+     note_debug_key(0, held[kBindDebugMenu]);
+ }
+ 
+ void host_bindings_mouse_held(std::uint32_t buttons, bool held[kBindCount]) {
+-    for (int a = 0; a < kBindCount; ++a) {
+-        const int m = g_mouse[a].load(std::memory_order_relaxed);
+-        held[a] = m >= 1 && m <= kMouseInputs && (buttons & (1u << (m - 1)));
+-    }
++    device_held(g_mouse,nullptr,0,buttons,true,held);
+     g_walk_on_mouse.store(held[kBindWalk], std::memory_order_relaxed);
+     note_debug_key(1, held[kBindDebugMenu]);
++}
++
++void host_bindings_mouse_held_with_keys(const bool* keys, int nkeys, std::uint32_t buttons, bool held[kBindCount]) {
++    device_held(g_mouse,keys,nkeys,buttons,true,held);
++    g_walk_on_mouse.store(held[kBindWalk],std::memory_order_relaxed);
++    note_debug_key(1,held[kBindDebugMenu]);
++}
++
++void host_bindings_held(const bool* keys, int nkeys, std::uint32_t buttons, bool held[kBindCount]) {
++    bool keyboard[kBindCount], mouse[kBindCount];
++    device_held(g_key,keys,nkeys,buttons,false,keyboard);
++    device_held(g_mouse,keys,nkeys,buttons,true,mouse);
++    for(int a=0;a<kBindCount;a++)held[a]=keyboard[a]||mouse[a];
++    cancel_opposites(held);
++    // Walk and strong-attack modifiers use the same current sample as movement.
++    g_walk_on_mouse.store(mouse[kBindWalk],std::memory_order_relaxed);
++    note_debug_key(0,keyboard[kBindDebugMenu]);
++    note_debug_key(1,mouse[kBindDebugMenu]);
+ }
+ 
+ void host_bindings_apply(const bool held[kBindCount], bool strong, PadState& p) {
+--- a/gpu/shim/input/bindings.h
++++ b/gpu/shim/input/bindings.h
+@@ -84,6 +84,8 @@
+ // Actions held on the mouse, from MouseState::buttons (bit n-1 is button n;
+ // bits 5 and 6 the wheel's notches, as the pad read holds them).
+ void host_bindings_mouse_held(std::uint32_t buttons, bool held[kBindCount]);
++void host_bindings_mouse_held_with_keys(const bool* keys, int nkeys, std::uint32_t buttons, bool held[kBindCount]);
++void host_bindings_held(const bool* keys, int nkeys, std::uint32_t buttons, bool held[kBindCount]);
+ 
+ // Rebinding, DS3's way: the screen starts a capture for an action, the next
+ // key or mouse button pressed becomes its binding (Escape cancels, Delete
+--- a/gpu/shim/input/input.cpp
++++ b/gpu/shim/input/input.cpp
+@@ -195,7 +195,7 @@
+             const uint32_t closing=menu_confirm_button()|menu_back_button();
+             if(p.buttons&~last_buttons&closing)dpad_blocked|=dpad_held;
+         }else {
+-            bool mh[kBindCount]={};host_bindings_mouse_held(buttons|edges|(scroll>0?32:scroll<0?64:0),mh);
++            bool mh[kBindCount]={};host_bindings_mouse_held_with_keys(keys,nkeys,buttons|edges|(scroll>0?32:scroll<0?64:0),mh);
+             host_bindings_apply(mh,held[kBindStrongMod]||mh[kBindStrongMod],p);
+             float x,y;if(camera && mouse_camera_flick(x,y)){
+                 p.rx=uint8_t(std::clamp(127+int(127*x),0,254));p.ry=uint8_t(std::clamp(127+int(127*y),0,254));}
+--- a/start/mods.cpp
++++ b/start/mods.cpp
+@@ -386,8 +386,11 @@
+     if (enabled) {
+         fs::path legacy = fs::canonical(game);
+         legacy += L"-mods";
+-        if (IsDir(legacy)) layers.emplace_back(legacy.filename().native(), legacy);
++        const auto selection = IsFile(config) ? nlohmann::json::parse(ReadText(config)) : nlohmann::json::object();
++        if (selection.value("legacy_enabled", true) && IsDir(legacy))
++            layers.emplace_back(legacy.filename().native(), legacy);
+         if (IsDir(Child(mods_dir, L"dvdroot_ps4"))) {
++            if (!selection.value("direct_enabled", true)) return BuildOverlay(game, out, layers, UpdateFolder(fs::canonical(game)));
+             layers.emplace_back(mods_dir.filename().native(), mods_dir);
+         } else {
+             for (const std::wstring& name : Selected(mods_dir, config)) layers.emplace_back(name, mods_dir / name);

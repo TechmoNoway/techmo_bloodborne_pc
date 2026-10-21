@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Techmo.Launcher</AssemblyName>
+    <Product>Techmo Bloodborne experiment-v2</Product>
+    <Title>Techmo Bloodborne Launcher</Title>
+    <Description>Windows launcher for the Techmo Bloodborne development fork.</Description>
+    <RootNamespace>BloodborneLauncher</RootNamespace>
+    <ApplicationIcon>Assets/bloodborne.ico</ApplicationIcon>
+    <Version>2.0.0-experiment</Version>
+    <TechmoPublicRelease Condition="'$(TechmoPublicRelease)' == ''">false</TechmoPublicRelease>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TechmoPublicRelease)' == 'true'">
+    <DefineConstants>$(DefineConstants);TECHMO_PUBLIC_RELEASE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/*.png" />
+    <Resource Include="Assets/bloodborne.ico" />
+    <EmbeddedResource Include="Localization/*.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../lantern-backend/Techmo.Launcher.csproj" />
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+  </ItemGroup>
+</Project>

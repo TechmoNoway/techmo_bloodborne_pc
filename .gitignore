@@ -1,0 +1,35 @@
+﻿# Build output
+bin/
+obj/
+out/
+LauncherApp/
+dist/
+*.user
+.vs/
+.idea/
+launcher/windows/install.txt
+
+# Techmo experiment checkout: generated native tree is reproduced from engine.lock.json.
+/engine/native/
+/builds/
+/user/
+/logs/
+/mods/
+/network/
+/patches/
+/data/
+/licenses/native/
+/engine-assets/
+/fsr4_shaders/
+/fsr4_411/
+/fsr4vk/
+/shader-catalog/
+/bbport.ini
+/launcher-settings.json
+/mods.json*
+/patches.json
+/package.json
+__pycache__/
+*.py[cod]
+*.log
+*.dmp

@@ -1,0 +1,582 @@
+<ui:FluentWindow x:Class="Techmo.Lantern.MainWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:loc="clr-namespace:Techmo.Lantern.Core"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+                 xmlns:views="clr-namespace:Techmo.Lantern.Views"
+                 Title="Techmo Bloodborne - experiment-v2"
+                 Icon="app.ico"
+                 Height="920" Width="1320"
+                 MinHeight="560" MinWidth="820"
+                 WindowStartupLocation="CenterScreen"
+                 ExtendsContentIntoTitleBar="True"
+                 WindowBackdropType="None"
+                 WindowCornerPreference="Round"
+                 Background="{DynamicResource WindowBaseBrush}"
+                 UseLayoutRounding="True"
+                 SnapsToDevicePixels="True"
+                 FontFamily="{DynamicResource UiFont}"
+                 TextOptions.TextFormattingMode="Display"
+                 TextOptions.TextRenderingMode="ClearType"
+                 TextOptions.TextHintingMode="Fixed">
+    <!--
+        A slim title bar with traffic lights and a centred title, a source-list sidebar with
+        small-caps group labels, the page, a folding activity log and a one-line status bar.
+        SetWindowChrome gives the title bar a native caption height, so dragging, double-click
+        maximise and Aero snap come from Windows; only the buttons opt back into hit-testing.
+    -->
+
+    <ui:FluentWindow.Resources>
+        <Style x:Key="TrafficLight" TargetType="Button">
+            <Setter Property="Width" Value="12" />
+            <Setter Property="Height" Value="12" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Ellipse Fill="{TemplateBinding Background}" Stroke="#26000000" StrokeThickness="0.5" />
+                            <Path x:Name="Glyph" Data="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"
+                                  Stroke="#99000000" StrokeThickness="1.1" Stretch="None" Opacity="0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=StackPanel}}" Value="True">
+                                <Setter TargetName="Glyph" Property="Opacity" Value="1" />
+                            </DataTrigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Opacity" Value="0.75" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Windows-style caption buttons (Settings › Appearance › Window buttons). -->
+        <Style x:Key="CaptionButton" TargetType="Button">
+            <Setter Property="Width" Value="46" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}">
+                            <Path Data="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"
+                                  Stroke="{TemplateBinding Foreground}" StrokeThickness="1" Stretch="None"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" SnapsToDevicePixels="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bg" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="CaptionClose" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FFE81123" />
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="TitleIcon" TargetType="Button">
+            <Setter Property="Height" Value="22" />
+            <Setter Property="MinWidth" Value="26" />
+            <Setter Property="Focusable" Value="False" />
+            <!-- WPF-UI's implicit button style paints a light fill; these sit on the dark title bar. -->
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="5" Padding="7,0">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemHoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The settings search: a slim pill in the title bar, with its shortcut shown while it is empty. -->
+        <Style x:Key="TitleSearch" TargetType="TextBox">
+            <Setter Property="Height" Value="24" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+            <Setter Property="SelectionOpacity" Value="0.35" />
+            <Setter Property="Background" Value="{DynamicResource PillTrackBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="9,0,8,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ui:SymbolIcon Symbol="Search24" FontSize="12" Margin="0,0,6,0" VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                                <TextBlock x:Name="Placeholder" Grid.Column="1" Text="{loc:Tr &#x27;Search settings&#x27;}" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" IsHitTestVisible="False"
+                                           TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
+                                <!-- Room on the right for the clear button, which sits over the box. -->
+                                <ScrollViewer x:Name="PART_ContentHost" Grid.Column="1" Margin="0,0,14,0" VerticalAlignment="Center"
+                                              Focusable="False" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
+                                <TextBlock x:Name="Shortcut" Grid.Column="2" Text="Ctrl+F" FontSize="10.5" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" IsHitTestVisible="False"
+                                           Visibility="Collapsed" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Text" Value="">
+                                <Setter TargetName="Placeholder" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Text" Value="" />
+                                    <Condition Property="IsKeyboardFocused" Value="False" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Shortcut" Property="Visibility" Value="Visible" />
+                            </MultiTrigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource ControlFillColorInputActiveBrush}" />
+                                <Setter TargetName="Bg" Property="BorderBrush" Value="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SearchClear" TargetType="Button">
+            <Setter Property="Width" Value="18" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Arrow" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="Transparent" CornerRadius="9">
+                            <Path Data="M 0,0 L 7,7 M 7,0 L 0,7" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.2"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SidebarHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="9.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource SidebarHeaderBrush}" />
+            <Setter Property="Margin" Value="18,0,0,6" />
+        </Style>
+
+        <Style x:Key="SidebarItem" TargetType="RadioButton">
+            <Setter Property="GroupName" Value="Pages" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Margin" Value="8,1" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bg" Background="Transparent" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemSelectedBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SidebarIcon" TargetType="ui:SymbolIcon">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}" />
+        </Style>
+        <!-- A top tab: a segment of the tab strip, filled when chosen. -->
+        <Style x:Key="TabItem" TargetType="RadioButton">
+            <Setter Property="GroupName" Value="Pages" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bg" Background="Transparent" CornerRadius="16" Padding="18,6" MinWidth="80">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SidebarItemHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="{DynamicResource SegmentSelectedBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </ui:FluentWindow.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="34" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.RowSpan="4" IsHitTestVisible="False" Background="{DynamicResource WindowBaseBrush}" ClipToBounds="True">
+            <!-- Glass (Modern): the game's own artwork, blurred and darkened, behind the frosted panes. -->
+            <Image x:Name="BackdropImage" Stretch="UniformToFill" Opacity="1" Margin="-60" Visibility="Collapsed"
+                   RenderOptions.BitmapScalingMode="LowQuality">
+                <Image.Effect>
+                    <BlurEffect Radius="48" KernelType="Gaussian" RenderingBias="Performance" />
+                </Image.Effect>
+            </Image>
+            <Rectangle x:Name="BackdropShade" Visibility="Collapsed">
+                <Rectangle.Fill>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#590A0B0E" Offset="0" />
+                        <GradientStop Color="#800A0B0E" Offset="0.5" />
+                        <GradientStop Color="#B30A0B0E" Offset="1" />
+                    </LinearGradientBrush>
+                </Rectangle.Fill>
+            </Rectangle>
+        </Grid>
+
+        <!-- ==================== Title bar ==================== -->
+        <Border Grid.Row="0" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+            <Grid>
+                <StackPanel x:Name="MacButtons" Orientation="Horizontal" Margin="14,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                            Background="Transparent" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button Style="{StaticResource TrafficLight}" Background="#FFFF5F57" ToolTip="{loc:Tr &#x27;Close&#x27;}"
+                            Tag="M 3.5,3.5 L 8.5,8.5 M 8.5,3.5 L 3.5,8.5" Click="CloseWindow_Click" />
+                    <Button Style="{StaticResource TrafficLight}" Background="#FFFEBC2E" ToolTip="{loc:Tr &#x27;Minimize&#x27;}"
+                            Tag="M 3,6 L 9,6" Click="MinimizeWindow_Click" />
+                    <Button Style="{StaticResource TrafficLight}" Background="#FF28C840" ToolTip="{loc:Tr &#x27;Maximize&#x27;}"
+                            Tag="M 3,6 L 9,6 M 6,3 L 6,9" Click="MaximizeWindow_Click" />
+                </StackPanel>
+
+                <StackPanel x:Name="WinButtons" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,1"
+                            Visibility="Collapsed" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="WinMinimize" Style="{StaticResource CaptionButton}" ToolTip="{loc:Tr &#x27;Minimize&#x27;}"
+                            Tag="M 0,0.5 L 10,0.5" Click="MinimizeWindow_Click" />
+                    <Button x:Name="WinMaximize" Style="{StaticResource CaptionButton}" ToolTip="{loc:Tr &#x27;Maximize&#x27;}"
+                            Tag="M 0.5,0.5 L 9.5,0.5 L 9.5,9.5 L 0.5,9.5 Z" Click="MaximizeWindow_Click" />
+                    <Button x:Name="WinClose" Style="{StaticResource CaptionClose}" ToolTip="{loc:Tr &#x27;Close&#x27;}"
+                            Tag="M 0,0 L 10,10 M 10,0 L 0,10" Click="CloseWindow_Click" />
+                </StackPanel>
+
+                <!-- Settings search (Ctrl+F): on the left, after the window buttons when they are there
+                     (ApplyWindowButtons places it); the results open under it. -->
+                <Grid x:Name="SearchArea" HorizontalAlignment="Left" VerticalAlignment="Center" Width="200"
+                      shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <TextBox x:Name="SearchBox" Style="{StaticResource TitleSearch}"
+                             TextChanged="SearchBox_TextChanged" PreviewKeyDown="SearchBox_PreviewKeyDown"
+                             GotKeyboardFocus="SearchBox_GotKeyboardFocus" LostKeyboardFocus="SearchBox_LostKeyboardFocus" />
+                    <Button x:Name="SearchClear" Style="{StaticResource SearchClear}" HorizontalAlignment="Right" Margin="0,0,4,0"
+                            VerticalAlignment="Center" Visibility="Collapsed" ToolTip="Clear (Esc)" Click="SearchClear_Click" />
+                </Grid>
+
+                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" IsHitTestVisible="False">
+                    <Run Text="TECHMO  /  BLOODBORNE" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                    <Run x:Name="TitlePage" Text="" Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                </TextBlock>
+
+                <StackPanel x:Name="TitleTools" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0">
+                    <Button x:Name="TitleUpdate" Style="{StaticResource TitleIcon}" Click="TitleUpdate_Click" Margin="0,0,6,0"
+                            Visibility="Collapsed" BorderBrush="{DynamicResource GoodTextBrush}" BorderThickness="1"
+                            ToolTip="{loc:Tr &#x27;A new launcher version is available&#x27;}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="ArrowDownload24" FontSize="13" Margin="0,0,5,0"
+                                           Foreground="{DynamicResource GoodTextBrush}" />
+                            <TextBlock x:Name="TitleUpdateText" Text="{loc:Tr &#x27;Update&#x27;}" FontSize="11.5" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="TitlePlay" Style="{StaticResource TitleIcon}" Click="TitlePlay_Click" Margin="0,0,6,0"
+                            Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1"
+                            ToolTip="{loc:Tr &#x27;Start the game&#x27;}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon x:Name="TitlePlayIcon" Symbol="Play24" FontSize="13" Margin="0,0,5,0"
+                                           Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                            <TextBlock x:Name="TitlePlayText" Text="{loc:Tr &#x27;Play&#x27;}" FontSize="11.5" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource TitleIcon}" Click="ToggleLog_Click" ToolTip="{loc:Tr &#x27;Activity&#x27;}">
+                        <ui:SymbolIcon Symbol="Pulse24" FontSize="14"
+                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== Tabs (Modern) or sidebar (Classic) + page ==================== -->
+        <Grid Grid.Row="1" Background="{DynamicResource ContentAreaBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Classic: the source-list sidebar. -->
+            <Border x:Name="Sidebar" Grid.Column="0" Grid.RowSpan="2" Width="196" Visibility="Collapsed"
+                    Background="{DynamicResource WindowBaseBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
+                <DockPanel Margin="0,16,0,10">
+                    <RadioButton DockPanel.Dock="Bottom" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                 Tag="{x:Type views:SettingsPage}" Checked="SidebarItem_Checked">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Settings24" Style="{StaticResource SidebarIcon}" />
+                            <TextBlock Text="{loc:Tr &#x27;Settings&#x27;}" />
+                        </StackPanel>
+                    </RadioButton>
+                    <StackPanel>
+                        <TextBlock Text="{loc:Tr &#x27;GAME&#x27;}" Style="{StaticResource SidebarHeader}" />
+                        <RadioButton x:Name="ClassicPlay" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:PlayPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Play24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Play&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:DisplayPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Desktop24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Display&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:GraphicsPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Sparkle24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Graphics&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="ClassicControls" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:ControlsPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="XboxController24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Controls&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:TrophiesPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Trophy24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Trophies&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="ClassicMods" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:ModsPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="PuzzlePiece24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Mods &amp; patches&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="ClassicOnline" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:OnlinePage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Globe24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Online&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <TextBlock Text="{loc:Tr &#x27;SYSTEM&#x27;}" Style="{StaticResource SidebarHeader}" Margin="18,18,0,6" />
+                        <RadioButton x:Name="ClassicSettings" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:SettingsPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Settings24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Settings&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="ClassicEngine" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:EnginePage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="Wrench24" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Engine switches&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="ClassicOutput" GroupName="Classic" Style="{StaticResource SidebarItem}"
+                                     Tag="{x:Type views:OutputPage}" Checked="SidebarItem_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon Symbol="WindowConsole20" Style="{StaticResource SidebarIcon}" />
+                                <TextBlock Text="{loc:Tr &#x27;Game output&#x27;}" />
+                            </StackPanel>
+                        </RadioButton>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Modern: tabs across the top. -->
+            <Border x:Name="TabStrip" Grid.Column="1" Grid.Row="0" HorizontalAlignment="Center" Margin="0,12,0,4" Padding="4" CornerRadius="20"
+                    Background="{DynamicResource PillTrackBrush}" BorderBrush="{DynamicResource GlassPaneStrokeBrush}" BorderThickness="1">
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton x:Name="PlayItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Play&#x27;}"
+                                 Tag="{x:Type views:PlayPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Display&#x27;}"
+                                 Tag="{x:Type views:DisplayPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Graphics&#x27;}"
+                                 Tag="{x:Type views:GraphicsPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton x:Name="ControlsItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Controls&#x27;}"
+                                 Tag="{x:Type views:ControlsPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Trophies&#x27;}"
+                                 Tag="{x:Type views:TrophiesPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton x:Name="OnlineItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Online&#x27;}"
+                                 Tag="{x:Type views:OnlinePage}" Checked="SidebarItem_Checked" />
+                    <RadioButton x:Name="SettingsItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;Settings&#x27;}"
+                                 Tag="{x:Type views:SettingsPage}" Checked="SidebarItem_Checked" />
+                    <RadioButton x:Name="MoreItem" Style="{StaticResource TabItem}" Content="{loc:Tr &#x27;More&#x27;}"
+                                 Tag="{x:Type views:MorePage}" Checked="SidebarItem_Checked" />
+                </StackPanel>
+            </Border>
+
+            <Frame x:Name="PageFrame" Grid.Column="1" Grid.Row="1" NavigationUIVisibility="Hidden"
+                   JournalOwnership="OwnsJournal" Focusable="False" Background="Transparent"
+                   Navigated="PageFrame_Navigated" />
+        </Grid>
+
+        <!-- ==================== Activity log (folded by default) ==================== -->
+        <Border x:Name="LogPanel" Grid.Row="2" Height="140" Visibility="Collapsed"
+                Background="{DynamicResource PanelDeepBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+            <Grid>
+                <!-- Virtualized: only the lines in view are laid out (the scroller is the list's own). -->
+                <ItemsControl x:Name="LogList" VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True">
+                        <ItemsControl.Template>
+                            <ControlTemplate TargetType="ItemsControl">
+                                <ScrollViewer x:Name="LogScroller" VerticalScrollBarVisibility="Auto" Padding="16,8,48,8"
+                                              CanContentScroll="True" Focusable="False">
+                                    <ItemsPresenter />
+                                </ScrollViewer>
+                            </ControlTemplate>
+                        </ItemsControl.Template>
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <VirtualizingStackPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding Time}" FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" Margin="0,0,10,0" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Message}" FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                               Foreground="{Binding Color}" TextWrapping="Wrap" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <Button Style="{StaticResource TitleIcon}" HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Margin="0,6,14,0" Click="ClearLog_Click" ToolTip="{loc:Tr &#x27;Clear activity&#x27;}">
+                    <ui:SymbolIcon Symbol="Broom24" FontSize="13"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- ==================== Status bar ==================== -->
+        <Border Grid.Row="3" Height="24" Cursor="Hand" MouseLeftButtonUp="StatusBar_Click"
+                Background="{DynamicResource PillTrackBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0"
+                ToolTip="{loc:Tr &#x27;Show or hide activity&#x27;}">
+            <Grid Margin="12,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="StatusDot" Width="5" Height="5" VerticalAlignment="Center" Fill="{DynamicResource StatusDotIdleBrush}" />
+                    <TextBlock x:Name="StatusText" Text="{loc:Tr &#x27;Ready&#x27;}" FontSize="10.5" Margin="8,0,0,0" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" TextTrimming="CharacterEllipsis" MaxWidth="620" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock x:Name="SavedText" FontSize="10.5" Margin="0,0,12,0" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="LogCount" FontSize="10.5" Margin="0,0,12,0" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="VersionText" FontSize="10.5" VerticalAlignment="Center" FontFamily="{StaticResource MonoFont}"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== Settings search results (over everything, under the search box) ==================== -->
+        <Border x:Name="SearchResults" Grid.Row="1" Grid.RowSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top"
+                Width="420" Padding="4" CornerRadius="10" BorderThickness="1" Visibility="Collapsed" Panel.ZIndex="10"
+                Background="{DynamicResource DialogBackgroundBrush}" BorderBrush="{DynamicResource DialogStrokeBrush}">
+            <!-- No drop shadow: an effect renders the results' text as a soft bitmap. -->
+            <StackPanel x:Name="SearchList" />
+        </Border>
+    </Grid>
+</ui:FluentWindow>

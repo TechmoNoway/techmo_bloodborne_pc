@@ -1,0 +1,37 @@
+param()
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$lock = Get-Content -LiteralPath (Join-Path $root 'engine.lock.json') -Raw | ConvertFrom-Json
+$native = Join-Path $root 'engine\native'
+if (!(Test-Path -LiteralPath (Join-Path $native '.git'))) {
+    if (Test-Path -LiteralPath $native) { throw 'engine/native already exists without Git metadata; preserve it and choose a clean directory.' }
+    git clone --depth 1 --branch $lock.base_tag --no-recurse-submodules $lock.base_repository $native
+    if ($LASTEXITCODE) { throw 'Native engine clone failed.' }
+}
+$head = (git -C $native rev-parse HEAD).Trim()
+if ($head -ne $lock.base_commit) { throw "Wrong native base: $head" }
+$patch = Join-Path $root $lock.patch
+$compatibility = Join-Path $root 'engine\techmo-compat.patch'
+git -C $native apply --reverse --check $compatibility 2>$null
+if ($LASTEXITCODE -eq 0) {
+    git -C $native apply --reverse $compatibility
+    if ($LASTEXITCODE) { throw 'Could not validate the Techmo input compatibility patch.' }
+}
+try {
+git -C $native apply --reverse --check $patch 2>$null
+if ($LASTEXITCODE) {
+    git -C $native apply --check $patch
+    if ($LASTEXITCODE) { throw 'Native source differs from the pinned base; refusing to overwrite local changes.' }
+    git -C $native apply $patch
+    if ($LASTEXITCODE) { throw 'Native engine patch failed.' }
+}
+} finally {
+    git -C $native apply --check $compatibility
+    if ($LASTEXITCODE) { throw 'Native source differs from the expected Techmo compatibility patch.' }
+    git -C $native apply $compatibility
+    if ($LASTEXITCODE) { throw 'Techmo input compatibility patch failed.' }
+}
+Copy-Item -LiteralPath (Join-Path $root 'engine\win_compat.h') -Destination (Join-Path $native 'gpu\win_compat.h')
+git -C $native submodule update --init --recursive
+if ($LASTEXITCODE) { throw 'Pinned native submodules could not be restored.' }
+Write-Host "Engine ready: Lantern $($lock.upstream_version), base $head"
