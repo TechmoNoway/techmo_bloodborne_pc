@@ -1,136 +1,57 @@
 --- a/gpu/shim/engine/option_menu.cpp
 +++ b/gpu/shim/engine/option_menu.cpp
-@@ -780,7 +780,8 @@
- 
- GUEST_ABI std::int64_t QuitYes(std::int64_t,std::int64_t) {
+@@ -209,7 +209,7 @@
      host_log("pc-options: Quit to Desktop");
--    SDL_Event quit{}; quit.type=SDL_EVENT_QUIT; SDL_PushEvent(&quit);
-+    SDL_Event quit{}; quit.type=SDL_EVENT_QUIT;
+     SDL_Event quit{};
+     quit.type = SDL_EVENT_QUIT;
+-    SDL_PushEvent(&quit);
 +    if (!SDL_PushEvent(&quit)) host_log("pc-options: could not request exit: %s",SDL_GetError());
-     return 0;
  }
- void release_engine_ref(std::uint64_t obj) {
-@@ -832,7 +833,6 @@
- } // namespace
+ void* GUEST QuitOpener(void* out, void* factory) { return OptionRows::AskYesNo(out, factory, kQuitQuestion, &QuitYes); }
  
- bool Install(std::uint8_t* image,std::size_t size) {
--    if (!BbSettings::Get().camera_controls && !BbSettings::Get().change_appearance && !BbSettings::Get().rebirth && !BbSettings::Get().graphics_controls && !BbSettings::Get().pc_controls) return false;
-     const char* assets=std::getenv("BB_PC_MENU_ASSETS");
-     const char* game=std::getenv("BB_GAME_DIR");
+@@ -341,9 +341,6 @@
+ 
+ bool Install(std::uint8_t* image, std::size_t size) {
+     auto& settings = BbSettings::Get();
+-    if (!settings.camera_controls && !settings.change_appearance && !settings.rebirth && !settings.graphics_controls &&
+-        !settings.pc_controls)
+-        return false;
+     const char* assets = std::getenv("BB_PC_MENU_ASSETS");
+     const char* game = std::getenv("BB_GAME_DIR");
      if (!assets || !*assets || !game || !*game) return false;
-@@ -849,6 +849,15 @@
-     }
-     namespace fs=std::filesystem;
-     std::vector<std::pair<std::string,std::string>> mounts;
-+    constexpr std::size_t title_call=0x1b4adb3,title_pad=0x1b25c20;
-+    std::int32_t title_relative=0;
-+    bool title_quit=size>=title_call+5 && size>=title_pad+16;
-+    if (title_quit) {
-+        std::memcpy(&title_relative,image+title_call+1,4);
-+        title_quit=image[title_call]==0xe8 &&
-+            static_cast<std::int64_t>(title_call+5)+title_relative==0x1bea820 &&
-+            !std::memcmp(image+title_pad,expected,16);
-+    }
-     try {
-         const fs::path root=fs::path(assets),original=fs::path(game);
-         // The prepared files are built from the game as mods leave it (bb-start: BB_GAME_MERGED):
-@@ -875,6 +884,18 @@
-             if (fs::is_regular_file(original/relative) && !add(relative)) return false;
-         }
-         if (mounts.size()<2 || mounts.size()>24) return false;
-+        const auto before_titles=mounts.size();
-+        bool has_title=false;
-+        if (title_quit) {
-+            for (const char* movie : {"dvdroot_ps4/menu/title.gfx", "dvdroot_ps4/menu/title_dlc.gfx", "dvdroot_ps4/menu/title_dlc_eu.gfx"}) {
-+                if (!fs::is_regular_file(original/movie)) continue;
-+                has_title=true;
-+                if (!add(movie)) { title_quit=false; break; }
-+            }
-+        }
-+        title_quit=title_quit && has_title;
-+        // A foreign/missing title variant must never be paired with a sixth-row hook.
-+        if (!title_quit) mounts.resize(before_titles);
-     } catch (const std::exception& e) { host_log("pc-options disabled: %s",e.what()); return false; }
-     unsigned installed=0;
-     for (const auto& [path,file]:mounts) {
-@@ -913,8 +934,10 @@
-     const auto target=reinterpret_cast<std::uint64_t>(&SystemFinalize);
-     std::memcpy(p,&target,8); p+=8; *p++=0x41; *p++=0xff; *p=0xe3;
-     const std::int32_t to_pad=pad-(call+5); std::memcpy(image+call+1,&to_pad,4);
--    if (!route_call(image,size,0x1b4adb3,kTitleFinalize,0x1b49ac0,reinterpret_cast<void*>(&TitleFinalize)))
--        host_log("pc-options: the title menu's Quit Game left out (bytes differ from verified 1.09)");
-+    if (title_quit && route_call(image,size,title_call,kTitleFinalize,title_pad,reinterpret_cast<void*>(&TitleFinalize)))
-+        host_log("pc-options: title menu Exit Game installed");
-+    else
-+        host_log("pc-options: title menu Exit Game unavailable (title assets, mod ownership or 1.09 bytes differ)");
-     g_installed=true;
-     host_log("pc-options: native System pages installed (%u local assets): Enhancements%s%s",installed,graphics_page?", Graphics / Effects / Colour":"",camera_page?", Camera":"");
-     return true;
---- a/tools/engine/menu_assets.cpp
-+++ b/tools/engine/menu_assets.cpp
-@@ -31,7 +31,7 @@
- 
- // Bumped whenever a generator or the recipe changes, so installs remake their
- // assets instead of keeping the last generation.
--constexpr int kGeneratorVersion = 9;  // 9: PC Colour, Fog on PC Graphics; 8: 8: PC Enhancements' three rows; 7: the PC Enhancements section; 6: event text (group 30) for the altar's rebirth
-+constexpr int kGeneratorVersion = 10;  // 10: Techmo title Exit Game slot; 9: PC Colour and Fog
- 
- const char kMessagesTsv[] =
- #include "pc_option_messages.inc"
-@@ -1157,8 +1157,8 @@
- #else
-     for (int i=0;i<argc;++i) args.emplace_back(argv[i]);
- #endif
--    if (args.size()!=4 || (args[1]!="movie" && args[1]!="messages" && args[1]!="rebirth")) {
--        std::fputs("Usage: bb-engine-assets movie|messages|rebirth INPUT OUTPUT\n",stderr); return 2;
-+    if (args.size()!=4 || (args[1]!="movie" && args[1]!="messages" && args[1]!="rebirth" && args[1]!="title")) {
-+        std::fputs("Usage: bb-engine-assets movie|messages|rebirth|title INPUT OUTPUT\n",stderr); return 2;
-     }
-     try {
-         if (std::filesystem::equivalent(args[2],args[3])) { std::fputs("Engine menu assets: output must differ from source\n",stderr); return 1; }
-@@ -1169,7 +1169,8 @@
-         Bytes raw(static_cast<std::size_t>(in.tellg()));
-         in.seekg(0);
-         if (!in.read(reinterpret_cast<char*>(raw.data()),raw.size())) throw Fail{"read source"};
--        Bytes result=args[1]=="movie" ? build_option_movie(raw) : args[1]=="rebirth" ? build_rebirth(raw) : build_menu_messages(raw);
-+        Bytes result=args[1]=="movie" ? build_option_movie(raw) : args[1]=="rebirth" ? build_rebirth(raw) :
-+                     args[1]=="title" ? add_list_slot(raw,"CommandList") : build_menu_messages(raw);
-         std::ofstream out(args[3],std::ios::binary|std::ios::trunc);
-         if (!out || !out.write(reinterpret_cast<const char*>(result.data()),result.size())) throw Fail{"write cache"};
-         return 0;
---- a/tools/engine/pc_option_messages.tsv
-+++ b/tools/engine/pc_option_messages.tsv
-@@ -103,7 +103,7 @@
- 119006	Action	
- 119007	Action	
- 119020	Key Bindings
--122000	Quit to Desktop	Close the game and return to the desktop.
-+122000	Exit Game	Close the game and return to the desktop.
- 123020	Steam Deck	
- 123000	Frame Rate	30 fps: the screen's own 1280x800. 60 fps: 960x600 upscaled by FSR 1, Model Detail Low. Frame rate: on restart.
- 123001	Model Detail	Normal is the game's own. Low and Lowest swap in simpler models sooner and run faster; Full never swaps.
---- a/start/assets.cpp
-+++ b/start/assets.cpp
-@@ -258,6 +258,10 @@
-     for (const std::string& m : messages) sources.emplace_back(m, "messages");
-     if (sources.size() < 2 || sources.size() > 24)
-         throw Error("Native options require valid menu bundles for every installed language");
-+    // Every installed title variant gets the sixth command-list slot in the private cache.
-+    for (const char* movie : {"dvdroot_ps4/menu/title.gfx", "dvdroot_ps4/menu/title_dlc.gfx",
-+                              "dvdroot_ps4/menu/title_dlc_eu.gfx"})
-+        if (fs::is_regular_file(game / Path(movie), error)) sources.emplace_back(movie, "title");
-     if (rebirth) sources.emplace_back("dvdroot_ps4/script/talk/m24_02_00_00.talkesdbnd.dcx", "rebirth");
-     const std::string generator = Sha256Hex(ReadFile(tool));
-     const fs::path manifest_path = root / "manifest.json";
 --- a/start/main.cpp
 +++ b/start/main.cpp
-@@ -366,8 +366,7 @@
-             SetEnv("BB_DREAM_MIRROR_ASSET", Utf8(asset));
-             Log("Engine: Dream mirror prepared locally: %s", Utf8(asset).c_str());
+@@ -423,8 +423,8 @@
+                 Log("Engine: Dream mirror skipped: %s", e.what());
+             }
          }
 -        if (is_on("change_appearance") || is_on("camera_controls") || is_on("rebirth") || is_on("graphics_controls") ||
 -            Setting(settings, "pc_controls") != "0" || Setting(settings, "widescreen") != "0") {
-+        { // Exit Game remains available when the optional PC controls and picture settings are off.
++        // Techmo title Exit Game needs these assets even with all optional settings off.
++        {
              try {
                  const fs::path menus = PrepareMenuAssets(merged, out / "eboot.elf", data / "engine-assets",
                                                           out / "bb-engine-assets.exe", is_on("rebirth"));
+--- a/tests/test_option_rows.cpp
++++ b/tests/test_option_rows.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #include "gpu/shim/engine/option_rows.h"
+ #include <cassert>
++#include <algorithm>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+@@ -271,5 +272,12 @@
+     assert(R::AskYesNo(out, nullptr, 920001, &Yes) == out && g_yes == 1);
+     assert(g_box.count == 1 && g_command.count == 1);
+     assert(g_heap == 4);
++    g_commands.clear();
++    for(unsigned i=0;i<5;++i)R::AddCommand(nullptr,120000+i,&Opener);
++    const auto original=g_commands;
++    R::AddExitCommand(nullptr,122000,&Opener);
++    assert(g_commands.size()==6 && std::equal(original.begin(),original.end(),g_commands.begin()));
++    assert(g_commands.back()==u"exit 200:122000" && g_opener==(void*)&Opener);
++    std::puts("PASS: title Exit Game preserves the first five rows and uses native confirmation");
+     std::puts("PASS: option rows: messages, toggles, sliders, pick lists, text rows, records, dropped rows, commands");
+ }

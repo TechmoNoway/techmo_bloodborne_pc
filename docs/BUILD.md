@@ -41,7 +41,7 @@ package, then falls back to the local development toolchain.
 
 - `apps/launcher`: Techmo WPF frontend and input editor.
 - `apps/engine-backend`: configuration models and native option catalogs.
-- `engine`: pinned patches and Windows compatibility header.
+- `engine`: upstream engine-tree lock and separate Techmo compatibility patches.
 - `scripts`: session reports and mod support.
 - `tools`: builds, packaging and benchmarks.
 - `tests`: isolated fixtures and regression checks.
@@ -65,10 +65,15 @@ Python; set `BB_MSYS2` if it is outside `C:\msys64`.
 `tests/test_pc_input.cpp` checks native modifier and mouse handling against a
 bootstrapped engine. CI does not run the game or claim gameplay performance.
 
-The native CI job also runs `tests/test_title_menu.py` against the compiled asset
-tool. Synthetic base/DLC/EU title movies must gain exactly one final Exit Game
-slot while preserving the five original rows and source files. The menu patch
-is applied separately by bootstrap and recorded in the native build manifest.
+The native CI job runs the upstream option-row builder, menu-memory and input fixtures,
+plus the Techmo chord/capture and VRAM tests. The title row is now built natively:
+no generated title GFX needs to be shipped. The fixture verifies the previous five
+rows remain and Exit uses the game's YES/NO callback.
+
+Bootstrap fetches the exact commit and verifies its engine tree hash before import.
+Each Techmo patch is checked before the new source replaces the generated checkout.
+The previous source remains in an ignored backup. Packaging removes temporary staging;
+`tools/clean-generated.ps1 -WhatIf` previews other reproducible output cleanup.
 
 ## Benchmark
 

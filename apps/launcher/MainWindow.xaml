@@ -751,7 +751,7 @@
                                             <CheckBox x:Name="MouseCameraCheck" Content="{local:Loc Key=Ui.Mouse_camera}" />
                                             <CheckBox x:Name="MouseMenuCheck" Content="{local:Loc Key=Ui.Mouse_menu_selection}" />
                                             <TextBlock Text="{local:Loc Key=Ui.Mouse_sensitivity_0_10}" Margin="0,16,0,6" />
-                                            <Slider x:Name="MouseSensitivitySlider" Minimum="0" Maximum="10" TickFrequency="1" IsSnapToTickEnabled="True" TickPlacement="BottomRight" />
+                                            <Slider x:Name="MouseSensitivitySlider" Minimum="-10" Maximum="20" TickFrequency="1" IsSnapToTickEnabled="True" TickPlacement="BottomRight" />
                                             <TextBlock Text="{Binding ElementName=MouseSensitivitySlider,Path=Value,StringFormat={}{0:0}}" HorizontalAlignment="Center" />
                                             <CheckBox x:Name="MouseInvertXCheck" Content="{local:Loc Key=Ui.Invert_horizontal_axis}" Margin="0,12,0,0" />
                                             <CheckBox x:Name="MouseInvertYCheck" Content="{local:Loc Key=Ui.Invert_vertical_axis}" />
@@ -1052,6 +1052,7 @@
                                     </ComboBox>
                                     <CheckBox x:Name="ReducedMotionCheck" Content="{local:Loc Key=Hub.Reduce_motion}" Checked="AppearanceToggle_Changed" Unchecked="AppearanceToggle_Changed" />
                                     <TextBlock Text="{local:Loc Key=Hub.Profile_scope}" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,16,0,0" />
+                                <TextBlock Text="{local:Loc Key=Credits.Engine}" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,12,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource CardStyle}">
@@ -1088,7 +1089,7 @@
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock x:Name="FooterMessage" Text="{local:Loc Key=Hub.Up_to_date}" FontSize="12" Foreground="{DynamicResource MutedBrush}" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" />
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                            <TextBlock Text="experiment-v2 · Engine 0.9.34 · Windows x64" FontSize="11" Foreground="{DynamicResource DimBrush}" />
+                            <TextBlock Text="experiment-v2 · Engine 0.9.37 · Windows x64" FontSize="11" Foreground="{DynamicResource DimBrush}" />
                             <TextBlock x:Name="FooterGpu" Foreground="{DynamicResource DimBrush}" FontSize="11" MaxWidth="340" TextTrimming="CharacterEllipsis" />
                             <TextBlock x:Name="FooterFps" Foreground="{DynamicResource DimBrush}" FontSize="11" />
                         </StackPanel>

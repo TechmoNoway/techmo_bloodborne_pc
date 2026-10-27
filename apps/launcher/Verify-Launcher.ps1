@@ -885,6 +885,7 @@ static class Program
         foreach(var stale in new[]{"out/game_dir.txt","launch-env.txt","launch-args.txt"}) { var f=Path.Combine(root,stale); if(File.Exists(f)) File.Delete(f); }
         var app = new App();
         app.InitializeComponent();
+
         System.Globalization.CultureInfo.CurrentUICulture=new System.Globalization.CultureInfo("vi-VN");
 
         window = new MainWindow { ShowInTaskbar=false, ShowActivated=false, WindowStartupLocation=WindowStartupLocation.Manual, Left=-20000, Top=-20000 };

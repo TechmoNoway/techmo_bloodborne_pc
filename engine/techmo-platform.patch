@@ -1,0 +1,45 @@
+--- a/src/lantern.rc
++++ b/src/lantern.rc
+@@ -1,6 +1,6 @@
+ // The engine's executables (bb-probe, bb-start) as Windows shows them: firewall prompts, Task
+ // Manager, file properties. The lantern is the launcher's icon.
+-1 ICON "lantern.ico"
++1 ICON "techmo.ico"
+ 
+ 1 VERSIONINFO
+ FILEVERSION 1,0,0,0
+@@ -10,9 +10,9 @@
+   BEGIN
+     BLOCK "040904B0"
+     BEGIN
+-      VALUE "FileDescription", "Lantern Engine"
+-      VALUE "ProductName", "Lantern Engine"
+-      VALUE "CompanyName", "Lantern Engine"
++      VALUE "FileDescription", "Techmo Bloodborne"
++      VALUE "ProductName", "Techmo Bloodborne"
++      VALUE "CompanyName", "Techmo Bloodborne"
+     END
+   END
+   BLOCK "VarFileInfo"
+--- a/build.sh
++++ b/build.sh
+@@ -132,7 +132,7 @@
+     # optimizes only the modules it touched (and what inlines from them), on every thread.
+     link=(-Wl,--disable-dynamicbase,--disable-high-entropy-va -lwinmm -lws2_32 -lpsapi -flto=thin
+           -Wl,--thinlto-cache-dir="$PWD/out/thinlto-cache" -Wl,--thinlto-jobs="${BB_JOBS:-all}"
+-          -Wl,--thinlto-cache-policy=cache_size_bytes=6g:prune_after=1209600s)
++          -Wl,--thinlto-cache-policy=cache_size_bytes=512m:prune_after=604800s)
+     # Windows names the executables by this (firewall prompts, Task Manager): Lantern Engine.
+     llvm-windres src/lantern.rc -O coff -o out/lantern.res
+     link+=(out/lantern.res)
+--- a/start/main.cpp
++++ b/start/main.cpp
+@@ -298,7 +298,7 @@
+         Log("Performance: this Lantern Engine folder is synced by OneDrive (%s); OneDrive uploads its logs and "
+             "shader cache while you play. A folder outside OneDrive (C:\\Games, for example) avoids that",
+             Utf8(folders.package).c_str());
+-    {
++    if (!Env("BB_CONFIG")) {
+         std::error_code ec;
+         const fs::path ini = data / "lantern.ini", old = data / "bbport.ini";
+         const fs::path shipped = folders.engine / "lantern.default.ini";

@@ -217,7 +217,7 @@ static class Program
         BloodborneLauncher.Localization.Current.SetLanguage("en");
         Shot("Graphics");
         File.WriteAllText(Path.Combine(output, "options.json"), JsonSerializer.Serialize(Field<List<object>>("engineInventory"), new JsonSerializerOptions { WriteIndented = true }));
-        // Preserve the exact Techmo input/capture implementation, not the upstream binding editor.
+        // Techmo keeps its editor/capture; only the sensitivity limits follow the 0.9.37 range.
         var inputHashes = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(Path.Combine(source, "tests", "fixtures", "techmo-input-sha256.json")))!;
         foreach (var (file, expectedHash) in inputHashes)
             Check(SourceHash(Path.Combine(source, "apps", "launcher", file))
@@ -240,6 +240,18 @@ static class Program
         File.WriteAllText(overlayIni, File.ReadAllText(overlayIni).Replace("show_fps_vram=1", "show_fps_vram=0"));
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Get<CheckBox>("ShowVramCheck").IsChecked == false, "In-game VRAM key takes precedence over the compatibility alias");
+        foreach (int sensitivity in new[] { -10, -1, 0, 5, 20 })
+        {
+            Get<Slider>("MouseSensitivitySlider").Value = sensitivity;
+            Check((bool)Call("SaveSettings")!, "Native sensitivity range applies: " + sensitivity);
+            Call("LoadState"); Call("ApplyStateToUi");
+            Check(Get<Slider>("MouseSensitivitySlider").Value == sensitivity, "Sensitivity survives profile/INI reload: " + sensitivity);
+        }
+        Check(N.SaveGuard.VaultDir.StartsWith(fixture, StringComparison.OrdinalIgnoreCase), "Save safety vault stays isolated with this checkout");
+        typeof(MainWindow).GetField("gameRunning", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+        Check(ReferenceEquals(N.Workspace.EmbeddedGameRunning?.Target, window) && N.Workspace.EmbeddedGameRunning?.Invoke() == true,
+            "Periodic backups see the Techmo wrapper's running state");
+        typeof(MainWindow).GetField("gameRunning", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
         typeof(MainWindow).GetField("hasUnsavedChanges", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
         window.Close(); app.Shutdown();
         Console.WriteLine($"PASS: {checks} checks; Techmo shell, input, native options, recommendations, Apply/Undo, launch environment and page previews.");

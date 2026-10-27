@@ -21,12 +21,16 @@ $noticePath = Join-Path $outputPath 'licenses'
 New-Item -ItemType Directory -Force -Path $noticePath | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $noticePath 'Upstream-GPL-2.0.txt')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\SOURCE-NOTICES.md') -Destination $noticePath
+Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\Lantern-Engine-NOTICE.txt'),(Join-Path $projectRoot 'licenses\Lantern-Engine-LICENSE.txt') -Destination $noticePath
 Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\Techmo-GPL-3.0.txt') -Destination $noticePath
 Copy-Item -Path (Join-Path $projectRoot 'licenses\launcher\*') -Destination $noticePath
 $executable = Get-Item -LiteralPath (Join-Path $outputPath 'Techmo.Launcher.exe')
 $sha256 = (Get-FileHash -LiteralPath $executable.FullName -Algorithm SHA256).Hash
 @"
 # Techmo Bloodborne - local build
+
+Modified integration of Lantern Engine by Awaken (https://github.com/Awakenchan/LanternEngine).
+This is not an official Lantern Engine release. See the notices in licenses/.
 
 Executable: Techmo.Launcher.exe
 Source project: apps/launcher/Techmo.Launcher.csproj

@@ -4,7 +4,7 @@ The product uses the Techmo name. Original source authorship is retained here.
 
 | Source | Acknowledgement |
 | --- | --- |
-| Lantern Engine, Awakenchan | Imported engine and frontend/configuration source, 0.9.34, commit `5321f86245567b4ae3c37d5ab4c6f362ef46a63b`. [Original repository](https://github.com/Awakenchan/LanternEngine). Includes shader compiler, draw pipeline, memory work, controls, upscaling, online integration and fixes. |
+| Lantern Engine by Awaken | Modified integration of [0.9.37 source](https://github.com/Awakenchan/LanternEngine/tree/3860021d6550f95397ba74d046fb14498816a534), with the Techmo frontend and compatibility patches. [Additional terms](Lantern-Engine-NOTICE.txt) and [license](Lantern-Engine-LICENSE.txt) retained. |
 | Engine starting point | [DarkIzuku/bloodborne_pc](https://github.com/DarkIzuku/bloodborne_pc), built on [bbport](https://github.com/deadinside28/bloodborne_pc) and [shadPS4](https://github.com/shadps4-emu/shadPS4). Revisions are pinned in `engine.lock.json`. |
 | VRAM cleanup and frame pacing | Adapted upstream from [IFreemz/shadPS4-Bloodborne-DLSS-FSR](https://github.com/IFreemz/shadPS4-Bloodborne-DLSS-FSR). |
 | Crash and controller fixes | [AwesomeObserver](https://github.com/AwesomeObserver/bloodborne_pc), [Supermedo](https://github.com/Supermedo/bloodborne_pc), [deadinside28](https://github.com/deadinside28/bloodborne_pc). |
@@ -22,7 +22,9 @@ The product uses the Techmo name. Original source authorship is retained here.
 | Performance capture | Intel PresentMon, obtained separately by the benchmark helper. |
 | Packaged Python runtime | Python Software Foundation, Python 3.12.10 embeddable distribution; bundled license retained. |
 
-The root `LICENSE` preserves GPL-2.0-or-later. Techmo additions retain their
+The root `LICENSE` preserves the starting point's GPL-2.0-or-later notice.
+The integrated 0.9.37 engine/backend is GPL-3.0-or-later with the additional
+terms in `Lantern-Engine-NOTICE.txt`. Techmo additions retain their
 GPL-3.0 notices in `Techmo-GPL-3.0.txt`. Detailed inherited notices remain in
 `Techmo-THIRD_PARTY-NOTICES.txt`; native packages include `licenses/native/`.
 Optional SDK binaries are not included by the source-build workflow.

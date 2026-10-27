@@ -7,7 +7,7 @@ namespace BloodborneLauncher;
 
 public partial class MainWindow
 {
-    // Defaults from the pinned Engine 0.9.34 launcher, not Techmo's v1 renderer experiments.
+    // Conservative fallback when hosted settings are unavailable; normal launches use the pinned backend.
     void ConfigureEngineLaunch(ProcessStartInfo psi)
     {
         if (engineOptionsReady)

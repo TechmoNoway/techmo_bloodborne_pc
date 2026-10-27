@@ -54,7 +54,7 @@ namespace BloodborneLauncher.Core
         public const string Diagnostics = "Diagnostics and logs";
         public const string DirectVulkan = "Direct rendering";
 
-        public static readonly string[] Groups = { Graphics, Performance, Input, Sound, Fixes, DirectVulkan };
+        public static readonly string[] Groups = { Graphics, Performance, Input, Sound, Fixes };
 
         // ---------------------------------------------------------------- building the list
 
@@ -94,6 +94,9 @@ namespace BloodborneLauncher.Core
                 L.T("Anisotropic filtering forced on the game's textures: ground and walls seen at an angle stay sharp. Lower ") +
                 L.T("values cost a little less GPU time; Game's own leaves the game's filtering as it is"), "16",
                 new("16x", "16"), new("8x", "8"), new("4x", "4"), new("2x", "2"), new(L.T("Game's own"), "0")),
+            Flag("BB_UPSCALER_NO_BLUR", Graphics, L.T("No motion blur smear with upscalers"),
+                L.T("With an upscaler at an output other than 1920x1080 the game's motion blur is left out: the upscaler would ") +
+                L.T("smear it over the whole picture. Off (default): the blur stays. The Motion blur setting is not changed")),
 
             Pick("BB_PIPELINE_THREADS", Performance, L.T("Shader compile threads"),
                 L.T("How many threads compile new shaders in the background. More finish a new area's shaders sooner but take CPU ") +
@@ -124,6 +127,12 @@ namespace BloodborneLauncher.Core
             OnUnless0("BB_SOUND_HACK", Fixes, L.T("Weapon sound save fix"),
                 L.T("Sets the flag in the game's save that some weapon and player sounds need (without it they never play), before ") +
                 L.T("the game reads the save. Off leaves saves untouched")),
+            OnUnless0("BB_OPTISCALER_COMPAT", Fixes, L.T("OptiScaler compatibility"),
+                L.T("Only when OptiScaler is installed: DLSS calls wait for the GPU queue, and one thread sends the GPU work while its frame generation is on, ") +
+                L.T("so OptiScaler's hooks don't crash. Costs a little FPS with its frame generation. Off: the engine runs as without OptiScaler")),
+            OnUnless0("BB_EFFECT_FIXES", Fixes, L.T("Ebrietas effect fix"),
+                L.T("Replaces Ebrietas' trail effect with the one Nexus mod 41 uses, made from your own game files: her rock attacks no longer pile up thousands of rocks ") +
+                L.T("(FPS falling from 90 to 40, crashes before beta 8). Off: the game's own effect. A mod that changes these effect files wins")),
             Flag("BB_RED_ZONE_FUNCTIONS", Fixes, L.T("Intel effect crash fix (test)"),
                 L.T("For crashes in effects on Intel 12th-14th gen CPUs (Ebrietas, Witch of Hemwick, One Reborn, the Cainhurst " +
                     "cutscene): the two effect ribbon writers keep their data where Windows can't overwrite it. Every effect stays " +
@@ -136,12 +145,9 @@ namespace BloodborneLauncher.Core
                 L.T("may crash, and the engine's patches and PC menus may not apply")),
 
 
-            // Off by default (beta 9.4): with it on in betas, two players' games stayed on a black
-            // screen before the first frame. Testers: BB_NATIVE_CALLS=verify, BB_GNM_CENSUS and
-            // BB_GNM_OBSERVE in Extra variables.
-            Toggle("BB_NATIVE_CALLS", DirectVulkan, L.T("Direct draw calls"),
-                L.T("Draw calls go straight to the renderer instead of through emulated PS4 GPU commands. Testing only: ") +
-                L.T("turn it off if the game stays on a black screen or something draws wrong"), on: false) with { AlwaysPass = true },
+            // bbport: BB_NATIVE_CALLS was here too (Direct draw calls, passed even at its default):
+            // passed after Engine features > Native draw calls, its 0 turned that setting off for
+            // everyone. That one setting is the switch now (GameEnvironment).
         };
 
         // ---------------------------------------------------------------- values

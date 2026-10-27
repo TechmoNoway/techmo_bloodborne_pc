@@ -93,7 +93,7 @@ public partial class MainWindow
             values.LiveResolution is not ("0" or "auto" or "1") ||
             values.ModelLod is not ("-2" or "0" or "1" or "2") ||
             !double.IsFinite(values.Sharpness) || values.Sharpness is < 0 or > 2 ||
-            values.MouseSensitivity is < 0 or > 10 || values.GamepadIndex is < 0 or > 3 ||
+            values.MouseSensitivity is < -10 or > 20 || values.GamepadIndex is < 0 or > 3 ||
             !new[] { "1280x720", "1920x1080", "2560x1440", "3840x2160", "2560x1080", "3440x1440",
                 "3840x1600", "3840x1080", "5120x1440", "5120x2160", "1600x900", "7680x2160",
                 "1280x1024", "1680x1050", "1920x1200", "2560x1600", "auto" }.Contains(values.Resolution) ||
