@@ -9,6 +9,13 @@ from session_diagnostics import Session
 
 ROOT = Path(__file__).resolve().parents[1]
 
+def native_arguments(arguments, env):
+    """Techmo accepts a game folder; 0.9.37's starter forwards all argv to bb-probe."""
+    arguments = list(arguments)
+    if arguments and not arguments[0].startswith('-'):
+        env['BB_GAME_DIR'] = str(Path(arguments.pop(0)).expanduser().resolve())
+    return arguments
+
 
 def main():
     env = os.environ.copy()
@@ -19,6 +26,8 @@ def main():
     env['BB_GPU_USER_DIR'] = str(ROOT / 'user')
     env['BB_CONFIG'] = str(ROOT / 'bbport.ini')
     env['PYTHONUTF8'] = '1'
+    env['BB_TECHMO_BINDINGS'] = '1'
+    arguments = native_arguments(sys.argv[1:], env)
     session = Session(ROOT, env)
     starter = ROOT / 'out/bb-start.exe'
     runtime = ROOT / 'out/bb-probe.exe'
@@ -33,7 +42,7 @@ def main():
             print(f'Runtime EXE SHA-256: {identity.get("sha256", "unavailable")}', file=log)
             print('Native start: ' + str(starter), file=log)
             session.set_phase('runtime')
-            process = subprocess.Popen([str(starter), *sys.argv[1:]], cwd=ROOT, env=env,
+            process = subprocess.Popen([str(starter), *arguments], cwd=ROOT, env=env,
                                        stdout=log, stderr=subprocess.STDOUT)
             # The native starter and probe append to this file. Stream it to the
             # existing Game output view while preserving the structured session artifacts.

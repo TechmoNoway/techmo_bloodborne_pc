@@ -55,6 +55,35 @@ namespace Techmo.Engine.Core
 
         /// <summary>The Bloodborne PC engine: out\bb-probe.exe and what starts it (out\bb-start.exe, or
         /// scripts\run_windows.py before 0.9.32), in the folder or its engine\.</summary>
+        public static string? DlssRuntime
+        {
+            get
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    var dll = Path.Combine(BinariesDir, "nvngx_dlss.dll");
+                    return File.Exists(dll) ? dll : null;
+                }
+                try
+                {
+                    return Directory.Exists(BinariesDir)
+                        ? Directory.GetFiles(BinariesDir, "libnvidia-ngx-dlss.so.*").OrderBy(f => f, StringComparer.Ordinal).LastOrDefault()
+                        : null;
+                }
+                catch (IOException)
+                {
+                    return null;
+                }
+            }
+        }
+
+        /// <summary>The DLSS runtime's version: the DLL's file version, or the end of the .so's name.</summary>
+        public static string DlssVersion(string runtime) => OperatingSystem.IsWindows()
+            ? System.Diagnostics.FileVersionInfo.GetVersionInfo(runtime).FileVersion ?? ""
+            : Path.GetFileName(runtime)["libnvidia-ngx-dlss.so.".Length..];
+
+        /// <summary>The Bloodborne PC engine: out\bb-probe.exe and what starts it (out\bb-start.exe, or
+        /// scripts\run_windows.py before 0.9.32), in the folder or its engine\.</summary>
         public static bool IsPortDir(string? dir)
         {
             if (string.IsNullOrWhiteSpace(dir)) return false;

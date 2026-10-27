@@ -54,7 +54,7 @@ public partial class MainWindow
         state.MouseInvertX=ReadIniValue("mouse_invert_x")=="1";
         state.MouseInvertY=ReadIniValue("mouse_invert_y")=="1";
         state.MouseAutoRotation=ReadIniValue("mouse_auto_rotation")=="1";
-        state.MouseSensitivity=int.TryParse(ReadIniValue("mouse_sensitivity"),out int n)?Math.Clamp(n,0,10):5;
+        state.MouseSensitivity=int.TryParse(ReadIniValue("mouse_sensitivity"),out int n)?Math.Clamp(n,-10,20):5;
         keyBindings.Clear();
         foreach(var d in PcDefaults)keyBindings.Add(new(){Key=d.key,ActionKey=d.label,Binding=ReadIniValue("bind."+d.key)??d.binding});
         if(state.CustomInputBindings!=null && !HasCustomBindings())state.CustomInputBindings=null;

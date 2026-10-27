@@ -13,6 +13,7 @@ launcher/windows/install.txt
 /engine/native/
 /builds/
 /user/
+/save-vault/
 /logs/
 /mods/
 /network/

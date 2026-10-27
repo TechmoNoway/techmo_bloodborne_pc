@@ -28,6 +28,7 @@ public partial class MainWindow
         {
             Environment.SetEnvironmentVariable("TECHMO_EXPERIMENT_ROOT", root);
             N.Workspace.EmbeddedChange = () => { if (!loadingEngineOptions && !syncing) MarkSettingsChanged(); };
+            N.Workspace.EmbeddedGameRunning = () => gameRunning;
             N.Workspace.Current.Initialise();
             N.Workspace.Current.Saved += () =>
             {
@@ -343,4 +344,9 @@ public partial class MainWindow
     string EngineSavesDirectory => engineOptionsReady
         ? N.GameEnvironment.UserDir(N.Workspace.Current.Settings)
         : Environment.GetEnvironmentVariable("BB_USER_DIR") ?? Path.Combine(root, "user");
+
+    void SecureEngineSaves()
+    {
+        if (engineOptionsReady) N.Workspace.Current.SecureSaves();
+    }
 }

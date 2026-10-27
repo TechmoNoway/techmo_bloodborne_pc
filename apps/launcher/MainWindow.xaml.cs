@@ -653,6 +653,7 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(() =>
                 {
                     gameRunning=false;
+                    SecureEngineSaves();
                     Show();
                     WindowState = WindowState.Normal;
                     LoadState();
@@ -671,6 +672,7 @@ public partial class MainWindow : Window
                 });
             };
             gameRunning=true;
+            SecureEngineSaves();
             PlayButton.IsEnabled=false;
             if(!gameProcess.Start()) throw new InvalidOperationException(L10n.Text("Could not start the game."));
             SetFooterMessage("Started · log: {0}", Path.GetFileName(logPath));

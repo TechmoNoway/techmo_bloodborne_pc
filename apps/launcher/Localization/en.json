@@ -535,5 +535,6 @@
   "Recommend.Motion": "Object motion vectors",
   "Recommend.AutoResolution": "Display (auto)",
   "Trophies.Description": "Track all 40 trophies, completion and in-game notifications.",
-  "Engine.Description": "Tune the engine switches. Defaults remain in effect until you change them."
+  "Engine.Description": "Tune the engine switches. Defaults remain in effect until you change them.",
+  "Credits.Engine": "Lantern Engine by Awaken (https://github.com/Awakenchan/LanternEngine). Modified Techmo integration; not an official Lantern Engine release."
 }

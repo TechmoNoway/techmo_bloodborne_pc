@@ -10,9 +10,9 @@
     <AssemblyName>Techmo.EngineBackend</AssemblyName>
     <RootNamespace>Techmo.Engine</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.9.34</Version>
+    <Version>0.9.37</Version>
     <Product>Techmo Bloodborne experiment-v2</Product>
-    <InformationalVersion>0.9.34+techmo.experiment-v2</InformationalVersion>
+    <InformationalVersion>0.9.37+techmo.experiment-v2</InformationalVersion>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -25,7 +25,7 @@
 
   <ItemGroup>
     <Resource Include="app.ico" />
-    <EmbeddedResource Include="Localization\zh-CN.json" LogicalName="Techmo.Engine.Localization.zh-CN.json" />
+    <EmbeddedResource Include="Localization\*.json" LogicalName="Techmo.Engine.Localization.%(Filename)%(Extension)" />
     <Resource Include="lantern-beta.ico" />
     <Resource Include="lantern-stable.ico" />
     <Resource Include="lantern-j3loo.ico" />

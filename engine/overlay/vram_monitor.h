@@ -18,6 +18,12 @@
 #endif
 #include <windows.h>
 #include <dxgi1_4.h>
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 #endif
 
 namespace VideoMemory {

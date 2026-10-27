@@ -89,9 +89,16 @@ jobs:
           BB_JOBS: '2'
           BB_MARCH: x86-64-v3
         run: bash build.sh
-      - name: Test title-menu asset generation
+      - name: Test native menu rows and input
         shell: msys2 {0}
-        run: python -B -m unittest discover -s tests -p test_title_menu.py -v
+        run: |
+          ninja -C engine/native/out/gpu -j2 option-rows-test engine-menu-memory-test pc-input-test
+          engine/native/out/gpu/option-rows-test.exe
+          engine/native/out/gpu/engine-menu-memory-test.exe
+          engine/native/out/gpu/pc-input-test.exe
+          clang++ -std=c++23 -Wall -Wextra -Werror -Iengine/native/gpu/shim $(pkg-config --cflags sdl3) tests/test_pc_input.cpp engine/native/gpu/shim/input/bindings.cpp $(pkg-config --libs sdl3) -mconsole -o out/techmo-input-test.exe
+          ./out/techmo-input-test.exe
+          python -B -m unittest discover -s tests -p test_title_menu.py -v
       - name: Test VRAM sampler
         shell: msys2 {0}
         run: |

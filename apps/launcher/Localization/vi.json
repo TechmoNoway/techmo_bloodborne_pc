@@ -535,5 +535,6 @@
   "Recommend.Motion": "Vector chuyển động của vật thể",
   "Recommend.AutoResolution": "Theo màn hình (tự động)",
   "Trophies.Description": "Theo dõi 40 thành tích, tiến độ hoàn thành và thông báo trong game.",
-  "Engine.Description": "Điều chỉnh các thiết lập engine. Giá trị mặc định được giữ cho đến khi bạn thay đổi."
+  "Engine.Description": "Điều chỉnh các thiết lập engine. Giá trị mặc định được giữ cho đến khi bạn thay đổi.",
+  "Credits.Engine": "Lantern Engine by Awaken (https://github.com/Awakenchan/LanternEngine). Bản tích hợp đã chỉnh sửa của Techmo; không phải bản phát hành chính thức của Lantern Engine."
 }
