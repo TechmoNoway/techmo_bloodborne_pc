@@ -4,7 +4,7 @@ name: Techmo Windows
 on:
   workflow_dispatch:
   push:
-    branches: [main, "experiment/**"]
+    branches: [main, dev-v1, "experiment/**"]
     paths:
       - "engine/runtime/**"
       - "engine/address_space.h"

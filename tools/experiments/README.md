@@ -1,6 +1,6 @@
 # Shader cache, memory and renderer experiments
 
-Branch: `experiment/shader-cache-replay`. Gameplay acceptance is separate from fixtures.
+Branch: `dev-v1`. Gameplay acceptance is separate from fixtures.
 
 ## Recorded pipeline replay
 
