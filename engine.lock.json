@@ -1,10 +1,10 @@
 {
   "upstream_repository": "https://github.com/Awakenchan/LanternEngine.git",
-  "upstream_commit": "3860021d6550f95397ba74d046fb14498816a534",
-  "upstream_version": "0.9.37",
+  "upstream_commit": "4715bca355059b7bd981ca849412884059d4d0a7",
+  "upstream_version": "0.9.38",
   "base_repository": "https://github.com/DarkIzuku/bloodborne_pc.git",
   "base_tag": "v0.4.0-darkizuku-preview.1",
   "base_commit": "8ecba9a4abdd54747e31d7fee54982e422b5f8e2",
   "source_model": "upstream-engine-tree",
-  "engine_tree": "292dcdb662b5df92066651a2afe69fecc37675d4"
+  "engine_tree": "d2aae91dd3144a4c14cdb80eee868efe7ba8b879"
 }

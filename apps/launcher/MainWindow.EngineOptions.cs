@@ -36,6 +36,7 @@ public partial class MainWindow
                 LoadState();
                 state.Fps = NormalizeFps(N.Workspace.Current.Settings.Str("fps_mode"));
                 ApplyStateToUi(); RememberAppliedSettings();
+                UpdateEnginePresence();
             };
             V.SettingRow.Classic = true; // Source choices become normal dropdowns; their window is never created.
             engineOptionsReady = true;
@@ -73,7 +74,7 @@ public partial class MainWindow
 
         var play = new V.PlayPage();
         HostAdditional(HomePage, OwnOptions(play, row => Names("The Old Hunters (DLC)", "DLC folder", "Add to Steam",
-            "Player profile", "Saves folder", "Save backups", "Import saves", "In-game menu language").Contains(row.Title)));
+            "Player profile", "Saves folder", "Save backups", "Import saves", "In-game menu language", "PC menus in the game").Contains(row.Title)));
         var settings = new V.SettingsPage();
         var ownSettings = Names("Frame statistics in the log", "FSR 4 profile in the log", "Audio statistics in the log",
             "Engine switches", "Engine folder", "Launcher settings", "Port settings (bbport.ini)");
@@ -293,7 +294,7 @@ public partial class MainWindow
     {
         if (!engineOptionsReady) return;
         savingEngineOptions = true;
-        try { N.Workspace.Current.SaveNow(); } // Flush extras before Techmo merges its own edited fields.
+        try { N.Workspace.Current.SaveNow(); UpdateEnginePresence(); } // Flush extras before Techmo merges its own edited fields.
         finally { savingEngineOptions = false; }
     }
 

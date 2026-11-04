@@ -36,6 +36,8 @@ public partial class MainWindow
         };
         Closed += (_, _) =>
         {
+            StopEngineSession();
+            Techmo.Engine.Core.DiscordPresence.Stop();
             Localization.Current.PropertyChanged -= HubLanguageChanged;
             SystemEvents.UserPreferenceChanged -= SystemAppearanceChanged;
         };

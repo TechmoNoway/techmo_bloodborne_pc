@@ -10,9 +10,9 @@
     <AssemblyName>Techmo.EngineBackend</AssemblyName>
     <RootNamespace>Techmo.Engine</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.9.37</Version>
+    <Version>0.9.38</Version>
     <Product>Techmo Bloodborne experiment-v2</Product>
-    <InformationalVersion>0.9.37+techmo.experiment-v2</InformationalVersion>
+    <InformationalVersion>0.9.38+techmo.experiment-v2</InformationalVersion>
     <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 

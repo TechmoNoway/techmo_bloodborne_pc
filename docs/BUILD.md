@@ -32,6 +32,10 @@ Set `BB_MSYS2` for a nonstandard MSYS2 installation. `build-launcher.ps1 -Offlin
 reuses the local NuGet cache. Native output goes to `out/`, launcher output to
 `builds/launcher/`. `out/native-build.json` records source pins and binary hashes.
 
+The build also writes `package.json` with the Techmo engine identity. Both it and
+the native provenance are included in the Windows ZIP; the engine tree must match
+the pinned lock before the provenance file is written.
+
 After both builds, `tools/package-windows.ps1` creates a clean ZIP in `dist/`.
 It packages runtime files and notices, downloading the fixed Python embeddable
 runtime from python.org. `run.bat` prefers `tools/python/python.exe` from the

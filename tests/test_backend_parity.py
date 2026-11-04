@@ -20,7 +20,7 @@ class BackendParityTests(unittest.TestCase):
         patch = (ROOT / 'engine/techmo-compat.patch').read_text(encoding='utf-8')
         paths = set(re.findall(r'^\+\+\+ b/(.+)$', patch, re.MULTILINE))
         self.assertEqual(paths, {'gpu/shim/input/bindings.cpp', 'gpu/shim/input/bindings.h',
-                                 'gpu/shim/input/input.cpp', 'start/mods.cpp'})
+                                 'gpu/shim/input/input.cpp', 'start/mods.cpp', 'tests/test_pc_input.cpp'})
 
     def test_techmo_capture_and_key_labels_are_preserved(self):
         # The renderer/configuration adapter translates SDL numbering, leaving the

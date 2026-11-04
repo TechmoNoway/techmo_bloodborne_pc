@@ -3,7 +3,7 @@
 param([string]$PythonArchive)
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-foreach ($required in @('builds/launcher/Techmo.Launcher.exe', 'out/bb-probe.exe', 'out/bb-start.exe', 'out/native-build.json')) {
+foreach ($required in @('builds/launcher/Techmo.Launcher.exe', 'out/bb-probe.exe', 'out/bb-start.exe', 'out/native-build.json', 'package.json')) {
     if (!(Test-Path -LiteralPath (Join-Path $root $required))) { throw "Build missing: $required" }
 }
 $packageRoot = Join-Path $root ('builds/_internal/package-' + [Guid]::NewGuid().ToString('N'))
@@ -17,7 +17,7 @@ foreach ($directory in @('scripts', 'licenses', 'docs', 'patches', 'data')) {
     $source = Join-Path $root $directory
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $stage $directory) -Recurse }
 }
-foreach ($name in @('run.bat', 'build.sh', 'engine.lock.json', 'LICENSE', 'README.md')) {
+foreach ($name in @('run.bat', 'build.sh', 'engine.lock.json', 'package.json', 'LICENSE', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage
 }
 $manifest = Get-Content -LiteralPath (Join-Path $root 'out/native-build.json') -Raw | ConvertFrom-Json

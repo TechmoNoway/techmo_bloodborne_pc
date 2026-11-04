@@ -45,6 +45,11 @@ def main():
     lock = json.loads((ROOT / 'engine.lock.json').read_text(encoding='utf-8'))
     native = ROOT / 'engine/native'
     native_out = native / 'out'
+    # Avoid HEAD^{tree}: the Windows git.cmd wrapper can consume its caret when
+    # called by CLANG64 Python in CI. The commit format has no shell metacharacters.
+    native_tree = command('git', '-C', str(native), 'show', '-s', '--format=%T', 'HEAD')
+    if native_tree != lock['engine_tree']:
+        raise RuntimeError('Native engine tree does not match engine.lock.json')
     OUT.mkdir(parents=True, exist_ok=True)
     compiler = Path(shutil.which('clang')).resolve()
     toolchain_bin = compiler.parent
@@ -95,7 +100,7 @@ def main():
                               techmo_menu_sha256=digest(ROOT / 'engine/techmo-menu.patch'),
                               techmo_vram_sha256=digest(ROOT / 'engine/techmo-vram.patch'),
                               vram_monitor_sha256=digest(ROOT / 'engine/overlay/vram_monitor.h'),
-                              native_base=lock['base_commit'], native_engine_tree=command('git', '-C', str(native), 'rev-parse', 'HEAD^{tree}')),
+                              native_base=lock['base_commit'], native_engine_tree=native_tree),
         'target': 'Windows x64', 'configuration': 'RelWithDebInfo',
         'compiler': command('clang', '--version'),
         'packages': {name: command('pkg-config', '--modversion', name) for name in ('sdl3', 'vulkan', 'libavcodec', 'libxxhash')},
@@ -105,6 +110,9 @@ def main():
         'symbols': 'DWARF debug information retained in native executables; keep these exact binaries for symbolization',
     }
     (OUT / 'native-build.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    package = {'version': manifest['source_identity'].get('app_version', '2.0.0-experiment'),
+               'engine': f"techmo-{lock['upstream_version']}-{lock['upstream_commit'][:7]}"}
+    (ROOT / 'package.json').write_text(json.dumps(package, indent=2) + '\n', encoding='utf-8')
     print(f'Native build recorded; {len(copied)} toolchain DLLs copied to out/.')
 
 

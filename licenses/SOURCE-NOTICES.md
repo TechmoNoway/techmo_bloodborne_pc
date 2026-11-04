@@ -4,7 +4,7 @@ The product uses the Techmo name. Original source authorship is retained here.
 
 | Source | Acknowledgement |
 | --- | --- |
-| Lantern Engine by Awaken | Modified integration of [0.9.37 source](https://github.com/Awakenchan/LanternEngine/tree/3860021d6550f95397ba74d046fb14498816a534), with the Techmo frontend and compatibility patches. [Additional terms](Lantern-Engine-NOTICE.txt) and [license](Lantern-Engine-LICENSE.txt) retained. |
+| Lantern Engine by Awaken | Modified integration of [0.9.38 source](https://github.com/Awakenchan/LanternEngine/tree/4715bca355059b7bd981ca849412884059d4d0a7), with the Techmo frontend and compatibility patches. [Additional terms](Lantern-Engine-NOTICE.txt) and [license](Lantern-Engine-LICENSE.txt) retained. |
 | Engine starting point | [DarkIzuku/bloodborne_pc](https://github.com/DarkIzuku/bloodborne_pc), built on [bbport](https://github.com/deadinside28/bloodborne_pc) and [shadPS4](https://github.com/shadps4-emu/shadPS4). Revisions are pinned in `engine.lock.json`. |
 | VRAM cleanup and frame pacing | Adapted upstream from [IFreemz/shadPS4-Bloodborne-DLSS-FSR](https://github.com/IFreemz/shadPS4-Bloodborne-DLSS-FSR). |
 | Crash and controller fixes | [AwesomeObserver](https://github.com/AwesomeObserver/bloodborne_pc), [Supermedo](https://github.com/Supermedo/bloodborne_pc), [deadinside28](https://github.com/deadinside28/bloodborne_pc). |
@@ -23,7 +23,7 @@ The product uses the Techmo name. Original source authorship is retained here.
 | Packaged Python runtime | Python Software Foundation, Python 3.12.10 embeddable distribution; bundled license retained. |
 
 The root `LICENSE` preserves the starting point's GPL-2.0-or-later notice.
-The integrated 0.9.37 engine/backend is GPL-3.0-or-later with the additional
+The integrated 0.9.38 engine/backend is GPL-3.0-or-later with the additional
 terms in `Lantern-Engine-NOTICE.txt`. Techmo additions retain their
 GPL-3.0 notices in `Techmo-GPL-3.0.txt`. Detailed inherited notices remain in
 `Techmo-THIRD_PARTY-NOTICES.txt`; native packages include `licenses/native/`.

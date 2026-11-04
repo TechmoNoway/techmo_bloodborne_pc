@@ -62,6 +62,10 @@ static class Program
         Check(Get<Button>("KeyboardTab") != null && Get<Button>("UndoSettingsButton") != null, "Techmo tabs and Apply/Undo stay present");
         Check(Field<bool>("engineOptionsReady"), "Additional native engine options initialized");
         var pages = Field<Dictionary<string, V.LauncherPage>>("engineOptionSources");
+        Check(N.Updater.Current == new Version(0, 9, 38), "Hosted backend identifies stable 0.9.38");
+        foreach (var title in new[] { "Native frame rate", "Steps follow the frame rate", "Memory retry limit", "Cutscene freeze fix", "Live Discord status", "FSR 4 from the AMD driver" })
+            Check(pages["EnginePage"].HostedRows.Any(row => row.Title == title), "New engine switch is accessible: " + title);
+        Check(pages["PlayPage"].HostedRows.Any(row => row.Title == "PC menus in the game"), "Native PC menus can be configured through Techmo");
         Check(pages.Count >= 9, "Native option catalogs remain available through the Techmo presentation");
         void Shot(string page)
         {
@@ -251,6 +255,34 @@ static class Program
         typeof(MainWindow).GetField("gameRunning", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
         Check(ReferenceEquals(N.Workspace.EmbeddedGameRunning?.Target, window) && N.Workspace.EmbeddedGameRunning?.Invoke() == true,
             "Periodic backups see the Techmo wrapper's running state");
+        N.Workspace.Current.Settings.Set("discord_status", "off");
+        var liveLog = Path.Combine(fixture, "live-session.log");
+        Call("StartEngineSession", liveLog);
+        Call("PollEngineSession");
+        Check(N.LiveGame.Current == null, "Live status tolerates a log that has not been created yet");
+        File.WriteAllText(liveLog, "Engine starting\nGame status: map 18010000, boss -1, level 52, echoes 124");
+        Call("PollEngineSession");
+        Check(N.LiveGame.Current == null, "A partial engine status line waits for its newline");
+        File.AppendAllText(liveLog, "80, insight 9\n");
+        Call("PollEngineSession");
+        Check(N.LiveGame.Current is { Level: 52, Echoes: 12480, Insight: 9, Area: "Central Yharnam" },
+            "Techmo's session wrapper feeds native live status without the upstream window");
+        File.AppendAllText(liveLog, "Game status: none\n");
+        Call("PollEngineSession");
+        Check(N.LiveGame.Current == null, "Leaving the game world clears Discord location and stats");
+        File.AppendAllText(liveLog, "Game status: map 18010000, boss 500000, level 52, echoes 12480, insight 9\n");
+        Call("PollEngineSession");
+        var presence = N.DiscordPresence.LookOf(N.Workspace.Current.Settings, N.LiveGame.Current);
+        N.Workspace.Current.Settings.Set("discord_status", "custom");
+        N.Workspace.Current.Settings.Set("discord_game_place", false);
+        N.Workspace.Current.Settings.Set("discord_game_stats", false);
+        presence = N.DiscordPresence.LookOf(N.Workspace.Current.Settings);
+        Check(presence != null && !presence.Details.Contains("Cleric Beast") && !presence.State.Contains("12480"),
+            "Discord privacy toggles hide the live boss and player stats");
+        N.Workspace.Current.Settings.Set("discord_status", "off");
+        Call("StopEngineSession");
+        Check(N.LiveGame.Current == null && Field<DispatcherTimer?>("engineSessionTimer") == null,
+            "Stopping a Techmo session releases the log reader, timer and live state");
         typeof(MainWindow).GetField("gameRunning", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
         typeof(MainWindow).GetField("hasUnsavedChanges", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
         window.Close(); app.Shutdown();

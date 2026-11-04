@@ -4,7 +4,7 @@ Windows x64 build on the `experiment-v2` branch, with the Techmo Control Hub,
 keyboard/mouse controls and gameplay performance recording.
 
 Modified integration of **Lantern Engine by Awaken (https://github.com/Awakenchan/LanternEngine)**,
-pinned to 0.9.37 stable. This Techmo build is changed from the original and is not an official
+pinned to 0.9.38 stable. This Techmo build is changed from the original and is not an official
 Lantern Engine release. See [upstream terms](licenses/Lantern-Engine-NOTICE.txt).
 
 ## Features
@@ -16,6 +16,7 @@ Lantern Engine release. See [upstream terms](licenses/Lantern-Engine-NOTICE.txt)
 - Trophy tracking, save backups, mods and online settings.
 - Title-menu Exit Game row with the game's YES/NO confirmation.
 - Session reports and PresentMon benchmark captures.
+- Stable 0.9.38 engine fixes for high-FPS timing, boss cutscene freezes and long-session memory retries.
 
 ## Download
 

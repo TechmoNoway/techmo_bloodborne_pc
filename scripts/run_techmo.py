@@ -12,7 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def native_arguments(arguments, env):
     """Techmo accepts a game folder; 0.9.37's starter forwards all argv to bb-probe."""
     arguments = list(arguments)
-    if arguments and not arguments[0].startswith('-'):
+    if arguments and arguments[0] == '--game-dir':
+        if len(arguments) < 2 or arguments[1].startswith('-'):
+            raise ValueError('--game-dir requires a game folder')
+        arguments.pop(0)
+        env['BB_GAME_DIR'] = str(Path(arguments.pop(0)).expanduser().resolve())
+    elif arguments and not arguments[0].startswith('-'):
         env['BB_GAME_DIR'] = str(Path(arguments.pop(0)).expanduser().resolve())
     return arguments
 

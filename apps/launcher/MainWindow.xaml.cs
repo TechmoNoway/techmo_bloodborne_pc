@@ -653,6 +653,7 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(() =>
                 {
                     gameRunning=false;
+                    StopEngineSession();
                     SecureEngineSaves();
                     Show();
                     WindowState = WindowState.Normal;
@@ -675,12 +676,14 @@ public partial class MainWindow : Window
             SecureEngineSaves();
             PlayButton.IsEnabled=false;
             if(!gameProcess.Start()) throw new InvalidOperationException(L10n.Text("Could not start the game."));
+            StartEngineSession(logPath);
             SetFooterMessage("Started · log: {0}", Path.GetFileName(logPath));
             Hide();
         }
         catch (Exception ex)
         {
             gameRunning=false;
+            StopEngineSession();
             RefreshStatus();
             MessageBox.Show(ex.Message, L10n.Text("Unable to start Bloodborne"), MessageBoxButton.OK, MessageBoxImage.Error);
         }

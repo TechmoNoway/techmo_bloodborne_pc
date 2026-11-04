@@ -12,8 +12,21 @@
 extern "C" {std::uint8_t bb_mouse_camera_free_now=0;}
 void host_log(const char*,...) {}
 bool debug_menu_active(){return false;}
+static bool in_menu=false;
+bool menu_pointer_in_menu(){return in_menu;}
 uint32_t menu_confirm_button(){return 0x4000;}
 uint32_t menu_back_button(){return 0x2000;}
+static void verify_menu_only_bindings() {
+    bool held[kBindCount]={};
+    held[kBindConfirm]=held[kBindBack]=true;
+    PadState pad;
+    host_bindings_apply(held,false,pad);
+    assert(pad.buttons==0);
+    in_menu=true;
+    host_bindings_apply(held,false,pad);
+    assert(pad.buttons==0x6000);
+    in_menu=false;
+}
 static void verify_chords() {
     host_bindings_load_defaults();
     bool keys[SDL_SCANCODE_COUNT]={}, held[kBindCount]={};
@@ -98,6 +111,7 @@ static void verify_chords() {
     host_bindings_load_defaults();
 }
 int main(){
+    verify_menu_only_bindings();
 #ifdef _WIN32
     _putenv_s("BB_TECHMO_BINDINGS","1");
 #else

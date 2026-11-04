@@ -26,7 +26,7 @@ namespace Techmo.Engine.Core
         public static string ReleasesPage => $"https://github.com/{Repository}/releases";
 
         /// <summary>The engine build this launcher is made for (package.json "engine").</summary>
-        public const string EngineId = "bbhost-0.4.0-fps82";
+        public const string EngineId = "techmo-0.9.38-4715bca";
 
         public const string ExeName = "Techmo.Launcher.exe";
         /// <summary>The launcher's name before 0.9.34 beta 8 (now a forwarder to ExeName).</summary>

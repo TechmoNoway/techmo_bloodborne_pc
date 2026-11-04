@@ -131,7 +131,7 @@
      const std::uint8_t modifiers = ModifiersDown(keys, count);
      g_keyboard_modifiers.store(modifiers, std::memory_order_relaxed);
      HeldOn(false, [&](int sc) { return sc < count && keys[sc]; }, modifiers, held);
-@@ -412,6 +445,20 @@
+@@ -412,7 +445,21 @@
      g_walk_on_mouse.store(held[kBindWalk], std::memory_order_relaxed);
  }
  
@@ -150,6 +150,7 @@
 +    held[kBindWalk]=keyboard[kBindWalk]||mouse[kBindWalk];
 +}
  void host_bindings_apply(const bool held[kBindCount], bool strong, PadState& pad) {
+     const bool menu = menu_pointer_in_menu();
      for (int a = 0; a < kBindCount; ++a) {
          if (!held[a]) continue;
 @@ -476,7 +523,7 @@
@@ -209,3 +210,25 @@
              layers.emplace_back(mods_dir.filename().native(), mods_dir);
          } else {
              for (const std::wstring& name : Selected(mods_dir, config)) layers.emplace_back(name, mods_dir / name);
+--- a/tests/test_pc_input.cpp
++++ b/tests/test_pc_input.cpp
+@@ -12,6 +12,8 @@
+ #include <thread>
+ 
+ void host_log(const char*, ...) {}
++static bool in_menu = true;
++bool menu_pointer_in_menu() { return in_menu; }
+ std::uint32_t menu_confirm_button() { return PadBits::kCross; }
+ std::uint32_t menu_back_button() { return PadBits::kCircle; }
+ 
+@@ -78,6 +80,10 @@
+     assert(p.buttons == PadBits::kL2 && p.l2 == 255);
+     p = Pad({kBindConfirm, kBindBack});
+     assert(p.buttons == (PadBits::kCross | PadBits::kCircle));
++    in_menu = false;
++    p = Pad({kBindConfirm, kBindBack});
++    assert(p.buttons == 0);
++    in_menu = true;
+     p = Pad({kBindLookL, kBindLookD});
+     assert(p.rx == kStickLow && p.ry == kStickHigh);
+ 

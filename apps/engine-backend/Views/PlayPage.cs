@@ -114,6 +114,11 @@ namespace Techmo.Engine.Views
             _gameIcon = gameCard.Icon;
             gameCard.ShowIcon = true;
             Add(gameCard);
+            ToggleRow(SymbolRegular.TextBulletListSquare24, L.T("PC menus in the game"),
+                L.T("The PC menus Lantern Engine adds to the game: the extra pages in System (PC graphics, controls, camera), the title ") +
+                L.T("screen's entries and the Altar of Despair's rebirth. Off: only the game's own menus, as on PS4; the launcher and the ") +
+                L.T("overlay (Insert or L3 + R3) still change every setting. Takes effect at the next start"),
+                () => Ini.Get("pc_menus", "1") != "0", v => Ini.Set("pc_menus", v ? "1" : "0"));
 
             // The Old Hunters on base-game dumps: the folder of the dumped add-ons (BB_DLC_DIR).
             _resetDlc = IconButton(SymbolRegular.Dismiss24, L.T("No DLC folder"), (_, _) =>
@@ -146,7 +151,7 @@ namespace Techmo.Engine.Views
             Add(Card(SymbolRegular.People24, L.T("Player profile"),
                 L.T("Each profile has its own save files and trophies, so several people can play their own runs on this PC"), Row(
                 _profileButton,
-                SmallButton(L.T("New…"), SymbolRegular.PersonAdd24, (_, _) => NewProfile()),
+                SmallButton(L.T("Newâ€¦"), SymbolRegular.PersonAdd24, (_, _) => NewProfile()),
                 IconButton(SymbolRegular.Rename24, L.T("Rename this profile"), (_, _) => RenameProfile()),
                 IconButton(SymbolRegular.PersonDelete24, L.T("Remove this profile from the list (its saves stay on disk)"), (_, _) => RemoveProfile())),
                 out _profileHint));
@@ -163,7 +168,7 @@ namespace Techmo.Engine.Views
                 _resetUser), out _userHint));
 
             // Save backups: made before each start when the saves changed (Workspace.StartGame).
-            _restoreButton = SmallButton(L.T("Restore…"), SymbolRegular.History24, (_, _) => ShowBackupMenu());
+            _restoreButton = SmallButton(L.T("Restoreâ€¦"), SymbolRegular.History24, (_, _) => ShowBackupMenu());
             var backupToggle = new ToggleSwitch { IsChecked = S.Bool("save_backups"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
             backupToggle.Click += (_, _) =>
             {
@@ -182,7 +187,7 @@ namespace Techmo.Engine.Views
                 backupToggle), out _backupHint));
             Add(Card(SymbolRegular.ArrowImport24, L.T("Import saves"),
                 L.T("From shadPS4, another Bloodborne port, or a PS4 save exported decrypted (Apollo Save Tool, Save Wizard). This profile's saves are backed up first"),
-                SmallButton(L.T("Import…"), SymbolRegular.FolderArrowRight24, (_, _) => ImportSaves()), out _));
+                SmallButton(L.T("Importâ€¦"), SymbolRegular.FolderArrowRight24, (_, _) => ImportSaves()), out _));
 
             ComboRow(SymbolRegular.LocalLanguage24, L.T("In-game menu language"), L.T("The port's settings menu (Insert or L3 + R3)"),
                 Choices.MenuLanguages, () => Ini.Get("menu_language", "en"), v => Ini.Set("menu_language", v));
@@ -200,7 +205,7 @@ namespace Techmo.Engine.Views
         {
             var panel = new StackPanel { Margin = new Thickness(0, 0, 10, 0) };
             panel.Children.Add(Text(label, "StatLabel"));
-            value = Text("—", "StatValue");
+            value = Text("â€”", "StatValue");
             panel.Children.Add(value);
             return panel;
         }
@@ -221,7 +226,7 @@ namespace Techmo.Engine.Views
             SetHint(_gameHint, string.IsNullOrEmpty(gameDir) ? L.T("Not chosen") : gameDir);
             var custom = S.Str("user_dir").Length > 0;
             var root = GameEnvironment.SavesRoot(S);
-            SetHint(_userHint, (custom ? root : L.F($"Default: {root}")) + L.T("  ·  every profile's saves live here"));
+            SetHint(_userHint, (custom ? root : L.F($"Default: {root}")) + L.T("  Â·  every profile's saves live here"));
             _resetUser.IsEnabled = custom;
             _resetDlc.IsEnabled = dlcChosen.Length > 0;
             RefreshProfile();
@@ -280,9 +285,9 @@ namespace Techmo.Engine.Views
         {
             _statUpscaler.Text = Label(Choices.Upscalers, Ini.Get("upscaler"));
             var (outW, outH) = Choices.OutputSize(Ini.Get("output_res", "1920x1080"));
-            _statResolution.Text = $"{outW} × {outH}";
+            _statResolution.Text = $"{outW} Ã— {outH}";
             _statFps.Text = Label(Choices.FpsModes, GameEnvironment.Fps(S));
-            _statVia.Text = $"{Ws.Trophies.Count} / {TrophyTracker.All.Length} · {Ws.Trophies.Completion * 100:0}%";
+            _statVia.Text = $"{Ws.Trophies.Count} / {TrophyTracker.All.Length} Â· {Ws.Trophies.Completion * 100:0}%";
         }
 
         private static string Label(IReadOnlyList<Choice> choices, string value) =>
@@ -298,7 +303,7 @@ namespace Techmo.Engine.Views
             if (game.Running)
             {
                 var up = DateTime.Now - game.StartedAt;
-                _playStatus.Text = L.F($"Running for {(int)up.TotalMinutes}:{up.Seconds:00}  ·  output on the Game output page");
+                _playStatus.Text = L.F($"Running for {(int)up.TotalMinutes}:{up.Seconds:00}  Â·  output on the Game output page");
                 _clock.Start();
             }
             else
@@ -348,7 +353,7 @@ namespace Techmo.Engine.Views
             {
                 if (Prompt.Choose(L.T("Close Steam first"),
                         L.T("Steam rewrites its list of non-Steam games when it closes, so it has to be closed while Bloodborne is added. ") +
-                        L.T("Exit Steam (Steam › Exit, or right-click its tray icon › Exit), then press Try again."),
+                        L.T("Exit Steam (Steam â€º Exit, or right-click its tray icon â€º Exit), then press Try again."),
                         L.T("Cancel"), L.T("Try again")) <= 0)
                     return;
             }
@@ -391,9 +396,9 @@ namespace Techmo.Engine.Views
             try { found = await Task.Run(() => Directory.Exists(saves) && Directory.EnumerateFileSystemEntries(saves).Any()); }
             catch { found = false; }
             if (read != _profileReads) return;
-            SetHint(_profileHint, dir + (found ? L.T("  ·  saves found") : L.T("  ·  no saves yet; the game creates them here")) +
-                                  L.F($"  ·  {Ws.Trophies.Count} / {TrophyTracker.All.Length} trophies") +
-                                  (played.TotalMinutes >= 1 ? L.F($"  ·  {SessionStats.Duration(played)} played") : ""));
+            SetHint(_profileHint, dir + (found ? L.T("  Â·  saves found") : L.T("  Â·  no saves yet; the game creates them here")) +
+                                  L.F($"  Â·  {Ws.Trophies.Count} / {TrophyTracker.All.Length} trophies") +
+                                  (played.TotalMinutes >= 1 ? L.F($"  Â·  {SessionStats.Duration(played)} played") : ""));
         }
 
         // ---------------------------------------------------------------- save backups
@@ -412,7 +417,7 @@ namespace Techmo.Engine.Views
             _restoreButton.IsEnabled = list.Count > 0;
             SetHint(_backupHint, !S.Bool("save_backups") ? L.T("Off: no backups are made")
                 : list.Count == 0 ? L.T("None yet: the first is made when you next press Play")
-                : L.F($"{list.Count} for {profile}  ·  newest {list[0].When:d MMM, HH:mm}"));
+                : L.F($"{list.Count} for {profile}  Â·  newest {list[0].When:d MMM, HH:mm}"));
         }
 
         private void ShowBackupMenu()
@@ -422,8 +427,8 @@ namespace Techmo.Engine.Views
             {
                 var item = new System.Windows.Controls.MenuItem
                 {
-                    Header = L.F($"{backup.When:d MMM yyyy, HH:mm}  ·  {backup.Bytes / 1048576.0:0.0} MB") +
-                             (backup.MadeBeforeRestore ? L.T("  ·  before a restore") : backup.MadeDuringPlay ? L.T("  ·  while playing") : ""),
+                    Header = L.F($"{backup.When:d MMM yyyy, HH:mm}  Â·  {backup.Bytes / 1048576.0:0.0} MB") +
+                             (backup.MadeBeforeRestore ? L.T("  Â·  before a restore") : backup.MadeDuringPlay ? L.T("  Â·  while playing") : ""),
                 };
                 var chosen = backup;
                 item.Click += (_, _) => RestoreBackup(chosen);
@@ -444,7 +449,7 @@ namespace Techmo.Engine.Views
             {
                 var choice = Prompt.Choose(L.T("Import saves"),
                     L.F($"Bloodborne saves found ({found.From}), last saved {found.Saved:d MMM yyyy, HH:mm}:\n{found.Dir}"),
-                    L.T("Cancel"), L.T("Choose others…"), L.T("Import these"));
+                    L.T("Cancel"), L.T("Choose othersâ€¦"), L.T("Import these"));
                 if (choice <= 0) return;
                 if (choice == 2) from = found.Dir;
             }
@@ -453,7 +458,7 @@ namespace Techmo.Engine.Views
                 var how = Prompt.Choose(L.T("Import saves"),
                     L.T("Choose the folder with your saves (another port's whole folder is fine), or a save file: ") +
                     L.T("a .zip of the save, or one of its files (userdata0000)."),
-                    L.T("Cancel"), L.T("A folder…"), L.T("A file or .zip…"));
+                    L.T("Cancel"), L.T("A folderâ€¦"), L.T("A file or .zipâ€¦"));
                 if (how <= 0) return;
                 string? folder;
                 if (how == 1)
@@ -480,7 +485,7 @@ namespace Techmo.Engine.Views
                     Prompt.Tell(L.T("Import saves"), SaveImport.HasEncryptedPs4Save(folder)
                         ? L.T("That is a PS4 save as the console copies it to USB: it is encrypted with that PS4's own keys, ") +
                           L.T("which only the console has, so no PC program can open it.\n\n") +
-                          L.T("Export it decrypted instead: on a jailbroken PS4 with Apollo Save Tool (Copy save game → decrypted, to USB), ") +
+                          L.T("Export it decrypted instead: on a jailbroken PS4 with Apollo Save Tool (Copy save game â†’ decrypted, to USB), ") +
                           L.T("or with Save Wizard for PS4. Then import that folder here.")
                         : L.T("No Bloodborne saves in that folder or the folders under it (a SPRJ0005 folder with userdata files)."));
                     return;
@@ -494,7 +499,7 @@ namespace Techmo.Engine.Views
                 return;
             }
             var replacing = SaveImport.HasSaves(target)
-                ? L.T("\n\nThis profile's current saves are backed up first: Save backups › Restore… brings them back.")
+                ? L.T("\n\nThis profile's current saves are backed up first: Save backups â€º Restoreâ€¦ brings them back.")
                 : "";
             if (!Prompt.Confirm(L.T("Import saves"), L.F($"Copy the saves from\n{from}\ninto {PlayerProfiles.Current(S)}'s saves?{replacing}"), L.T("Import")))
                 return;
