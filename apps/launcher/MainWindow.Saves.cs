@@ -14,7 +14,7 @@ public partial class MainWindow
 
     void InitializeSaves()
     {
-        string user = Environment.GetEnvironmentVariable("BB_USER_DIR") ?? Path.Combine(root, "user");
+        string user = EngineSavesDirectory;
         saveDataStore = new(Path.GetFullPath(user, root), IsSaveDataInUse);
         SaveRootText.Text = saveDataStore.SaveRoot;
         RefreshSaveLists();

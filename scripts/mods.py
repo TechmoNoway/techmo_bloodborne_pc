@@ -10,14 +10,14 @@ import stat
 import sys
 import tempfile
 
-# Windows: symbolic links need administrator rights or developer mode. Directories become
-# junctions and files hard links instead (a copy when the mod is on another volume).
 WINDOWS = os.name == 'nt'
 
-# Top-level folders of the game's dvdroot_ps4: a mod made of these is a dvdroot_ps4 itself.
 GAME_FOLDERS = {'action', 'chr', 'event', 'facegen', 'font', 'map', 'menu', 'movie', 'msg', 'mtd',
                 'obj', 'other', 'param', 'paramdef', 'parts', 'remo', 'script', 'sfx', 'shader',
                 'sound'}
+
+SERIALS = ('CUSA00207', 'CUSA00208', 'CUSA00299', 'CUSA00900', 'CUSA01363', 'CUSA03014',
+           'CUSA03023', 'CUSA03173', 'CUSA03179')
 
 
 def child(folder, name):
@@ -125,8 +125,6 @@ def mod_files(folder):
         for name in sorted(files):
             source = directory / name
             relative = Path(prefix) / source.relative_to(root) if prefix else source.relative_to(root)
-            # Readme/metadata stay outside the mounted game. This loader handles assets;
-            # executable patches use the existing patch compiler, with address validation.
             if relative.parts[0].casefold() != 'dvdroot_ps4':
                 if relative.parts[0].casefold() in ('eboot.bin', 'sce_module', 'sce_sys'):
                     raise ValueError(f'Executable/system replacement is unsupported: {source}')
@@ -215,7 +213,7 @@ def unlink(path):
     except PermissionError:
         if not WINDOWS or is_link(path):
             raise
-        os.chmod(path, stat.S_IWRITE)  # a read-only copy (hard links share the attribute)
+        os.chmod(path, stat.S_IWRITE)
         path.unlink()
 
 
@@ -247,20 +245,55 @@ def expand(directory):
         directory.mkdir(exist_ok=True)
 
 
-def build_overlay(game, out, mods):
+def remove_stale_overlays(out):
+    """Deletes the overlays earlier starts left in `out`: run_windows.py removes its own when the
+    game ends, but not when the launcher's Stop (or its "still running" prompt) kills it with the
+    game. One still in use (an in-game restart's previous run, stopping) is left for the next start."""
+    for overlay in Path(out).glob('mod-game-*'):
+        if overlay.is_dir() and not is_link(overlay):
+            try:
+                remove_overlay(overlay)
+            except OSError:
+                pass
+
+
+GAMEPLAY_FOLDERS = ('dvdroot_ps4/param/', 'dvdroot_ps4/event/', 'dvdroot_ps4/script/',
+                    'dvdroot_ps4/map/mapstudio/', 'dvdroot_ps4/action/')
+
+
+def changes_gameplay(key):
+    """A mod file the other players of a co-op session read too (parameters, map layouts, events,
+    AI and talk scripts, actions, character animations): different ones on each side desync enemies."""
+    return key.startswith(GAMEPLAY_FOLDERS) or (
+        key.startswith('dvdroot_ps4/chr/') and ('.anibnd' in key or '.behbnd' in key))
+
+
+def build_overlay(game, out, mods, update=None):
     game = Path(game).resolve(strict=True)
     replacements = []
     owners = {}
+    if update:
+        files = list(update_files(update))
+        for relative, source in files:
+            owners[relative.as_posix().casefold()] = Path(update).name
+            replacements.append((relative, source))
+        print(f'Game update: {Path(update).name}: {len(files)} files over the game', file=sys.stderr)
+    gameplay = 0
     for name, root in mods:
         count = 0
         for relative, source in mod_files(root):
             key = relative.as_posix().casefold()
+            gameplay += changes_gameplay(key)
             if key in owners:
                 print(f'Mods: {relative}: {owners[key]} -> {name}', file=sys.stderr)
             owners[key] = name
             replacements.append((relative, source))
             count += 1
         print(f'Mods: {name}: {count} files', file=sys.stderr)
+    if gameplay:
+        print(f'Mods: {gameplay} of these files change gameplay (parameters, map layouts, events, AI, '
+              'animations): co-op partners need the same files, or enemies and items desync between you',
+              file=sys.stderr)
     if not replacements:
         return game
     out = Path(out).resolve()
@@ -271,7 +304,6 @@ def build_overlay(game, out, mods):
             link(overlay / entry.name, entry)
         replaced = added = 0
         for relative, source in replacements:
-            # Each component takes the game's spelling when it exists in another case.
             parent = overlay
             for part in relative.parts[:-1]:
                 parent = child(parent, part)
@@ -281,7 +313,6 @@ def build_overlay(game, out, mods):
                 replaced += destination.resolve().is_relative_to(game)
                 destination.unlink()
             elif WINDOWS and destination.is_file():
-                # A hard link or copy: every file in the overlay is one of ours.
                 replaced += 1
                 unlink(destination)
             elif destination.exists():
@@ -319,7 +350,6 @@ def main():
         legacy = Path(str(args.game.resolve()) + '-mods')
         if legacy.is_dir() and settings.get('legacy_enabled', True):
             layers.append((legacy.name, legacy))
-        # A directly selected loose overlay is also accepted.
         if child(args.mods_dir, 'dvdroot_ps4').is_dir():
             if settings.get('direct_enabled', True):
                 layers.append((args.mods_dir.name, args.mods_dir))

@@ -1,4 +1,1 @@
-# Use LF for all text files on every platform.
-* text=auto eol=lf
-# Preserve the exact upstream bytes checked by scripts/red_zone.py's SHA-256.
-scripts/red_zone_sites.json -text
+*.patch -text

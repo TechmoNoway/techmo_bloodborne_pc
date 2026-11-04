@@ -12,7 +12,7 @@ public partial class MainWindow
     // Profiles deliberately omit installation paths, UI preferences, diagnostics and accounts.
     static readonly HashSet<string> ProfileSettingNames = new(StringComparer.Ordinal)
     {
-        "Resolution", "Fullscreen", "ShowFps", "ShowCpu", "ShowGpu", "PresentMode", "Upscaler", "Preset", "Fps",
+        "Resolution", "Fullscreen", "ShowFps", "ShowCpu", "ShowGpu", "ShowVram", "PresentMode", "Upscaler", "Preset", "Fps",
         "LiveResolution", "ModelLod", "Sharpen", "Sharpness", "Chromatic", "Dof", "MotionBlur", "Ssao",
         "GameAa", "Shadows", "Ssr", "PcControls", "Widescreen", "MouseCamera", "MouseMenu",
         "MouseInvertX", "MouseInvertY", "MouseAutoRotation", "MouseSensitivity", "CustomInputBindings",
@@ -78,6 +78,7 @@ public partial class MainWindow
         // expanded snapshot; no existing graphics/input choices need to be discarded.
         profile.Settings.TryAdd("ShowCpu", JsonSerializer.SerializeToElement(false));
         profile.Settings.TryAdd("ShowGpu", JsonSerializer.SerializeToElement(false));
+        profile.Settings.TryAdd("ShowVram", JsonSerializer.SerializeToElement(false));
         profile.Settings.TryAdd("Sharpness", JsonSerializer.SerializeToElement(0.3));
         if (!profile.Settings.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(ProfileSettingNames) ||
             profile.Bindings.Count != PcDefaults.Length || PcDefaults.Any(d => !profile.Bindings.ContainsKey(d.key)))
@@ -87,14 +88,15 @@ public partial class MainWindow
         var values = data.Deserialize<LauncherState>() ?? throw new InvalidDataException("Invalid profile settings.");
         if (values.Upscaler is not ("dlss" or "fsr3" or "fsr4" or "fsr411" or "taa" or "off") ||
             values.Preset is not ("0" or "1" or "2" or "3" or "4") ||
-            values.Fps is not ("30" or "60" or "90" or "uncap") ||
+            values.Fps is not ("30" or "60" or "90" or "120" or "144" or "uncap") ||
             values.PresentMode is not ("" or "Fifo" or "FifoRelaxed" or "Immediate") ||
             values.LiveResolution is not ("0" or "auto" or "1") ||
             values.ModelLod is not ("-2" or "0" or "1" or "2") ||
             !double.IsFinite(values.Sharpness) || values.Sharpness is < 0 or > 2 ||
-            values.MouseSensitivity is < 0 or > 10 || values.GamepadIndex is < 0 or > 3 ||
+            values.MouseSensitivity is < -10 or > 20 || values.GamepadIndex is < 0 or > 3 ||
             !new[] { "1280x720", "1920x1080", "2560x1440", "3840x2160", "2560x1080", "3440x1440",
-                "3840x1600", "3840x1080", "5120x1440", "5120x2160" }.Contains(values.Resolution) ||
+                "3840x1600", "3840x1080", "5120x1440", "5120x2160", "1600x900", "7680x2160",
+                "1280x1024", "1680x1050", "1920x1200", "2560x1600", "auto" }.Contains(values.Resolution) ||
             CameraScale(values.CameraFov, 1) != values.CameraFov ||
             CameraScale(values.CameraDistance, .5) != values.CameraDistance ||
             CameraScale(values.CameraHeight, .5) != values.CameraHeight ||

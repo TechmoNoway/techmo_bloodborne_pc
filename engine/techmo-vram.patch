@@ -1,0 +1,141 @@
+--- a/gpu/shim/bbport_overlay.cpp
++++ b/gpu/shim/bbport_overlay.cpp
+@@ -15,6 +15,8 @@
+ #include "bbport_menu_i18n.h"
+ #include "bbport_settings.h"
+ #include "bbport_usage.h"
++#include "vram_monitor.h"
++#include <memory>
+ #include "engine/cheats.h"
+ #include "engine/graphics.h"
+ #include "imgui.h"
+@@ -1445,7 +1447,7 @@
+             "показывает впервые. Рывок с этой надписью — сборка шейдеров, при следующем посещении "
+             "его не будет; без неё — загрузка."));
+     }
+-    if (!s.show_fps && !Searching()) {
++    if (!s.show_fps && !s.show_fps_cpu && !s.show_fps_gpu && !s.show_fps_vram && !Searching()) {
+         MouseSection();
+         return;
+     }
+@@ -1463,6 +1465,7 @@
+     if (const char* label = Item("CPU usage", "Загрузка ЦП")) {
+         Checkbox(label, s.show_fps_cpu);
+     }
++    if (const char* label=Item("VRAM (game used / capacity)","VRAM")) Checkbox(label,s.show_fps_vram);
+     if (const char* label = Item("GPU usage", "Загрузка ГП")) {
+         Checkbox(label, s.show_fps_gpu);
+     }
+@@ -1804,11 +1807,13 @@
+     ImGui::End();
+ }
+ 
++std::unique_ptr<VideoMemory::Monitor> vram_monitor;
++
+ void FpsCounter() {
+     const auto& s = BbSettings::Get();
+-    char text[128];
++    char text[320];
+     int n = 0;
+-    if (s.show_fps_rate) {
++    if (s.show_fps && s.show_fps_rate) {
+         n += std::snprintf(text + n, sizeof(text) - n, "%.0f FPS",
+                            frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f);
+         if (s.frame_gen_active) {
+@@ -1816,10 +1821,10 @@
+                                s.frame_gen_game_fps.load());
+         }
+     }
+-    if (s.show_fps_frame_time) {
++    if (s.show_fps && s.show_fps_frame_time) {
+         n += std::snprintf(text + n, sizeof(text) - n, "%s%.1f ms", n ? "  " : "", frame_ms_avg);
+     }
+-    if (s.show_fps_upscaler) {
++    if (s.show_fps && s.show_fps_upscaler) {
+         n += std::snprintf(text + n, sizeof(text) - n, "%s%s", n ? "  " : "",
+                            BbSettings::UpscalerName(s.upscaler));
+     }
+@@ -1831,6 +1836,10 @@
+         if (s.show_fps_gpu && use.gpu >= 0.0f) {
+             n += std::snprintf(text + n, sizeof(text) - n, "%sGPU %.0f%%", n ? "  " : "", use.gpu);
+         }
++    }
++    if (s.show_fps_vram) {
++        const auto memory=VideoMemory::Text(vram_monitor?vram_monitor->Read():VideoMemory::Sample{});
++        n+=std::snprintf(text+n,sizeof(text)-n,"%s%s",n?"  ":"",memory.c_str());
+     }
+     if (n == 0) {
+         return;
+@@ -1859,7 +1868,7 @@
+     const size_t width_key = size_t(s.show_fps_rate) | size_t(s.show_fps_frame_time) << 1 |
+                              size_t(s.show_fps_upscaler) << 2 | size_t(s.show_fps_cpu) << 3 |
+                              size_t(s.show_fps_gpu) << 4 | size_t(s.frame_gen_active) << 5 |
+-                             size_t(s.upscaler) << 6 | size_t(s.fps_scale * 100.0f) << 12;
++                             size_t(s.upscaler) << 6 | size_t(s.fps_scale * 100.0f) << 12 | size_t(s.show_fps_vram)<<20 | size_t(s.show_fps)<<21;
+     if (width_key != min_width_key) {
+         min_width = 0.0f;
+         min_width_key = width_key;
+@@ -1994,6 +2003,12 @@
+         return;
+     }
+     initialized = true;
++    const auto properties=instance.GetPhysicalDevice().getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceIDProperties>();
++    const auto& identity=properties.get<vk::PhysicalDeviceIDProperties>();
++    VideoMemory::Adapter adapter{.nodes=identity.deviceNodeMask,.valid=bool(identity.deviceLUIDValid)};
++    std::memcpy(&adapter.low,identity.deviceLUID.data(),4);std::memcpy(&adapter.high,identity.deviceLUID.data()+4,4);
++    adapter.valid=adapter.valid && properties.get<vk::PhysicalDeviceProperties2>().properties.deviceType==vk::PhysicalDeviceType::eDiscreteGpu;
++    vram_monitor=std::make_unique<VideoMemory::Monitor>(adapter);
+     std::printf("Overlay: menu ready (%s)\n", MenuKeys() == OverlayKeys::Both     ? "Insert or L3+R3"
+                                              : MenuKeys() == OverlayKeys::Insert ? "Insert; L3+R3 off"
+                                                                                  : "shortcuts off");
+@@ -2116,8 +2131,9 @@
+ }
+ 
+ bool Visible() {
+-    return initialized &&
+-           (menu_open || prompt_active || BbSettings::Get().show_fps || CompileNoteActive());
++    const auto& s=BbSettings::Get();
++    if(vram_monitor)vram_monitor->Request(s.show_fps_vram);
++    return initialized && (menu_open || prompt_active || s.show_fps || s.show_fps_cpu || s.show_fps_gpu || s.show_fps_vram || CompileNoteActive());
+ }
+ 
+ bool MenuOpen() {
+@@ -2156,7 +2172,8 @@
+         Menu();
+     }
+     fps_box_min = fps_box_max = ImVec2{};
+-    if (BbSettings::Get().show_fps && !menu_open) {
++    const auto& s=BbSettings::Get();
++    if ((s.show_fps || s.show_fps_cpu || s.show_fps_gpu || s.show_fps_vram) && !menu_open) {
+         FpsCounter();
+     }
+     if (!menu_open && CompileNoteActive()) {
+--- a/gpu/shim/bbport_settings.cpp
++++ b/gpu/shim/bbport_settings.cpp
+@@ -164,6 +164,8 @@
+         v.show_fps_upscaler = i != 0;
+     } else if (key == "show_fps_cpu") {
+         v.show_fps_cpu = i != 0;
++    } else if (key == "show_fps_vram") {
++        v.show_fps_vram = i != 0;
+     } else if (key == "show_fps_gpu") {
+         v.show_fps_gpu = i != 0;
+     } else if (key == "compile_note") {
+@@ -579,6 +581,7 @@
+     put("show_fps_upscaler", flag(v.show_fps_upscaler));
+     put("show_fps_cpu", flag(v.show_fps_cpu));
+     put("show_fps_gpu", flag(v.show_fps_gpu));
++    put("show_fps_vram", flag(v.show_fps_vram));
+     put("compile_note", flag(v.show_compile_note));
+     const auto colour = [](unsigned rgb) {
+         char text[8];
+--- a/gpu/shim/bbport_settings.h
++++ b/gpu/shim/bbport_settings.h
+@@ -124,6 +124,7 @@
+     std::atomic<bool> show_fps_upscaler{true};
+     std::atomic<bool> show_fps_cpu{false};
+     std::atomic<bool> show_fps_gpu{false};
++    std::atomic<bool> show_fps_vram{false};
+     std::atomic<bool> show_compile_note{true};
+     std::atomic<int> fps_position{0};
+     std::atomic<float> fps_scale{1.0f};

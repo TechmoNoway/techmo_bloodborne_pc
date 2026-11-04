@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [CmdletBinding()]
-param()
+param([string]$PackageCache, [switch]$Offline)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -10,12 +10,27 @@ $buildRoot = Join-Path $projectRoot 'builds'
 $env:DOTNET_CLI_HOME = Join-Path $buildRoot '_internal\cache\dotnet-home'
 $env:DOTNET_NOLOGO = '1'
 $outputPath = Join-Path $buildRoot 'launcher'
-& $dotnetPath publish (Join-Path $projectRoot 'apps\launcher\Techmo.Launcher.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false "-p:RestorePackagesPath=$(Join-Path $buildRoot '_internal\cache\nuget')" -o $outputPath
+if (!$PackageCache) { $PackageCache = Join-Path $buildRoot '_internal\cache\nuget' }
+$restoreOptions = @("-p:RestorePackagesPath=$([IO.Path]::GetFullPath($PackageCache))")
+if ($Offline) { $restoreOptions += @('-p:RestoreIgnoreFailedSources=true', '-p:NuGetAudit=false') }
+& $dotnetPath publish (Join-Path $projectRoot 'apps\launcher\Techmo.Launcher.csproj') -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false @restoreOptions -o $outputPath
 if ($LASTEXITCODE -ne 0) { throw 'Techmo launcher publish failed.' }
+$retiredBackendConfig = Join-Path $outputPath 'Techmo.EngineBackend.runtimeconfig.json'
+if (Test-Path -LiteralPath $retiredBackendConfig) { Remove-Item -LiteralPath $retiredBackendConfig }
+$noticePath = Join-Path $outputPath 'licenses'
+New-Item -ItemType Directory -Force -Path $noticePath | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $noticePath 'Upstream-GPL-2.0.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\SOURCE-NOTICES.md') -Destination $noticePath
+Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\Lantern-Engine-NOTICE.txt'),(Join-Path $projectRoot 'licenses\Lantern-Engine-LICENSE.txt') -Destination $noticePath
+Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses\Techmo-GPL-3.0.txt') -Destination $noticePath
+Copy-Item -Path (Join-Path $projectRoot 'licenses\launcher\*') -Destination $noticePath
 $executable = Get-Item -LiteralPath (Join-Path $outputPath 'Techmo.Launcher.exe')
 $sha256 = (Get-FileHash -LiteralPath $executable.FullName -Algorithm SHA256).Hash
 @"
 # Techmo Bloodborne - local build
+
+Modified integration of Lantern Engine by Awaken (https://github.com/Awakenchan/LanternEngine).
+This is not an official Lantern Engine release. See the notices in licenses/.
 
 Executable: Techmo.Launcher.exe
 Source project: apps/launcher/Techmo.Launcher.csproj
@@ -41,15 +56,15 @@ start "" /D "%~dp0.." "%~dp0launcher\Techmo.Launcher.exe"
 '@ | Set-Content -LiteralPath (Join-Path $buildRoot 'TEST-LAUNCHER.cmd') -Encoding ascii
 @'
 @echo off
-call "%~dp0..\tools\experiments\test-vram-writeback.cmd" %*
-'@ | Set-Content -LiteralPath (Join-Path $buildRoot 'TEST-VRAM-WRITEBACK.cmd') -Encoding ascii
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\..\tools\benchmark.ps1" -Target techmo-v2 %*
+'@ | Set-Content -LiteralPath (Join-Path $outputPath 'Benchmark.cmd') -Encoding ascii
 @'
 Techmo Bloodborne - local test builds
 
 Double-click TEST-LAUNCHER.cmd to open the latest launcher.
 You can also open launcher\Techmo.Launcher.exe directly.
-TEST-VRAM-WRITEBACK.cmd [off|on] runs the optional VRAM experiment (default on).
-Save launcher settings first. The normal launcher keeps this experiment off.
+launcher\Benchmark.cmd records FPS, frame times and RAM/VRAM for Techmo Bloodborne.
+Load a test location in the game before starting a capture.
 
 launcher\   Latest Windows launcher and build information.
 _internal\  Build caches, backups, verification screenshots and diagnostics.

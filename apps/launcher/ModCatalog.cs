@@ -60,6 +60,7 @@ internal sealed class ModCatalog
     {
         string? python = new[] { Path.Combine(root, "tools", "python", "python.exe"),
             Path.Combine(root, "builds", "_internal", "toolchain", "clang64", "bin", "python.exe"),
+            Path.GetFullPath(Path.Combine(root, "..", "techmo_launcher", "builds", "_internal", "toolchain", "clang64", "bin", "python.exe")),
             Path.Combine(Environment.GetEnvironmentVariable("BB_MSYS2") ?? @"C:\msys64", "clang64", "bin", "python.exe") }
             .FirstOrDefault(File.Exists);
         if (python is null) throw new IOException("Python runtime not found");

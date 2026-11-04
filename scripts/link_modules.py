@@ -10,17 +10,22 @@ libSceLibcInternal are served by libc.prx's same-NID exports: the internal
 library is not shipped with the game and exposes the same functions.
 Output: out/boot-linked.bin (format BBPROBE5) and out/link.json.
 """
+import bisect
 import collections
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 from prepare import parse_self, span, unpack
 from link_libc import encode_id
-import red_zone
 
 DEFAULT_MODULES = ('libc.prx', 'libSceFios2.prx')
-FS_LOAD = bytes.fromhex('64488b042500000000')  # mov rax, fs:[0]
+FS_LOAD = bytes.fromhex('64488b042500000000')
+RED_ZONE_SITES = Path(__file__).resolve().parent.parent / 'patches' / 'redzone.json'
+RED_ZONE_FUNCTIONS = Path(__file__).resolve().parent.parent / 'patches' / 'redzone_functions.json'
+LEA_DOWN = bytes.fromhex('488d642480')
+LEA_UP = bytes.fromhex('488da42480000000')
 
 
 def module(path):
@@ -54,7 +59,7 @@ def module(path):
     def identity(name):
         parts = name.split('#')
         if len(parts) != 3:
-            return None  # plain names such as module_start are not linkable
+            return None
         n, lib, mod = parts
         return (n, libraries[lib], modules[mod])
     symbols = []
@@ -90,7 +95,111 @@ def patch_fs_loads(image, ph, base):
     return patched
 
 
-def link(game, out, module_names=DEFAULT_MODULES, red_zones=None, runtime_patches=None):
+def protect_red_zones(image, sites, base, skip=()):
+    """Run guest stores of red-zone leaf functions with rsp 128 bytes lower (Windows).
+
+    Where Windows saves extended state in the compact XSAVE layout (Intel 12th gen and later),
+    an exception's frame holds the AVX registers up to 0x28 bytes below rsp, over the System V
+    red zone where leaf functions keep live locals (PS4 and Linux leave those 128 bytes alone).
+    A store that faults on a page the GPU tracker write-protected is resumed with the locals
+    overwritten: the attack-trail writer at 0x28ce7b0 then loads NULL from [rsp-0x60]. Each site
+    (tools/redzone_sites.py: offset, original bytes, instruction lengths, negative = store)
+    jumps to a copy at `base` where the stores run below the red zone. Sites whose bytes
+    differ or that overlap a relocation (`skip`: sorted targets) stay as they are. Returns
+    the copies and the number of sites redirected."""
+    code = bytearray()
+    applied = 0
+    for offset, original, lengths in sites:
+        original = bytes.fromhex(original)
+        end = offset + len(original)
+        near = bisect.bisect_right(skip, offset - 8)
+        if image[offset:end] != original or (near < len(skip) and skip[near] < end):
+            continue
+        here = base + len(code)
+        pos = offset
+        for length in lengths:
+            body = image[pos:pos + abs(length)]
+            code += LEA_DOWN + body + LEA_UP if length < 0 else body
+            pos += abs(length)
+        code += b'\xe9' + struct.pack('<i', end - (base + len(code) + 5))
+        code += b'\xcc' * (-len(code) % 16)
+        image[offset:end] = b'\xe9' + struct.pack('<i', here - (offset + 5)) + b'\xcc' * (len(original) - 5)
+        applied += 1
+    return bytes(code), applied
+
+
+def rewrite_red_zone_functions(image, functions, base, skip=()):
+    """Run whole red-zone leaf functions with their locals above rsp (BB_RED_ZONE_FUNCTIONS=1).
+
+    protect_red_zones covers the stores that fault on GPU-tracked pages; anything else written
+    below a guest thread's rsp still lands on the locals. Each function of
+    patches/redzone_functions.json (tools/redzone_functions.py: sha256 and a per-instruction
+    recipe, no game code) is copied to `base` with rsp 0x80 lower for its whole body, every
+    [rsp+d] operand moved by 0x80, jumps re-aimed inside the copy (rel32) and rip-relative
+    operands re-aimed at their old targets; its entry jumps to the copy. Functions whose bytes
+    differ or that hold a relocation (`skip`: sorted targets) stay as they are. Returns the
+    copies and the number of functions moved."""
+    code = bytearray()
+    applied = 0
+    for f in functions:
+        start, size = f['offset'], f['size']
+        end = start + size
+        near = bisect.bisect_right(skip, start - 8)
+        if hashlib.sha256(image[start:end]).hexdigest() != f['sha256'] or \
+                (near < len(skip) and skip[near] < end):
+            continue
+        here = base + len(code)
+        body = bytearray()
+        at = {}
+        jumps = []
+        pos = 0
+        for item in f['insns']:
+            n, kind = item[0], item[1] if len(item) > 1 else 0
+            insn = bytearray(image[start + pos:start + pos + n])
+            at[pos] = len(body)
+            if kind == 0:
+                body += insn
+            elif kind == 1:
+                modrm, disp, width = item[2], item[3], item[4]
+                old = 0 if width == 0 else struct.unpack_from('<b' if width == 1 else '<i', insn, disp)[0]
+                new = old + 0x80
+                if width == 1 and -128 <= new <= 127:
+                    insn[disp] = new & 0xff
+                elif width == 4:
+                    struct.pack_into('<i', insn, disp, new)
+                else:
+                    insn[modrm] = (insn[modrm] & 0x3f) | 0x80
+                    insn[disp:disp + width] = struct.pack('<i', new)
+                body += insn
+            elif kind == 2:
+                disp = item[2]
+                target = start + pos + n + struct.unpack_from('<i', insn, disp)[0]
+                struct.pack_into('<i', insn, disp, target - (here + len(body) + n))
+                body += insn
+            elif kind == 3:
+                cc, target = item[2], item[3]
+                body += b'\xe9' if cc == 16 else bytes((0x0f, 0x80 + cc))
+                jumps.append((len(body), target))
+                body += bytes(4)
+            elif kind == 4:
+                body += insn + LEA_DOWN
+            elif kind == 5:
+                body += LEA_UP + insn
+            else:
+                raise ValueError(f'unknown recipe kind {kind}')
+            pos += n
+        if pos != size or any(target not in at for _, target in jumps):
+            raise ValueError(f'{start:#x}: bad recipe (covers {pos} of {size} bytes, or a jump into an item)')
+        for where, target in jumps:
+            struct.pack_into('<i', body, where, at[target] - (where + 4))
+        code += body
+        code += b'\xcc' * (-len(code) % 16)
+        image[start:start + 5] = b'\xe9' + struct.pack('<i', here - (start + 5))
+        applied += 1
+    return bytes(code), applied
+
+
+def link(game, out, module_names=DEFAULT_MODULES, red_zones=os.name == 'nt'):
     main = module(game / 'eboot.bin')
     raw = (out / 'boot.bin').read_bytes()
     magic, size, entry, ns, nr, ni, flags = unpack('<8s6Q', raw, 0)
@@ -115,8 +224,6 @@ def link(game, out, module_names=DEFAULT_MODULES, red_zones=None, runtime_patche
         key = symbol['identity']
         if key not in identities:
             n, lib, mod = key
-            # Main-program spelling when the identity matches (existing host
-            # tables use it); otherwise NID#library for new libraries.
             name = (f'{n}#{main_libraries[lib]}#{main_modules[mod]}'
                     if lib in main_libraries and mod in main_modules else f'{n}#{lib[0]}')
             identities[key] = len(names)
@@ -171,7 +278,7 @@ def link(game, out, module_names=DEFAULT_MODULES, red_zones=None, runtime_patche
                     else:
                         relocs.append((target, 0, base + symbol['value'] + addend, 0))
                 elif not symbol['identity'] and symbol['binding'] == 2:
-                    struct.pack_into('<Q', image, target, 0)  # weak undefined (module_start/stop)
+                    struct.pack_into('<Q', image, target, 0)
                 else:
                     rk = 2 if symbol['type'] == 1 else 1
                     if (rk == 1 and addend) or not 0 <= addend < 4096:
@@ -197,6 +304,21 @@ def link(game, out, module_names=DEFAULT_MODULES, red_zones=None, runtime_patche
                           tls_relocations=tls_relocations, exports=count, sha256=m['sha256']))
         base = (base + modsize + 65535) & ~65535
 
+    red_zone_sites = 0
+    code = b''
+    if red_zones and os.environ.get('BB_RED_ZONE_FUNCTIONS') == '1' and RED_ZONE_FUNCTIONS.is_file():
+        functions = json.loads(RED_ZONE_FUNCTIONS.read_text())['functions']
+        code, moved = rewrite_red_zone_functions(image, functions, base, sorted(r[0] for r in relocs))
+        print(f'Red zone: {moved} of {len(functions)} functions run with their locals above rsp '
+              '(BB_RED_ZONE_FUNCTIONS=1)')
+    if red_zones and RED_ZONE_SITES.is_file():
+        sites = json.loads(RED_ZONE_SITES.read_text())['sites']
+        more, red_zone_sites = protect_red_zones(image, sites, base + len(code), sorted(r[0] for r in relocs))
+        code += more
+    if code:
+        image.extend(bytes(base - len(image)) + code)
+        segments.append((base, len(code), 5))
+
     bindings, unresolved = [], []
     for identity, index in identities.items():
         found = exports.get(identity)
@@ -214,31 +336,6 @@ def link(game, out, module_names=DEFAULT_MODULES, red_zones=None, runtime_patche
                      or main_tls['vaddr'] + main_tls['filesz'] > size):
         raise ValueError('unsupported eboot TLS layout')
     procparam = next(p for p in main['ph'] if p['type'] == 0x61000001)
-    protection = {'enabled': False, 'applied_sites': 0}
-    use_red_zones = red_zone.enabled() if red_zones is None else red_zones
-    if use_red_zones:
-        if len(segments) >= 64:
-            raise ValueError('No available segment for red-zone trampolines')
-        sites, plan = red_zone.load_sites()
-        blocked = [(target, 8) for target, *_ in relocs]
-        if runtime_patches is not None:
-            blocked += red_zone.patch_ranges(runtime_patches)
-        executable = [(p['vaddr'], p['filesz']) for p in main['ph']
-                      if p['type'] == 1 and p['flags'] & 1]
-        trampoline_base = (len(image) + 65535) & ~65535
-        code, protection = red_zone.protect(image, sites, trampoline_base, executable, blocked)
-        if not code:
-            raise ValueError('Red-zone protection found no compatible 1.09 sites; verify the game executable')
-        image.extend(bytes(trampoline_base - len(image)))
-        image.extend(code)
-        segments.append((trampoline_base, len(code), 5))
-        protection.update(functions=plan['functions'], uncovered_stores=len(plan['uncovered_stores']),
-                          trampoline_base=hex(trampoline_base))
-        print(f"Red zone: {protection['applied_sites']}/{protection['total_sites']} sites, "
-              f"{protection['protected_stores']} stores protected; "
-              f"{len(protection['changed_sites'])} changed, {len(protection['conflicting_sites'])} conflicts")
-    else:
-        print('Red zone: disabled by BB_RED_ZONE=0')
     with (out / 'boot-linked.bin').open('wb') as f:
         f.write(struct.pack('<8s6Q', b'BBPROBE5', len(image), entry, len(segments), len(relocs), len(names), flags))
         f.write(struct.pack('<Q', procparam['vaddr']))
@@ -261,13 +358,13 @@ def link(game, out, module_names=DEFAULT_MODULES, red_zones=None, runtime_patche
         f.write(image)
     report = dict(modules=[{k: (hex(v) if k in ('base', 'init', 'tls_address') else v) for k, v in t.items()} for t in table],
                   bindings=len(bindings), imports=len(names), fs_loads_patched=fs_patched,
+                  red_zone_sites=red_zone_sites,
                   main_tls=dict(zip(('vaddr', 'filesz', 'memsz', 'align'), main_tls_values)),
                   unresolved_imports=unresolved)
-    report['red_zone'] = protection
     (out / 'link.json').write_text(json.dumps(report, indent=2) + '\n')
     summary = ', '.join(f"{t['file']}@{t['base']:#x}" for t in table)
     print(f'Linked modules: {summary}; {len(bindings)} native bindings, {len(unresolved)} imports left to the host runtime, '
-          f'fs->gs patched={fs_patched}')
+          f'fs->gs patched={fs_patched}, red-zone-safe stores at {red_zone_sites} sites')
 
 
 if __name__ == '__main__':
@@ -276,6 +373,5 @@ if __name__ == '__main__':
     p.add_argument('game', type=Path)
     p.add_argument('--out', type=Path, default=Path(__file__).resolve().parent.parent / 'out')
     p.add_argument('--modules', nargs='*', default=list(DEFAULT_MODULES))
-    p.add_argument('--runtime-patches', type=Path, help='Selected startup patches; preserve overlapping sites')
     a = p.parse_args()
-    link(a.game, a.out, a.modules, runtime_patches=a.runtime_patches)
+    link(a.game, a.out, a.modules)

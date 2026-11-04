@@ -1,0 +1,57 @@
+--- a/gpu/shim/engine/option_menu.cpp
++++ b/gpu/shim/engine/option_menu.cpp
+@@ -209,7 +209,7 @@
+     host_log("pc-options: Quit to Desktop");
+     SDL_Event quit{};
+     quit.type = SDL_EVENT_QUIT;
+-    SDL_PushEvent(&quit);
++    if (!SDL_PushEvent(&quit)) host_log("pc-options: could not request exit: %s",SDL_GetError());
+ }
+ void* GUEST QuitOpener(void* out, void* factory) { return OptionRows::AskYesNo(out, factory, kQuitQuestion, &QuitYes); }
+ 
+@@ -345,9 +345,6 @@
+         host_log("pc-options off: turned off in the launcher (Play, Lantern menus in the game)");
+         return false;
+     }
+-    if (!settings.camera_controls && !settings.change_appearance && !settings.rebirth && !settings.graphics_controls &&
+-        !settings.pc_controls)
+-        return false;
+     const char* assets = std::getenv("BB_PC_MENU_ASSETS");
+     const char* game = std::getenv("BB_GAME_DIR");
+     if (!assets || !*assets || !game || !*game) return false;
+--- a/start/main.cpp
++++ b/start/main.cpp
+@@ -423,8 +423,8 @@
+                 Log("Engine: Dream mirror skipped: %s", e.what());
+             }
+         }
+-        if (is_on("change_appearance") || is_on("camera_controls") || is_on("rebirth") || is_on("graphics_controls") ||
+-            Setting(settings, "pc_controls") != "0" || Setting(settings, "widescreen") != "0") {
++        // Techmo title Exit Game needs these assets even with all optional settings off.
++        {
+             try {
+                 const fs::path menus = PrepareMenuAssets(merged, out / "eboot.elf", data / "engine-assets",
+                                                          out / "bb-engine-assets.exe", is_on("rebirth"));
+--- a/tests/test_option_rows.cpp
++++ b/tests/test_option_rows.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ #include "gpu/shim/engine/option_rows.h"
+ #include <cassert>
++#include <algorithm>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+@@ -271,5 +272,12 @@
+     assert(R::AskYesNo(out, nullptr, 920001, &Yes) == out && g_yes == 1);
+     assert(g_box.count == 1 && g_command.count == 1);
+     assert(g_heap == 4);
++    g_commands.clear();
++    for(unsigned i=0;i<5;++i)R::AddCommand(nullptr,120000+i,&Opener);
++    const auto original=g_commands;
++    R::AddExitCommand(nullptr,122000,&Opener);
++    assert(g_commands.size()==6 && std::equal(original.begin(),original.end(),g_commands.begin()));
++    assert(g_commands.back()==u"exit 200:122000" && g_opener==(void*)&Opener);
++    std::puts("PASS: title Exit Game preserves the first five rows and uses native confirmation");
+     std::puts("PASS: option rows: messages, toggles, sliders, pick lists, text rows, records, dropped rows, commands");
+ }

@@ -36,6 +36,8 @@ public partial class MainWindow
         };
         Closed += (_, _) =>
         {
+            StopEngineSession();
+            Techmo.Engine.Core.DiscordPresence.Stop();
             Localization.Current.PropertyChanged -= HubLanguageChanged;
             SystemEvents.UserPreferenceChanged -= SystemAppearanceChanged;
         };
@@ -54,7 +56,7 @@ public partial class MainWindow
             ("Graphics", NavGraphics, GraphicsPage), ("Controller", NavController, ControllerPage),
             ("Mods", NavMods, ModsPage), ("Online", NavOnline, OnlinePage),
             ("Advanced", NavAdvanced, AdvancedPage), ("General", NavGeneral, GeneralPage)
-        };
+        }.Concat(engineNavigation).ToArray();
         if (!pages.Any(p => p.id == page)) return;
         currentHubPage = page;
         if (page == "Mods") { RefreshSaveLists(); _ = RefreshModsAsync(); }
@@ -70,13 +72,14 @@ public partial class MainWindow
             }
         }
         UpdateBreadcrumb();
+        if (enginePages.TryGetValue(page, out var nativePage)) nativePage.OnShown();
     }
 
     void UpdateBreadcrumb() => PageBreadcrumb.Text = Localization.Current[currentHubPage switch
     {
         "Display" => "Ui.Display", "Graphics" => "Ui.Graphics", "Controller" => "Ui.Controls",
         "Mods" => "Saves.Title", "Online" => "Ui.Online", "Advanced" => "Hub.Diagnostics",
-        "General" => "Hub.Settings", _ => "Ui.Play"
+        "General" => "Hub.Settings", "Trophies" => "Ui.Trophies", "Engine" => "Ui.Engine_switches", _ => "Ui.Play"
     }];
 
     void Shortcut_Click(object sender, RoutedEventArgs e)
@@ -131,7 +134,13 @@ public partial class MainWindow
         foreach (var button in ProviderGrid.Children.OfType<RadioButton>()) button.IsChecked = button.Tag?.ToString() == provider;
         bool scaled = provider is "dlss" or "fsr3" or "fsr4" or "fsr411";
         double factor = scaled ? ComboTag(PresetCombo) switch { "1" => 1.5, "2" => 1.7, "3" => 2, "4" => 3, _ => 1 } : 1;
-        string[] dimensions = ComboText(ResolutionCombo, "1920x1080").Split('x');
+        string output = ComboText(ResolutionCombo, "1920x1080");
+        if (output == "auto")
+        {
+            var size = Techmo.Engine.Core.Choices.OutputSize(output);
+            output = $"{size.W}x{size.H}";
+        }
+        string[] dimensions = output.Split('x');
         if (dimensions.Length != 2 || !int.TryParse(dimensions[0], out int width) || !int.TryParse(dimensions[1], out int height)) return;
         // The runtime aligns the requested scene dimensions; this is a settings preview, not live telemetry.
         int sceneWidth = Math.Max(1, (int)Math.Round(width / factor / 2, MidpointRounding.AwayFromZero)) * 2;

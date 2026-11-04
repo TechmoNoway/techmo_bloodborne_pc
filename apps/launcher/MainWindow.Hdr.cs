@@ -13,16 +13,17 @@ public partial class MainWindow
         if (HdrPeakCombo is null) return;
         bool enabled = HdrOutputCheck.IsChecked == true;
         HdrWhiteCombo.IsEnabled = HdrExpandCheck.IsEnabled = enabled;
-        HdrPeakCombo.IsEnabled = enabled && HdrExpandCheck.IsChecked == true;
+        HdrPeakCombo.IsEnabled = enabled;
     }
 
     void ConfigureHdrLaunch(ProcessStartInfo psi)
     {
-        // Explicit Off overrides inherited environment flags. Guest-native HDR is separate.
-        psi.Environment["BB_HDR"] = "0";
-        psi.Environment["BB_HDR_OUTPUT"] = state.HdrOutput ? "sdr" : "off";
-        psi.Environment["BB_HDR_WHITE"] = state.HdrWhite is "80" or "100" or "150" or "203" or "250" or "300" or "400" ? state.HdrWhite : "203";
+        // Engine 0.9.37 uses HDR conversion keys different from Techmo v1.
+        psi.Environment["BB_HDR"] = state.HdrOutput ? "1" : "0";
+        psi.Environment["BB_HDR_PAPER_WHITE"] = state.HdrWhite is "80" or "100" or "150" or "203" or "250" or "300" or "400" ? state.HdrWhite : "203";
         psi.Environment["BB_HDR_PEAK"] = state.HdrPeak is "400" or "600" or "800" or "1000" or "1500" or "2000" ? state.HdrPeak : "1000";
-        psi.Environment["BB_HDR_EXPAND"] = state.HdrExpand ? "1" : "0";
+        psi.Environment["BB_HDR_MODE"] = state.HdrExpand ? "expand" : "native";
+        foreach (string retired in new[] { "BB_HDR_OUTPUT", "BB_HDR_WHITE", "BB_HDR_EXPAND" })
+            psi.Environment.Remove(retired);
     }
 }

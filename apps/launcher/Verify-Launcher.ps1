@@ -415,47 +415,47 @@ static class Program
         ClickNav("Display");
         Check(Get<CheckBox>("HdrOutputCheck").IsChecked==false && !Get<ComboBox>("HdrWhiteCombo").IsEnabled,"HDR defaults to Off with calibration disabled");
         Get<CheckBox>("HdrOutputCheck").IsChecked=true;
-        Check(Get<ComboBox>("HdrWhiteCombo").IsEnabled && !Get<ComboBox>("HdrPeakCombo").IsEnabled,"Reference white is enabled independently of optional expansion");
+        Check(Get<ComboBox>("HdrWhiteCombo").IsEnabled && Get<ComboBox>("HdrPeakCombo").IsEnabled,"Engine HDR enables paper white and peak calibration");
         Get<CheckBox>("HdrExpandCheck").IsChecked=true;Select("HdrWhiteCombo","250");Select("HdrPeakCombo","800");Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
         Check(Get<ComboBox>("HdrPeakCombo").IsEnabled && Tag("HdrWhiteCombo")=="250" && Tag("HdrPeakCombo")=="800","HDR controls survive save/reload");
         var psi=new System.Diagnostics.ProcessStartInfo();psi.Environment["BB_HDR"]="1";psi.Environment["BB_HDR_OUTPUT"]="inherited";
         Call("ConfigureHdrLaunch",psi);
-        Check(psi.Environment["BB_HDR_OUTPUT"]=="sdr" && psi.Environment["BB_HDR_WHITE"]=="250" && psi.Environment["BB_HDR_PEAK"]=="800" && psi.Environment["BB_HDR_EXPAND"]=="1" && psi.Environment["BB_HDR"]=="0","HDR launch uses explicit output conversion settings");
+        Check(psi.Environment["BB_HDR_PAPER_WHITE"]=="250" && psi.Environment["BB_HDR_PEAK"]=="800" && psi.Environment["BB_HDR_MODE"]=="expand" && psi.Environment["BB_HDR"]=="1" && !psi.Environment.ContainsKey("BB_HDR_OUTPUT"),"HDR launch uses Engine conversion settings and removes retired keys");
         Get<ScrollViewer>("DisplayPage").ScrollToBottom();Pump();Render(Path.Combine(output,"control-hub-hdr-en.png"));
         Select("UiLanguageCombo","vi");Render(Path.Combine(output,"control-hub-hdr-vi.png"));Select("UiLanguageCombo","en");
         Get<CheckBox>("HdrOutputCheck").IsChecked=false;Call("SaveSettings");Call("ConfigureHdrLaunch",psi);
-        Check(psi.Environment["BB_HDR_OUTPUT"]=="off" && psi.Environment["BB_HDR"]=="0","HDR Off clears inherited HDR activation");
+        Check(psi.Environment["BB_HDR"]=="0" && !psi.Environment.ContainsKey("BB_HDR_OUTPUT"),"HDR Off clears inherited HDR activation");
         Check(((SolidColorBrush)Application.Current.Resources["AppBackgroundBrush"]).Color==Color.FromRgb(8,8,8) && ((SolidColorBrush)Application.Current.Resources["PanelBrush"]).Color.A<255,"Dark theme has black background with translucent panels");
     }
 
     static void VerifyOverlaySettings(string output,string root) {
-        var fields=new[]{"ShowFpsCheck","ShowCpuCheck","ShowGpuCheck"};
-        var keys=new[]{"show_fps","show_cpu","show_gpu"};
+        var fields=new[]{"ShowFpsCheck","ShowCpuCheck","ShowGpuCheck","ShowVramCheck"};
+        var keys=new[]{"show_fps","show_cpu","show_gpu","show_vram"};
         string ini=Path.Combine(root,"bbport.ini"),library=Path.Combine(root,"user","launcher","profiles.json");
-        for(int mask=0;mask<8;++mask) {
+        for(int mask=0;mask<16;++mask) {
             for(int i=0;i<fields.Length;++i)Get<CheckBox>(fields[i]).IsChecked=(mask&(1<<i))!=0;
             Call("SaveSettings");Call("LoadState");Call("ApplyStateToUi");
-            Check(Enumerable.Range(0,3).All(i=>Get<CheckBox>(fields[i]).IsChecked==((mask&(1<<i))!=0) && File.ReadAllLines(ini).Contains(keys[i]+"="+((mask&(1<<i))!=0?"1":"0"))),"FPS/CPU/GPU checkboxes persist independently: "+mask);
+            Check(Enumerable.Range(0,4).All(i=>Get<CheckBox>(fields[i]).IsChecked==((mask&(1<<i))!=0) && File.ReadAllLines(ini).Contains(keys[i]+"="+((mask&(1<<i))!=0?"1":"0"))),"FPS/CPU/GPU/VRAM checkboxes persist independently: "+mask);
         }
         var picker=Get<ComboBox>("ProfileCombo");picker.SelectedIndex=0;
-        Get<CheckBox>("ShowCpuCheck").IsChecked=true;Get<CheckBox>("ShowGpuCheck").IsChecked=false;Call("SaveSettings");
-        picker.SelectedIndex=1;Get<CheckBox>("ShowCpuCheck").IsChecked=false;Get<CheckBox>("ShowGpuCheck").IsChecked=true;Call("SaveSettings");
+        Get<CheckBox>("ShowCpuCheck").IsChecked=true;Get<CheckBox>("ShowGpuCheck").IsChecked=false;Get<CheckBox>("ShowVramCheck").IsChecked=true;Call("SaveSettings");
+        picker.SelectedIndex=1;Get<CheckBox>("ShowCpuCheck").IsChecked=false;Get<CheckBox>("ShowGpuCheck").IsChecked=true;Get<CheckBox>("ShowVramCheck").IsChecked=false;Call("SaveSettings");
         picker.SelectedIndex=0;
-        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==false,"Profiles restore their own monitoring choices");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==false && Get<CheckBox>("ShowVramCheck").IsChecked==true,"Profiles restore their own monitoring choices");
         Call("SaveSettings");picker.SelectedIndex=1;Call("SaveSettings");
         var legacy=JsonNode.Parse(File.ReadAllText(library))!;
-        foreach(var profile in legacy["Profiles"]!.AsArray()) { profile!["Settings"]!.AsObject().Remove("ShowCpu");profile["Settings"]!.AsObject().Remove("ShowGpu"); }
+        foreach(var profile in legacy["Profiles"]!.AsArray()) { profile!["Settings"]!.AsObject().Remove("ShowCpu");profile["Settings"]!.AsObject().Remove("ShowGpu");profile["Settings"]!.AsObject().Remove("ShowVram"); }
         File.WriteAllText(library,legacy.ToJsonString());Call("InitializeProfiles");
         Call("ApplyProfile",Get<ComboBox>("ProfileCombo").SelectedItem);Call("SaveSettings");
-        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false && JsonNode.Parse(File.ReadAllText(library))!["Version"]!.GetValue<int>()==1,"Existing v1 profiles migrate missing metrics to Off without losing the profile");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false && Get<CheckBox>("ShowVramCheck").IsChecked==false && JsonNode.Parse(File.ReadAllText(library))!["Version"]!.GetValue<int>()==1,"Existing v1 profiles migrate missing metrics to Off without losing the profile");
         string saved=File.ReadAllText(ini);
-        File.WriteAllText(ini,saved.Replace("show_cpu=0","show_cpu=1").Replace("show_gpu=0","show_gpu=1"));
+        File.WriteAllText(ini,saved.Replace("show_fps_cpu=0","show_fps_cpu=1").Replace("show_fps_gpu=0","show_fps_gpu=1").Replace("show_fps_vram=0","show_fps_vram=1"));
         Call("LoadState");Call("ApplyStateToUi");
-        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==true,"In-game monitoring changes are read back from the runtime INI");
+        Check(Get<CheckBox>("ShowCpuCheck").IsChecked==true && Get<CheckBox>("ShowGpuCheck").IsChecked==true && Get<CheckBox>("ShowVramCheck").IsChecked==true,"In-game monitoring changes are read back from the runtime INI");
         ClickNav("Display");Get<CheckBox>("ShowFpsCheck").IsChecked=true;
         Render(Path.Combine(output,"overlay-options-en.png"),1320,960);Get<ScrollViewer>("DisplayPage").ScrollToVerticalOffset(600);Pump();Render(Path.Combine(output,"overlay-options-en.png"),1320,960);
         Select("UiLanguageCombo","vi");Render(Path.Combine(output,"overlay-options-vi.png"),1320,960);
-        Check(Get<CheckBox>("ShowCpuCheck").Content?.ToString()=="Hiện mức sử dụng CPU (%)" && Get<CheckBox>("ShowGpuCheck").Content?.ToString()=="Hiện mức sử dụng GPU (%)","Monitoring controls translate to Vietnamese");
+        Check(Get<CheckBox>("ShowCpuCheck").Content?.ToString()=="Hiện mức sử dụng CPU (%)" && Get<CheckBox>("ShowGpuCheck").Content?.ToString()=="Hiện mức sử dụng GPU (%)" && Get<CheckBox>("ShowVramCheck").Content?.ToString()=="Hiện VRAM (đang dùng / tổng GiB)","Monitoring controls translate to Vietnamese");
         Select("UiLanguageCombo","en");Call("SaveSettings");
     }
 
@@ -885,6 +885,7 @@ static class Program
         foreach(var stale in new[]{"out/game_dir.txt","launch-env.txt","launch-args.txt"}) { var f=Path.Combine(root,stale); if(File.Exists(f)) File.Delete(f); }
         var app = new App();
         app.InitializeComponent();
+
         System.Globalization.CultureInfo.CurrentUICulture=new System.Globalization.CultureInfo("vi-VN");
 
         window = new MainWindow { ShowInTaskbar=false, ShowActivated=false, WindowStartupLocation=WindowStartupLocation.Manual, Left=-20000, Top=-20000 };
@@ -897,7 +898,7 @@ static class Program
         Check(new[]{"GraphicsAoSlider","GraphicsShadowsSlider","GraphicsBloomSlider","GraphicsSaturationSlider"}.All(n=>Tag(n)=="1.00") && Get<CheckBox>("GraphicsVignetteCheck").IsChecked==true,"First launch uses original lighting and color settings");
         Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false,"CPU/GPU monitoring is opt-in by default");
         Check(Get<Slider>("SharpnessSlider").Value==0.3,"First launch retains the native sharpening strength default");
-        Check(window.Title=="Techmo Bloodborne","Techmo window branding");
+        Check(window.Title=="Techmo Bloodborne · 2.0","Techmo 2.0 release window branding");
         Check(typeof(MainWindow).Assembly.GetName().Name=="Techmo.Launcher","Techmo executable identity");
         Check(Localization.Current.Language=="en","English is the default UI language");
         Check(Get<CheckBox>("OnlineEnabledCheck").Content?.ToString()=="Play online with shadNet","Default English UI is independent of Windows language");
@@ -1183,7 +1184,7 @@ static class Program
         Select("UiLanguageCombo","en");
         Call("LoadState"); Call("ApplyStateToUi");
         Check(Tag("UpscalerCombo")=="fsr411" && Tag("FpsCombo")=="90" && Tag("PresetCombo")=="3","Settings reload");
-        Check(Get<ComboBox>("FpsCombo").Items.Count==4,"30/60/90/Unlimited presets without 120 FPS");
+        Check(Get<ComboBox>("FpsCombo").Items.Count==6,"30/60/90/120/144/Unlimited presets from the new engine");
         Check(window.FindName("VSyncCheck")==null,"Present mode is the single presentation setting without a duplicate VSync checkbox");
         foreach(string fps in new[]{"30","60","90","uncap"}) {
             Select("FpsCombo",fps);
@@ -1202,7 +1203,7 @@ static class Program
             }
         }
         Select("FpsCombo","90"); Select("PresentCombo","FifoRelaxed"); Call("SaveSettings");
-        foreach(string legacy in new[]{"120","Unlimited","0","480","bad"}) {
+        foreach(string legacy in new[]{"Unlimited","0","480","bad"}) {
             string saved=File.ReadAllText(Path.Combine(root,"launcher-settings.json"));
             File.WriteAllText(Path.Combine(root,"launcher-settings.json"),saved.Replace("\"Fps\": \"90\"","\"Fps\": \""+legacy+"\""));
             Call("LoadState"); Call("ApplyStateToUi");

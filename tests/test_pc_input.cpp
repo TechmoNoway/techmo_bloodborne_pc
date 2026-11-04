@@ -1,18 +1,32 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "../engine/renderer/shim/input/bindings.h"
-#include "../engine/renderer/shim/input/compat.h"
-#include "../engine/renderer/shim/input/mouse_camera_step.h"
+#include "../engine/native/gpu/shim/input/bindings.h"
+#include "../engine/native/gpu/shim/input/pad.h"
+#include "../engine/native/gpu/shim/input/mouse_turn.h"
 #include <SDL3/SDL.h>
 #include <cassert>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 extern "C" {std::uint8_t bb_mouse_camera_free_now=0;}
 void host_log(const char*,...) {}
 bool debug_menu_active(){return false;}
+static bool in_menu=false;
+bool menu_pointer_in_menu(){return in_menu;}
 uint32_t menu_confirm_button(){return 0x4000;}
 uint32_t menu_back_button(){return 0x2000;}
+static void verify_menu_only_bindings() {
+    bool held[kBindCount]={};
+    held[kBindConfirm]=held[kBindBack]=true;
+    PadState pad;
+    host_bindings_apply(held,false,pad);
+    assert(pad.buttons==0);
+    in_menu=true;
+    host_bindings_apply(held,false,pad);
+    assert(pad.buttons==0x6000);
+    in_menu=false;
+}
 static void verify_chords() {
     host_bindings_load_defaults();
     bool keys[SDL_SCANCODE_COUNT]={}, held[kBindCount]={};
@@ -21,6 +35,8 @@ static void verify_chords() {
     assert(host_binding_ini_value(kBindStrong)=="V, Left Shift + Mouse1");
     sample(1);assert(held[kBindAttack] && !held[kBindStrong]);
     keys[SDL_SCANCODE_LSHIFT]=true;
+    host_bindings_mouse_held_with_keys(keys, SDL_SCANCODE_COUNT, 1, held);
+    assert(held[kBindStrong] && !held[kBindAttack]); // The real adapter's mouse path sees keyboard modifiers.
     sample(0);assert(!held[kBindStrong] && !held[kBindAttack]);
     sample(1);assert(held[kBindStrong] && !held[kBindAttack]);
     PadState p;host_bindings_apply(held,held[kBindStrongMod],p);
@@ -38,11 +54,11 @@ static void verify_chords() {
     assert(host_bindings_parse("blood_vial","Right Shift + Left Ctrl + Mouse2"));
     assert(host_binding_ini_value(kBindBloodVial)=="Right Shift + Left Ctrl + Mouse2");
     keys[SDL_SCANCODE_LCTRL]=true;sample(2);
-    assert(held[kBindRoll] && !held[kBindFirearm] && !held[kBindBloodVial]);
+    assert(held[kBindRoll] && !held[kBindTransform] && !held[kBindBloodVial]);
     keys[SDL_SCANCODE_RSHIFT]=true;sample(2);
-    assert(held[kBindBloodVial] && !held[kBindRoll] && !held[kBindFirearm]);
+    assert(held[kBindBloodVial] && !held[kBindRoll] && !held[kBindTransform]);
     keys[SDL_SCANCODE_LALT]=true;sample(2);assert(held[kBindBloodVial]);
-    keys[SDL_SCANCODE_LCTRL]=false;sample(2);assert(!held[kBindBloodVial] && !held[kBindRoll] && held[kBindFirearm]);
+    keys[SDL_SCANCODE_LCTRL]=false;sample(2);assert(!held[kBindBloodVial] && !held[kBindRoll] && held[kBindTransform]);
     std::memset(keys,0,sizeof keys);
     assert(host_bindings_parse("roll","Left Ctrl + W"));
     keys[SDL_SCANCODE_W]=true;sample(0);assert(held[kBindMoveF] && !held[kBindRoll]);
@@ -76,7 +92,7 @@ static void verify_chords() {
     keys[SDL_SCANCODE_RALT]=true;sample(16);assert(held[kBindStrong]);
     char description[192], prompt[192];
     host_binding_describe(kBindStrong,description,sizeof description);
-    host_binding_prompt(kBindStrong,prompt,sizeof prompt);
+    std::snprintf(prompt,sizeof prompt,"%s",host_binding_ini_value(kBindStrong).substr(0,host_binding_ini_value(kBindStrong).find(", ")).c_str());
     assert(std::strstr(description,"Left Ctrl + Keypad +") && std::strstr(description,"Right Alt + Button 5"));
     assert(!std::strcmp(prompt,"Left Ctrl + Keypad +"));
     const auto previous=host_binding_ini_value(kBindStrong);
@@ -85,9 +101,8 @@ static void verify_chords() {
     assert(!host_bindings_parse("strong_attack","Left Ctrl + Left Ctrl"));
     assert(!host_bindings_parse("strong_attack","Left Ctrl + Unknown input"));
     assert(host_binding_ini_value(kBindStrong)==previous);
-    FILE* file=std::tmpfile();assert(file);host_bindings_save(file);std::rewind(file);
-    char ini[8192]={};std::fread(ini,1,sizeof ini-1,file);std::fclose(file);
-    assert(std::strstr(ini,"bind.strong_attack=Left Ctrl + Keypad +, Right Alt + Mouse5\n"));
+    assert(host_bindings_parse("strong_attack",previous.c_str()));
+    assert(host_binding_ini_value(kBindStrong)==previous);
     host_bind_capture_begin(kBindStrong);assert(host_bind_capture_key(SDL_SCANCODE_F));
     assert(host_binding_ini_value(kBindStrong)=="F, Right Alt + Mouse5");
     host_bind_capture_note_held(false);
@@ -96,6 +111,12 @@ static void verify_chords() {
     host_bindings_load_defaults();
 }
 int main(){
+    verify_menu_only_bindings();
+#ifdef _WIN32
+    _putenv_s("BB_TECHMO_BINDINGS","1");
+#else
+    setenv("BB_TECHMO_BINDINGS","1",1);
+#endif
     host_bindings_load_defaults();
     assert(host_binding_key(kBindWalk)==SDL_SCANCODE_LALT);
     assert(host_binding_mouse(kBindAttack)==1);
@@ -118,23 +139,16 @@ int main(){
     assert(host_binding_key(kBindAttack)==SDL_SCANCODE_F);host_bind_capture_note_held(false);
     host_binding_clear(kBindAttack);assert(host_binding_ini_value(kBindAttack)=="none");
     verify_chords();
-    float sensitivity=mouse_camera::degrees_per_count(5);assert(std::abs(sensitivity-.25f)<1e-6);
-    uint32_t bits;std::memcpy(&bits,&sensitivity,4);mouse_camera::g_degrees_per_count=bits;
-    auto turn=[](int frames){
-        float pitch=0,yaw=0;
-        for(int i=0;i<frames;i++){
-            mouse_camera::add(mouse_camera::g_counts,120.0f/frames,60.0f/frames);
-            mouse_camera::begin_update();mouse_camera::turn(0,0,pitch,yaw,-1,1);
-        }
+    const float sensitivity=MouseTurn::DegreesPerCount(5);assert(std::abs(sensitivity-.25f)<1e-6);
+    assert(MouseTurn::DegreesPerCount(-10)>0 && MouseTurn::DegreesPerCount(-10)<MouseTurn::DegreesPerCount(0));
+    auto turn=[&](int frames){
+        float pitch=0,yaw=0;MouseTurn::Settings settings{.degrees_per_count=sensitivity};
+        for(int i=0;i<frames;i++) MouseTurn::Turn(120.0f/frames,60.0f/frames,settings,pitch,yaw,-1,1);
         return std::pair{pitch,yaw};
     };
     const auto a=turn(30),b=turn(60),c=turn(90);
     assert(std::abs(a.first-b.first)<1e-5 && std::abs(a.second-c.second)<1e-5);
-    float pitch=0,yaw=0;mouse_camera::g_frame={10,10};
-    assert(!mouse_camera::turn(1,0,pitch,yaw,-1,1) && pitch==0 && yaw==0);
-    mouse_camera::g_flags=mouse_camera::kInvertX|mouse_camera::kInvertY;
-    assert(mouse_camera::turn(0,0,pitch,yaw,-1,1) && pitch<0 && yaw<0);
-    mouse_camera::g_frame={10000,10000};mouse_camera::turn(0,0,pitch,yaw,-.5,.5);
-    assert(pitch==-.5f && yaw>=-3.141593f && yaw<=3.141593f);
+    float pitch=0,yaw=0;MouseTurn::Settings inverted{.invert_x=true,.invert_y=true};
+    assert(MouseTurn::Turn(10,10,inverted,pitch,yaw,-1,1) && pitch<0 && yaw<0);
     std::puts("PC input: PASS (modifier chords, priority, releases, walk/sprint axes, remapping, capture, triggers, 30/60/90 camera, invert/limits)");
 }

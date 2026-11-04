@@ -1,0 +1,234 @@
+--- a/gpu/shim/input/bindings.cpp
++++ b/gpu/shim/input/bindings.cpp
+@@ -10,6 +10,7 @@
+ #include <cstdio>
+ #include <cstring>
+ #include <mutex>
++#include <cstdlib>
+ 
+ namespace {
+ using namespace PadBits;
+@@ -66,6 +67,7 @@
+     std::uint16_t code = 0;
+     bool mouse = false;
+     std::uint8_t modifiers = 0;
++    std::uint8_t sides = 0;
+     bool None() const { return code == 0; }
+     bool operator==(const Input&) const = default;
+ };
+@@ -94,13 +96,31 @@
+     return text;
+ }
+ 
++bool TechmoCapture() { const char* v=std::getenv("BB_TECHMO_BINDINGS");return v && *v=='1'; }
++std::uint8_t CaptureSides(SDL_Keymod mods) {
++    constexpr SDL_Keymod flags[]={SDL_KMOD_LSHIFT,SDL_KMOD_RSHIFT,SDL_KMOD_LCTRL,SDL_KMOD_RCTRL,SDL_KMOD_LALT,SDL_KMOD_RALT};
++    std::uint8_t bits=0;for(int i=0;i<6;++i)if(mods & flags[i])bits|=1u<<i;return bits;
++}
++constexpr int kSideCodes[] = {SDL_SCANCODE_LSHIFT, SDL_SCANCODE_RSHIFT, SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL, SDL_SCANCODE_LALT, SDL_SCANCODE_RALT};
++constexpr const char* kSideNames[] = {"Left Shift", "Right Shift", "Left Ctrl", "Right Ctrl", "Left Alt", "Right Alt"};
++std::atomic<std::uint8_t> g_side_modifiers{0};
++std::uint8_t SidesDown(const bool* keys, int count) {
++    std::uint8_t result=0;
++    for(int i=0;i<6;++i) if(keys && kSideCodes[i]<count && keys[kSideCodes[i]]) result|=1u<<i;
++    return result;
++}
++std::string SideText(std::uint8_t sides) {
++    std::string text;
++    for(int i=0;i<6;++i) if(sides & (1u<<i)) text+=std::string(kSideNames[i])+" + ";
++    return text;
++}
+ std::string IniText(const Input& in) {
+     if (in.mouse) {
+         const std::string name = in.code == 6 ? "WheelUp" : in.code == 7 ? "WheelDown" : "Mouse" + std::to_string(in.code);
+-        return ModifierText(in.modifiers) + name;
++        return SideText(in.sides) + ModifierText(in.modifiers) + name;
+     }
+     const char* name = KeyName(in.code);
+-    return name ? ModifierText(in.modifiers) + name : std::string();
++    return name ? SideText(in.sides) + ModifierText(in.modifiers) + name : std::string();
+ }
+ 
+ std::string ScreenText(const Input& in) {
+@@ -113,7 +133,7 @@
+         name = KeyName(in.code);
+         if (name && std::strcmp(name, "`") == 0) name = "` (backtick)";
+     }
+-    return name ? ModifierText(in.modifiers) + name : std::string();
++    return name ? SideText(in.sides) + ModifierText(in.modifiers) + name : std::string();
+ }
+ 
+ std::string Trimmed(const std::string& text) {
+@@ -126,6 +146,13 @@
+ 
+ Input ParseInput(std::string text) {
+     Input in;
++    text=Trimmed(text);
++    for (auto plus=text.find(" + "); plus!=std::string::npos; plus=text.find(" + ")) {
++        const auto token=Trimmed(text.substr(0,plus));
++        int side=0;while(side<6 && token!=kSideNames[side])++side;
++        if(side==6 || (in.sides & (1u<<side))) return {};
++        in.sides|=1u<<side;text=Trimmed(text.substr(plus+3));
++    }
+     static constexpr struct {
+         const char* prefix;
+         std::uint8_t modifier;
+@@ -151,6 +178,7 @@
+         const SDL_Scancode sc = SDL_GetScancodeFromName(text.c_str());
+         in.code = sc > SDL_SCANCODE_UNKNOWN ? std::uint16_t(sc) : 0;
+     }
++    for(int i=0;i<6;++i) if(in.code==kSideCodes[i] && !in.mouse && (in.sides&(1u<<i))) return {};
+     return in;
+ }
+ 
+@@ -195,7 +223,7 @@
+         std::scoped_lock lock(g_lock);
+         for (int a = 0; a < kBindCount; ++a) {
+             for (const Input& in : g_bindings[a].slot) {
+-                if (!in.None() && in.mouse == mouse && down(in.code) && (in.modifiers & ~modifiers) == 0)
++                if (!in.None() && in.mouse == mouse && down(in.code) && (in.modifiers & ~modifiers) == 0 && (in.sides & ~g_side_modifiers.load(std::memory_order_relaxed)) == 0)
+                     found[count++] = {a, in};
+             }
+         }
+@@ -205,8 +233,11 @@
+ 
+         bool outranked = false;
+         for (int j = 0; j < count && !outranked; ++j) {
+-            const std::uint8_t mine = found[i].input.modifiers, theirs = found[j].input.modifiers;
+-            outranked = found[j].input.code == found[i].input.code && theirs != mine && (theirs & mine) == mine;
++            const auto groups=[](const Input& in) {
++                return std::uint8_t(in.modifiers | ((in.sides&3)?kShift:0) | ((in.sides&12)?kCtrl:0) | ((in.sides&48)?kAlt:0));
++            };
++            const std::uint8_t mine=groups(found[i].input),theirs=groups(found[j].input);
++            outranked = found[j].input.code == found[i].input.code && (theirs != mine || found[j].input.sides != found[i].input.sides) && (theirs & mine) == mine && (found[j].input.sides & found[i].input.sides) == found[i].input.sides;
+         }
+         if (!outranked) held[found[i].action] = true;
+     }
+@@ -276,8 +307,8 @@
+     host_log("keys: %s %s, now %s", kActions[action].key, outcome, now);
+ }
+ 
+-void BindKey(int action, int scancode, std::uint8_t modifiers) {
+-    const Input in{std::uint16_t(scancode), false, modifiers};
++void BindKey(int action, int scancode, std::uint8_t modifiers, std::uint8_t sides=0) {
++    const Input in{std::uint16_t(scancode), false, sides?std::uint8_t(0):modifiers, sides};
+     {
+         std::scoped_lock lock(g_lock);
+         TakeFromOthers(action, in);
+@@ -319,6 +350,7 @@
+         const Input in = ParseInput(token);
+         if (in.None()) {
+             host_log("keys: %s=%s: \"%s\" is not a key or mouse input", kActions[action].key, value, token.c_str());
++            if(TechmoCapture()) return false;
+             continue;
+         }
+         const int slot = SlotFor(b, in);
+@@ -396,6 +428,7 @@
+ }
+ 
+ void host_bindings_keys_held(const bool* keys, int count, bool held[kBindCount]) {
++    g_side_modifiers.store(SidesDown(keys,count),std::memory_order_relaxed);
+     const std::uint8_t modifiers = ModifiersDown(keys, count);
+     g_keyboard_modifiers.store(modifiers, std::memory_order_relaxed);
+     HeldOn(false, [&](int sc) { return sc < count && keys[sc]; }, modifiers, held);
+@@ -412,7 +445,21 @@
+     g_walk_on_mouse.store(held[kBindWalk], std::memory_order_relaxed);
+ }
+ 
++void host_bindings_mouse_held_with_keys(const bool* keys,int count,std::uint32_t inputs,bool held[kBindCount]) {
++    g_keyboard_modifiers.store(ModifiersDown(keys,count),std::memory_order_relaxed);
++    g_side_modifiers.store(SidesDown(keys,count),std::memory_order_relaxed);
++    host_bindings_mouse_held(inputs,held);
++}
++void host_bindings_held(const bool* keys,int count,std::uint32_t inputs,bool held[kBindCount]) {
++    bool keyboard[kBindCount],mouse[kBindCount];
++    g_walk_on_mouse.store(false,std::memory_order_relaxed);
++    host_bindings_keys_held(keys,count,keyboard);
++    host_bindings_mouse_held_with_keys(keys,count,inputs,mouse);
++    for(int i=0;i<kBindCount;++i)held[i]=keyboard[i]||mouse[i];
++    for(const auto& pair:kOpposites)if(held[pair[0]]&&held[pair[1]])held[pair[0]]=held[pair[1]]=false;
++    held[kBindWalk]=keyboard[kBindWalk]||mouse[kBindWalk];
++}
+ void host_bindings_apply(const bool held[kBindCount], bool strong, PadState& pad) {
+     const bool menu = menu_pointer_in_menu();
+     for (int a = 0; a < kBindCount; ++a) {
+         if (!held[a]) continue;
+@@ -476,7 +523,7 @@
+     } else if (IsModifierKey(scancode)) {
+         g_capture_modifier.store(scancode, std::memory_order_relaxed);
+     } else {
+-        BindKey(action, scancode, ModifiersOf(SDL_Keymod(sdl_mods)));
++        BindKey(action, scancode, ModifiersOf(SDL_Keymod(sdl_mods)), TechmoCapture()?CaptureSides(SDL_Keymod(sdl_mods)):0);
+     }
+     return true;
+ }
+@@ -497,7 +544,8 @@
+                      static_cast<long long>(since));
+         return true;
+     }
+-    const Input in{std::uint16_t(input), true, ModifiersOf(SDL_GetModState())};
++    const auto sides=TechmoCapture()?CaptureSides(SDL_GetModState()):0;
++    const Input in{std::uint16_t(input), true, sides?std::uint8_t(0):ModifiersOf(SDL_GetModState()),std::uint8_t(sides)};
+     {
+         std::scoped_lock lock(g_lock);
+         TakeFromOthers(action, in);
+--- a/gpu/shim/input/bindings.h
++++ b/gpu/shim/input/bindings.h
+@@ -51,6 +51,8 @@
+ 
+ void host_bindings_keys_held(const bool* keys, int count, bool held[kBindCount]);
+ void host_bindings_mouse_held(std::uint32_t inputs, bool held[kBindCount]);
++void host_bindings_mouse_held_with_keys(const bool* keys,int count,std::uint32_t inputs,bool held[kBindCount]);
++void host_bindings_held(const bool* keys,int count,std::uint32_t inputs,bool held[kBindCount]);
+ 
+ void host_bindings_apply(const bool held[kBindCount], bool strong, PadState& pad);
+ 
+--- a/gpu/shim/input/input.cpp
++++ b/gpu/shim/input/input.cpp
+@@ -113,7 +113,8 @@
+ 
+ void ApplyMouseBindings(std::uint32_t inputs, bool keyboard_strong, PadState& pad) {
+     bool held[kBindCount];
+-    host_bindings_mouse_held(inputs, held);
++    int count=0;const bool* keys=SDL_GetKeyboardState(&count);
++    host_bindings_mouse_held_with_keys(keys,count,inputs,held);
+     host_bindings_apply(held, keyboard_strong || held[kBindStrongMod], pad);
+ }
+ 
+--- a/start/mods.cpp
++++ b/start/mods.cpp
+@@ -422,8 +422,11 @@
+     if (enabled) {
+         fs::path legacy = fs::canonical(game);
+         legacy += L"-mods";
+-        if (IsDir(legacy)) layers.emplace_back(legacy.filename().native(), legacy);
++        const auto selection = IsFile(config) ? nlohmann::json::parse(ReadText(config)) : nlohmann::json::object();
++        if (selection.value("legacy_enabled", true) && IsDir(legacy))
++            layers.emplace_back(legacy.filename().native(), legacy);
+         if (IsDir(Child(mods_dir, L"dvdroot_ps4"))) {
++            if (!selection.value("direct_enabled", true)) return BuildOverlay(game, out, layers, UpdateFolder(fs::canonical(game)));
+             layers.emplace_back(mods_dir.filename().native(), mods_dir);
+         } else {
+             for (const std::wstring& name : Selected(mods_dir, config)) layers.emplace_back(name, mods_dir / name);
+--- a/tests/test_pc_input.cpp
++++ b/tests/test_pc_input.cpp
+@@ -12,6 +12,8 @@
+ #include <thread>
+ 
+ void host_log(const char*, ...) {}
++static bool in_menu = true;
++bool menu_pointer_in_menu() { return in_menu; }
+ std::uint32_t menu_confirm_button() { return PadBits::kCross; }
+ std::uint32_t menu_back_button() { return PadBits::kCircle; }
+ 
+@@ -78,6 +80,10 @@
+     assert(p.buttons == PadBits::kL2 && p.l2 == 255);
+     p = Pad({kBindConfirm, kBindBack});
+     assert(p.buttons == (PadBits::kCross | PadBits::kCircle));
++    in_menu = false;
++    p = Pad({kBindConfirm, kBindBack});
++    assert(p.buttons == 0);
++    in_menu = true;
+     p = Pad({kBindLookL, kBindLookD});
+     assert(p.rx == kStickLow && p.ry == kStickHigh);
+ 

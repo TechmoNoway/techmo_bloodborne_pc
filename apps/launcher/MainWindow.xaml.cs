@@ -21,6 +21,7 @@ public partial class MainWindow : Window
         public bool ShowFps { get; set; }
         public bool ShowCpu { get; set; }
         public bool ShowGpu { get; set; }
+        public bool ShowVram { get; set; }
         public string PresentMode { get; set; } = "";
         // Physical-display calibration is shared by all gameplay profiles.
         public bool HdrOutput { get; set; }
@@ -113,10 +114,14 @@ public partial class MainWindow : Window
         InitializeSaves();
         InitializeMods();
         InitializeUndo();
+        InitializeEngineOptions();
     }
 
     static string FindProjectRoot()
     {
+        if (Environment.GetEnvironmentVariable("TECHMO_EXPERIMENT_ROOT") is { Length: > 0 } selected &&
+            File.Exists(Path.Combine(selected, "run.bat")) && File.Exists(Path.Combine(selected, "build.sh")))
+            return Path.GetFullPath(selected);
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         for (int i = 0; i < 8 && dir != null; ++i, dir = dir.Parent)
         {
@@ -144,8 +149,9 @@ public partial class MainWindow : Window
         state.Fps = NormalizeFps(state.Fps);
         state.UiLanguage = Localization.Normalize(state.UiLanguage);
         if (ReadIniValue("show_fps") is string showFps) state.ShowFps = showFps == "1";
-        if (ReadIniValue("show_cpu") is string showCpu) state.ShowCpu = showCpu == "1";
-        if (ReadIniValue("show_gpu") is string showGpu) state.ShowGpu = showGpu == "1";
+        if ((ReadIniValue("show_fps_cpu") ?? ReadIniValue("show_cpu")) is string showCpu) state.ShowCpu = showCpu == "1";
+        if ((ReadIniValue("show_fps_gpu") ?? ReadIniValue("show_gpu")) is string showGpu) state.ShowGpu = showGpu == "1";
+        if ((ReadIniValue("show_fps_vram") ?? ReadIniValue("show_vram")) is string showVram) state.ShowVram = showVram == "1";
         if (ReadIniValue("sharpen") is string sharpen) state.Sharpen = sharpen == "1";
         state.Sharpness = double.TryParse(ReadIniValue("sharpness"), NumberStyles.Float, CultureInfo.InvariantCulture, out double sharpness)
             ? NormalizeSharpness(sharpness) : NormalizeSharpness(state.Sharpness);
@@ -176,7 +182,7 @@ public partial class MainWindow : Window
         LoadModSettings();
     }
 
-    static string NormalizeFps(string? value) => value is "30" or "60" or "90" or "uncap" ? value : "60";
+    static string NormalizeFps(string? value) => value is "30" or "60" or "90" or "120" or "144" or "uncap" ? value : "60";
     static string FpsLabel(string value) => value == "uncap" ? Localization.Current["Ui.Unlimited"] : value + " FPS";
 
     static string CameraScale(string? value, double min)
@@ -215,7 +221,12 @@ public partial class MainWindow : Window
         foreach (string line in File.ReadLines(path))
         {
             int equals = line.IndexOf('=');
-            if (equals > 0 && line[..equals].Trim() == key) return line[(equals + 1)..].Trim();
+            if (equals > 0 && line[..equals].Trim() == key)
+            {
+                string value = line[(equals + 1)..].Trim();
+                return key.StartsWith("bind.", StringComparison.Ordinal) && File.Exists(Path.Combine(root, "engine.lock.json"))
+                    ? SwapEngineMouseTokens(value) : value;
+            }
         }
         return null;
     }
@@ -232,6 +243,7 @@ public partial class MainWindow : Window
         ShowFpsCheck.IsChecked = state.ShowFps;
         ShowCpuCheck.IsChecked = state.ShowCpu;
         ShowGpuCheck.IsChecked = state.ShowGpu;
+        ShowVramCheck.IsChecked = state.ShowVram;
         HdrOutputCheck.IsChecked = state.HdrOutput;
         SetComboTag(HdrWhiteCombo, state.HdrWhite);
         SetComboTag(HdrPeakCombo, state.HdrPeak);
@@ -290,6 +302,7 @@ public partial class MainWindow : Window
         state.ShowFps = ShowFpsCheck.IsChecked == true;
         state.ShowCpu = ShowCpuCheck.IsChecked == true;
         state.ShowGpu = ShowGpuCheck.IsChecked == true;
+        state.ShowVram = ShowVramCheck.IsChecked == true;
         state.PresentMode = ComboTag(PresentCombo);
         state.HdrOutput = HdrOutputCheck.IsChecked == true;
         state.HdrWhite = ComboTag(HdrWhiteCombo, "203");
@@ -339,6 +352,7 @@ public partial class MainWindow : Window
         CollectUi();
         if (!profilesUnavailable && activeProfile is not null) ValidateProfile(CaptureProfile(activeProfile.Name, activeProfile.Id));
         ValidateModSettings();
+        SaveEngineOptions();
         Directory.CreateDirectory(Path.Combine(root, "out"));
         AtomicSettingsFile.Write(statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
         if (!string.IsNullOrWhiteSpace(state.GamePath))
@@ -353,6 +367,10 @@ public partial class MainWindow : Window
             ["show_fps"] = state.ShowFps ? "1" : "0",
             ["show_cpu"] = state.ShowCpu ? "1" : "0",
             ["show_gpu"] = state.ShowGpu ? "1" : "0",
+            ["show_vram"] = state.ShowVram ? "1" : "0",
+            ["show_fps_vram"] = state.ShowVram ? "1" : "0",
+            ["show_fps_cpu"] = state.ShowCpu ? "1" : "0",
+            ["show_fps_gpu"] = state.ShowGpu ? "1" : "0",
             ["output_res"] = state.Resolution,
             ["fullscreen"] = state.Fullscreen ? "1" : "0",
             ["live_resolution"] = state.LiveResolution,
@@ -380,9 +398,10 @@ public partial class MainWindow : Window
         };
         SaveInputSettings(ini);
         RewriteIni(Path.Combine(root, "bbport.ini"), ini);
-        SaveOnlineSettings();
+        if (!engineOptionsReady) SaveOnlineSettings();
         SaveActiveProfile();
         SaveModSettings();
+        SyncEngineSettings();
         RememberAppliedSettings();
         hasUnsavedChanges = false;
         UpdateSaveState();
@@ -402,6 +421,9 @@ public partial class MainWindow : Window
 
     static void RewriteIni(string path, Dictionary<string, string> values)
     {
+        if (File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "engine.lock.json")))
+            values = values.ToDictionary(pair => pair.Key, pair => pair.Key.StartsWith("bind.", StringComparison.Ordinal)
+                ? SwapEngineMouseTokens(pair.Value) : pair.Value);
         var lines = File.Exists(path) ? File.ReadAllLines(path).ToList() : new List<string>();
         var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < lines.Count; ++i)
@@ -452,7 +474,8 @@ public partial class MainWindow : Window
             File.Exists(dlss) ? "Model DLL is invalid" : "Model DLL not installed");
         DlssStatus.Foreground = dlssReady ? Green() : Muted();
 
-        bool fsr411 = Directory.Exists(Path.Combine(root, "fsr4_411"));
+        bool fsr411 = Directory.Exists(Path.Combine(root, "fsr4_411")) ||
+            UpscalerAssets.DlssInstalled(Path.Combine(root, "fsr4vk", "amd_fidelityfx_upscaler_vk.dll"));
         bool fsr4 = UpscalerAssets.Fsr4Installed(Path.Combine(root, "fsr4_shaders"));
         L10n.SetText(Fsr4Status, fsr411 ? "4.1.1 available" : fsr4 ? "v07 installed · experimental" :
             Directory.Exists(Path.Combine(root, "fsr4_shaders")) ? "Assets incomplete or damaged" : "Assets not installed");
@@ -560,7 +583,7 @@ public partial class MainWindow : Window
             return;
         }
         if (!SaveSettings()) return;
-        if (!ValidateOnlineForLaunch()) return;
+        if (!engineOptionsReady && !ValidateOnlineForLaunch()) return;
         if (!File.Exists(Path.Combine(state.GamePath, "eboot.bin")))
         {
             MessageBox.Show(L10n.Text("Select a valid Bloodborne folder first."), "Techmo Bloodborne", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -617,7 +640,8 @@ public partial class MainWindow : Window
             else psi.Environment.Remove("BB_GPU_PROFILE");
             if (state.DeveloperMode && state.AudioStats) psi.Environment["BB_AUDIO_STATS"] = "1";
             if (state.DeveloperMode && state.FsrProfile) psi.Environment["BB_FSR4_PROFILE"] = "1";
-            ConfigureOnlineLaunch(psi);
+            if (!engineOptionsReady) ConfigureOnlineLaunch(psi);
+            ConfigureEngineLaunch(psi);
             var gameProcess = new Process
             {
                 StartInfo = psi,
@@ -629,6 +653,8 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(() =>
                 {
                     gameRunning=false;
+                    StopEngineSession();
+                    SecureEngineSaves();
                     Show();
                     WindowState = WindowState.Normal;
                     LoadState();
@@ -647,14 +673,17 @@ public partial class MainWindow : Window
                 });
             };
             gameRunning=true;
+            SecureEngineSaves();
             PlayButton.IsEnabled=false;
             if(!gameProcess.Start()) throw new InvalidOperationException(L10n.Text("Could not start the game."));
+            StartEngineSession(logPath);
             SetFooterMessage("Started · log: {0}", Path.GetFileName(logPath));
             Hide();
         }
         catch (Exception ex)
         {
             gameRunning=false;
+            StopEngineSession();
             RefreshStatus();
             MessageBox.Show(ex.Message, L10n.Text("Unable to start Bloodborne"), MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -704,7 +733,7 @@ public partial class MainWindow : Window
     static string ComboTag(ComboBox box, string fallback = "") =>
         (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? fallback;
     static string ComboText(ComboBox box, string fallback = "") =>
-        (box.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? fallback;
+        (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? (box.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? fallback;
 
     static void SetComboTag(ComboBox box, string tag)
     {
@@ -716,7 +745,7 @@ public partial class MainWindow : Window
     static void SetComboContent(ComboBox box, string value)
     {
         foreach (var obj in box.Items)
-            if (obj is ComboBoxItem item && string.Equals(item.Content?.ToString(), value, StringComparison.OrdinalIgnoreCase)) { box.SelectedItem = item; return; }
+            if (obj is ComboBoxItem item && string.Equals(item.Tag?.ToString() ?? item.Content?.ToString(), value, StringComparison.OrdinalIgnoreCase)) { box.SelectedItem = item; return; }
         if (box.Items.Count > 0) box.SelectedIndex = 0;
     }
 
