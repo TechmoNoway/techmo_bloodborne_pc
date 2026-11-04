@@ -8,7 +8,7 @@ Manual runs are available from the Actions tab.
 The launcher job runs Python checks and an isolated WPF fixture, then publishes a
 self-contained .NET 8 Windows x64 frontend. The native job restores the pinned
 source and builds with MSYS2 CLANG64, then combines the engine, frontend, runtime
-DLLs and portable Python into **Techmo-Bloodborne-2.0-win-x64**. Extract and run
+DLLs and portable Python into **Techmo-Bloodborne-win-x64**. Extract and run
 `Techmo.cmd`. **Techmo-launcher-win-x64** is a frontend-only artifact for an
 existing runtime checkout. Artifacts retain license notices and build identity.
 Failed runs upload available native build logs.
@@ -59,6 +59,7 @@ The active backend is a library; its original window is never launched.
 ```powershell
 python -B -m unittest discover -s tests -v
 dotnet run --project tests/TechmoHosted/TechmoHosted.csproj -c Release -- .
+dotnet run --project tests/TechmoUpdates/TechmoUpdates.csproj -c Release -- .
 .\apps\launcher\Verify-Launcher.ps1
 ```
 
@@ -78,6 +79,27 @@ Bootstrap fetches the exact commit and verifies its engine tree hash before impo
 Each Techmo patch is checked before the new source replaces the generated checkout.
 The previous source remains in an ignored backup. Packaging removes temporary staging;
 `tools/clean-generated.ps1 -WhatIf` previews other reproducible output cleanup.
+
+## In-app updates
+
+Settings checks the latest stable release in `TechmoNoway/techmo_bloodborne_pc`.
+The full Windows ZIP is verified using GitHub's SHA256 digest or `SHA256SUMS.txt`.
+Download and verification happen before any installed file changes. The user then
+chooses Save settings, restart & install. An independent Windows PowerShell helper
+waits for the launcher to exit, refuses running games/other launcher instances,
+and backs up each runtime file before replacing it. A failed copy rolls back the
+files already changed. The next launch shows the installation result.
+
+Personal data is excluded from the install plan and independently rejected by the
+helper: user/, saves, mods, logs, caches, bbport.ini and launcher-settings.json.
+Only the latest successful runtime backup is kept under `.techmo-update/`.
+In-place installation is for extracted release packages; Git source checkouts
+remain build-managed. Existing 2.0 installations need the updater-enabled build
+once before they can receive future updates in the app.
+
+The update suite uses injected HTTP responses and runs the real installer with
+locked-file, rollback, checksum, cancellation, path and data-preservation fixtures.
+To validate a complete local ZIP too, append `--package <absolute-zip-path>`.
 
 ## Benchmark
 

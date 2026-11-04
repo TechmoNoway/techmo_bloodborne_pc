@@ -115,6 +115,7 @@ public partial class MainWindow : Window
         InitializeMods();
         InitializeUndo();
         InitializeEngineOptions();
+        InitializeUpdates();
     }
 
     static string FindProjectRoot()
@@ -463,6 +464,7 @@ public partial class MainWindow : Window
         string probe = Path.Combine(root, "out", "bb-probe.exe");
         bool nativeReady = File.Exists(probe);
         PlayButton.IsEnabled = valid && nativeReady && !gameRunning && !saveDataBusy;
+        RefreshUpdateControls();
         L10n.SetText(PlayHint, !valid ? "Select a valid Bloodborne dump before playing." : !nativeReady ?
             "Build the native runtime before playing." : "Ready. Settings are saved automatically when Play is pressed.");
         L10n.SetText(RuntimeStatus, File.Exists(probe) ? "Ready" : "Not built");
@@ -575,7 +577,7 @@ public partial class MainWindow : Window
 
     void Play_Click(object sender, RoutedEventArgs e)
     {
-        if(gameRunning || saveDataBusy) return;
+        if(gameRunning || saveDataBusy || updateDownloading || updateHandoff) return;
         if (!File.Exists(Path.Combine(root, "out", "bb-probe.exe")))
         {
             SetFooterMessage("Build the native runtime before playing.");

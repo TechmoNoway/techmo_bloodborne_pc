@@ -61,6 +61,22 @@ static class Program
         Check(Get<DataGrid>("KeyBindingsGrid").Items.Count == 29, "Techmo keeps all 29 action bindings");
         Check(Get<Button>("KeyboardTab") != null && Get<Button>("UndoSettingsButton") != null, "Techmo tabs and Apply/Undo stay present");
         Check(Field<bool>("engineOptionsReady"), "Additional native engine options initialized");
+        Check(Get<Button>("CheckUpdatesButton") != null && Get<CheckBox>("AutoCheckUpdatesCheck").IsChecked == true,
+            "Techmo Settings has update controls without opening the upstream launcher");
+        Check(!Field<bool>("updatesBusy"), "Fixture hosts do not issue automatic network requests");
+        Get<CheckBox>("AutoCheckUpdatesCheck").IsChecked = false;
+        using (var preference = JsonDocument.Parse(File.ReadAllText(Path.Combine(fixture,"user/launcher/update-settings.json"))))
+            Check(!preference.RootElement.GetProperty("automatic").GetBoolean(), "Automatic check preference is saved in the local user folder");
+        typeof(MainWindow).GetField("availableUpdate", BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,
+            new TechmoRelease(new Version(9,0,0),"v9.0","Fixture release notes","fixture.zip","https://github.com/TechmoNoway/techmo_bloodborne_pc",1,null,null));
+        Call("RefreshUpdateControls");
+        Check(Get<Button>("InstallUpdateButton").Visibility == Visibility.Visible && !Get<Button>("InstallUpdateButton").IsEnabled,
+            "Update installation is disabled in source and integration hosts");
+        BloodborneLauncher.Localization.Current.SetLanguage("vi");
+        Check(Get<Button>("CheckUpdatesButton").Content.ToString() == "Kiểm tra cập nhật", "Update UI supports Vietnamese");
+        BloodborneLauncher.Localization.Current.SetLanguage("en");
+        typeof(MainWindow).GetField("availableUpdate", BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,null);
+        Call("RefreshUpdateControls");
         var pages = Field<Dictionary<string, V.LauncherPage>>("engineOptionSources");
         Check(N.Updater.Current == new Version(0, 9, 38), "Hosted backend identifies stable 0.9.38");
         foreach (var title in new[] { "Native frame rate", "Steps follow the frame rate", "Memory retry limit", "Cutscene freeze fix", "Live Discord status", "FSR 4 from the AMD driver" })

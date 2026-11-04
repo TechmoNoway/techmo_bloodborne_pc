@@ -8,7 +8,7 @@ A Windows x64 launcher with English/Vietnamese UI, custom controls and performan
 
 ## Download & play
 
-Download **Techmo-Bloodborne-2.0-win-x64.zip** from [Releases](https://github.com/TechmoNoway/techmo_bloodborne_pc/releases/latest).
+Download the **Windows ZIP** from [Releases](https://github.com/TechmoNoway/techmo_bloodborne_pc/releases/latest).
 Extract, run `Techmo.cmd`, select your Bloodborne 1.09 folder and press **Play**.
 Game files are not included.
 

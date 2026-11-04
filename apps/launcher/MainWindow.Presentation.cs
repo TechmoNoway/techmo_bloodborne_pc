@@ -120,6 +120,7 @@ public partial class MainWindow
 
     void SettingsToggle_Changed(object sender, RoutedEventArgs e)
     {
+        if (e.OriginalSource == AutoCheckUpdatesCheck) return; // This preference saves immediately, outside game profiles.
         // Mod rows report edits from their model. Binding/virtualization must not
         // turn a freshly displayed checked row into an unsaved settings change.
         if (e.OriginalSource is CheckBox { DataContext: ModRow }) return;

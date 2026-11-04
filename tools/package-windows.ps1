@@ -3,12 +3,15 @@
 param([string]$PythonArchive)
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$version = ([xml](Get-Content -LiteralPath (Join-Path $root 'apps/launcher/Techmo.Launcher.csproj') -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+$releaseVersion = $version -replace '^(\d+\.\d+)\.0$', '$1'
+$packageName = 'Techmo-Bloodborne-' + $releaseVersion
 foreach ($required in @('builds/launcher/Techmo.Launcher.exe', 'out/bb-probe.exe', 'out/bb-start.exe', 'out/native-build.json', 'package.json')) {
     if (!(Test-Path -LiteralPath (Join-Path $root $required))) { throw "Build missing: $required" }
 }
 $packageRoot = Join-Path $root ('builds/_internal/package-' + [Guid]::NewGuid().ToString('N'))
 try {
-$stage = Join-Path $packageRoot 'Techmo-Bloodborne-2.0'
+$stage = Join-Path $packageRoot $packageName
 foreach ($directory in @('builds', 'out', 'tools/python')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage $directory) | Out-Null
 }
@@ -29,6 +32,7 @@ foreach ($name in @('gpu-cache.id', 'gpu-cache.legacy.id')) {
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $stage 'out') }
 }
 Copy-Item -LiteralPath (Join-Path $root 'tools/benchmark.ps1'),(Join-Path $root 'tools/benchmark.py') -Destination (Join-Path $stage 'tools')
+Copy-Item -LiteralPath (Join-Path $root 'tools/install-update.ps1') -Destination (Join-Path $stage 'tools')
 if (!$PythonArchive) {
     $pythonCache = Join-Path $root 'builds/_internal/cache/python'
     New-Item -ItemType Directory -Force -Path $pythonCache | Out-Null
@@ -55,7 +59,7 @@ $python = Join-Path $stage 'tools/python/python.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Packaged Python module check failed.' }
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
-$zip = Join-Path $dist 'Techmo-Bloodborne-2.0-win-x64.zip'
+$zip = Join-Path $dist ($packageName + '-win-x64.zip')
 Compress-Archive -LiteralPath $stage -DestinationPath $zip -CompressionLevel Optimal -Force
 $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
 Write-Host "Package: $zip"

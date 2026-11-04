@@ -1039,6 +1039,23 @@
                             <TextBlock Text="{local:Loc Key=Hub.Settings_description}" Style="{StaticResource PageDescription}" />
                             <Border Style="{StaticResource CardStyle}" Margin="0,0,0,16">
                                 <StackPanel>
+                                    <TextBlock Text="{local:Loc Key=Updates.Title}" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock x:Name="UpdateCurrentVersion" Foreground="{DynamicResource MutedBrush}" />
+                                    <CheckBox x:Name="AutoCheckUpdatesCheck" Content="{local:Loc Key=Updates.Auto}" Margin="0,12,0,10" Checked="AutoCheckUpdates_Changed" Unchecked="AutoCheckUpdates_Changed" />
+                                    <TextBlock x:Name="UpdateStatus" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                    <ScrollViewer MaxHeight="140" VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                                        <TextBlock x:Name="UpdateReleaseNotes" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" />
+                                    </ScrollViewer>
+                                    <ProgressBar x:Name="UpdateDownloadProgress" Minimum="0" Maximum="100" Height="5" Margin="0,12,0,0" Visibility="Collapsed" />
+                                    <WrapPanel Margin="0,14,0,0">
+                                        <Button x:Name="CheckUpdatesButton" Content="{local:Loc Key=Updates.Check}" Click="CheckUpdates_Click" Margin="0,0,8,0" />
+                                        <Button x:Name="InstallUpdateButton" Content="{local:Loc Key=Updates.Download}" Click="InstallUpdate_Click" Visibility="Collapsed" Margin="0,0,8,0" />
+                                        <Button x:Name="CancelUpdateButton" Content="{local:Loc Key=Updates.Cancel}" Click="CancelUpdate_Click" Visibility="Collapsed" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource CardStyle}" Margin="0,0,0,16">
+                                <StackPanel>
                                     <TextBlock x:Name="LanguageLabel" Text="{local:Loc Key=Ui.Launcher_language}" />
                                     <ComboBox x:Name="UiLanguageCombo" AutomationProperties.Name="{local:Loc Key=Ui.Launcher_language}" Width="240" HorizontalAlignment="Left" SelectionChanged="UiLanguage_Changed" Margin="0,6,0,16">
                                         <ComboBoxItem Content="English" Tag="en" />
@@ -1089,7 +1106,7 @@
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock x:Name="FooterMessage" Text="{local:Loc Key=Hub.Up_to_date}" FontSize="12" Foreground="{DynamicResource MutedBrush}" TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" />
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                            <TextBlock Text="Techmo 2.0 · Windows x64" FontSize="11" Foreground="{DynamicResource DimBrush}" />
+                            <TextBlock x:Name="AppVersionFooter" Text="Techmo · Windows x64" FontSize="11" Foreground="{DynamicResource DimBrush}" />
                             <TextBlock x:Name="FooterGpu" Foreground="{DynamicResource DimBrush}" FontSize="11" MaxWidth="340" TextTrimming="CharacterEllipsis" />
                             <TextBlock x:Name="FooterFps" Foreground="{DynamicResource DimBrush}" FontSize="11" />
                         </StackPanel>

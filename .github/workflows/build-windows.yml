@@ -34,6 +34,8 @@ jobs:
         run: python -B -m unittest discover -s tests -v
       - name: WPF integration checks
         run: dotnet run --project tests/TechmoHosted/TechmoHosted.csproj -c Release -p:NuGetAudit=false -- "$env:GITHUB_WORKSPACE"
+      - name: Update download and transactional installer checks
+        run: dotnet run --project tests/TechmoUpdates/TechmoUpdates.csproj -c Release -p:NuGetAudit=false -- "$env:GITHUB_WORKSPACE"
       - name: Publish launcher
         run: ./tools/build-launcher.ps1
       - uses: actions/upload-artifact@v4
@@ -112,8 +114,8 @@ jobs:
         run: ./tools/package-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: Techmo-Bloodborne-2.0-win-x64
-          path: dist/Techmo-Bloodborne-2.0-win-x64.zip
+          name: Techmo-Bloodborne-win-x64
+          path: dist/Techmo-Bloodborne-*-win-x64.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

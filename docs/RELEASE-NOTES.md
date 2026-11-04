@@ -1,4 +1,8 @@
-# Techmo Bloodborne 2.0
+# Techmo Bloodborne 2.0.1
+
+- Check and download Techmo updates in Settings, with English/Vietnamese status and cancellation.
+- Verified full-package installation, restart, runtime backup and rollback on copy failure.
+- Keep saves, settings, profiles, mods and shader caches during updates.
 
 - Native frame-rate timing, cutscene freeze fixes and bounded memory retries.
 - Techmo controls, profiles, Exit Game confirmation and performance recording.

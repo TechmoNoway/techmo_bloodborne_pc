@@ -31,6 +31,7 @@ public partial class MainWindow
         SystemEvents.UserPreferenceChanged += SystemAppearanceChanged;
         Closing += (_, e) =>
         {
+            if (updateDownloading && !updateHandoff) { e.Cancel = true; SetFooterMessage("Cancel the update download before closing."); return; }
             if (saveDataBusy) { e.Cancel = true; SetFooterMessage("Wait for the save operation to finish."); return; }
             if (hasUnsavedChanges && !ConfirmProfileSwitch("Save your changes before closing the launcher?")) e.Cancel = true;
         };
@@ -45,6 +46,7 @@ public partial class MainWindow
 
     void HubLanguageChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
+        RefreshUpdateControls();
         UpdateHubSummary(); UpdatePresentModeDescription(); UpdateKeycapLabels(); UpdateBreadcrumb(); RefreshSaveLists(); RefreshModLanguage();
     }
 

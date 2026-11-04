@@ -14,6 +14,7 @@ launcher/windows/install.txt
 /builds/
 /user/
 /save-vault/
+/.techmo-update/
 /logs/
 /mods/
 /network/

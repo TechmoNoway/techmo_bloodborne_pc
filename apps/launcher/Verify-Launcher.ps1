@@ -898,7 +898,7 @@ static class Program
         Check(new[]{"GraphicsAoSlider","GraphicsShadowsSlider","GraphicsBloomSlider","GraphicsSaturationSlider"}.All(n=>Tag(n)=="1.00") && Get<CheckBox>("GraphicsVignetteCheck").IsChecked==true,"First launch uses original lighting and color settings");
         Check(Get<CheckBox>("ShowCpuCheck").IsChecked==false && Get<CheckBox>("ShowGpuCheck").IsChecked==false,"CPU/GPU monitoring is opt-in by default");
         Check(Get<Slider>("SharpnessSlider").Value==0.3,"First launch retains the native sharpening strength default");
-        Check(window.Title=="Techmo Bloodborne · 2.0","Techmo 2.0 release window branding");
+        Check(window.Title=="Techmo Bloodborne · "+TechmoUpdates.CurrentLabel,"Techmo release window branding follows the installed version");
         Check(typeof(MainWindow).Assembly.GetName().Name=="Techmo.Launcher","Techmo executable identity");
         Check(Localization.Current.Language=="en","English is the default UI language");
         Check(Get<CheckBox>("OnlineEnabledCheck").Content?.ToString()=="Play online with shadNet","Default English UI is independent of Windows language");

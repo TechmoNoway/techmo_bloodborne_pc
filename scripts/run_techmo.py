@@ -1,5 +1,6 @@
 """Techmo session reporting around the pinned native starter."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,13 @@ from datetime import datetime
 from session_diagnostics import Session
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def app_version():
+    try:
+        return str(json.loads((ROOT / 'package.json').read_text(encoding='utf-8'))['version'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 'unknown'
 
 def native_arguments(arguments, env):
     """Techmo accepts a game folder; 0.9.37's starter forwards all argv to bb-probe."""
@@ -43,7 +51,7 @@ def main():
             raise RuntimeError('Build the Techmo native engine first (tools/build-native.ps1).')
         identity = session.record_runtime(runtime)
         with open(env['BB_LOG_FILE'], 'a', encoding='utf-8', buffering=1) as log:
-            print(f'Techmo Bloodborne 2.0, {datetime.now().isoformat(timespec="seconds")}', file=log)
+            print(f'Techmo Bloodborne {app_version()}, {datetime.now().isoformat(timespec="seconds")}', file=log)
             print(f'Runtime EXE SHA-256: {identity.get("sha256", "unavailable")}', file=log)
             print('Native start: ' + str(starter), file=log)
             session.set_phase('runtime')

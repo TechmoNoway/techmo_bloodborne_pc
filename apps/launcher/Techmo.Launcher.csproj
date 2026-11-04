@@ -11,7 +11,7 @@
     <Description>Techmo Bloodborne Windows launcher.</Description>
     <RootNamespace>BloodborneLauncher</RootNamespace>
     <ApplicationIcon>Assets/bloodborne.ico</ApplicationIcon>
-    <Version>2.0.0</Version>
+    <Version>2.0.1</Version>
     <TechmoPublicRelease Condition="'$(TechmoPublicRelease)' == ''">true</TechmoPublicRelease>
   </PropertyGroup>
   <PropertyGroup Condition="'$(TechmoPublicRelease)' == 'true'">
@@ -21,6 +21,7 @@
     <Resource Include="Assets/*.png" />
     <Resource Include="Assets/bloodborne.ico" />
     <EmbeddedResource Include="Localization/*.json" />
+    <EmbeddedResource Include="../../tools/install-update.ps1" LogicalName="BloodborneLauncher.InstallUpdate.ps1" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../engine-backend/Techmo.Launcher.csproj" />
